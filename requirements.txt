@@ -1,0 +1,8 @@
+pydantic
+pyyaml
+mako
+tabulate
+hjson
+mistletoe
+setuptools<70.0.0
+floogen

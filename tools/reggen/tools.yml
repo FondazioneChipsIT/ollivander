@@ -1,0 +1,16 @@
+# Vendoring Metadata for OpenTitan regtool
+# This file tracks the origin of the local copy of regtool to ensure reproducibility
+# and proper attribution, avoiding a "dirty" vendoring.
+
+name: opentitan-reggen
+description: "OpenTitan register generation tool (regtool)"
+upstream:
+  url: "https://github.com/lowRISC/opentitan.git"
+  # To update, replace this with a specific commit hash from the OpenTitan repository
+  revision: "master" 
+  license: "Apache-2.0"
+mapped_files:
+  - from: "util/regtool.py"
+    to: "regtool.py"
+  - from: "util/reggen/"
+    to: "reggen/"

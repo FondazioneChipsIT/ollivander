@@ -1,0 +1,101 @@
+# Ollivander Default Environment Configuration
+# Do NOT modify this file directly. To customize your environment, create a separate
+# YAML file (e.g., project_env.yaml) and pass it to Ollivander via the -a (--append-env) flag.
+# All paths are resolved relative to the location of this file.
+paths:
+  outdir: "generated"
+  # Subdirectories created inside the 'outdir'
+  sub_hw: "hw"
+  sub_sw: "sw"
+  sub_doc: "doc"
+  sub_cfg: "cfg"
+  sub_reg: "reg"
+  sub_tb: "tb"
+  # The {outdir} placeholder is dynamically replaced by the generator
+  bender_manifest: "{outdir}/Bender.yml"
+  templates:
+    - "src/templates"
+  components:
+    - "components"
+  regtool:
+    - "tools/reggen/regtool.py"
+
+# Centralized Dependency Registry
+# Hardware IP files and templates can declare dependencies by name (e.g. // BENDER: name="axi").
+# Ollivander will resolve them using this registry to ensure version homogeneity.
+dependencies:
+  apb:
+    git: "https://github.com/pulp-platform/apb.git"
+    version: "0.2.4"
+  apb_adv_timer:
+    git: "https://github.com/pulp-platform/apb_adv_timer.git"
+    version: "1.0.4"
+  axi:
+    git: "https://github.com/pulp-platform/axi.git"
+    version: "0.39.8"
+  can_bus:
+    git: "https://github.com/AlSaqr-platform/can_bus.git"
+    rev: "0ec0bf8b7dab6d5e4b3f7ec58338a8efee066379"
+  cheshire:
+    git: "https://github.com/FondazioneChipsIT/cheshire.git"
+    rev: "54672da4ec7d001bf1c1a104eb70ef25a7e1f4db"
+  common_cells:
+    git: "https://github.com/pulp-platform/common_cells.git"
+    version: "1.38.0"
+  datamover:
+    git: "https://github.com/pulp-platform/datamover.git"
+    rev: "HEAD"
+  dyn_mem:
+    git: "https://github.com/pulp-platform/dyn_spm.git"
+    rev: "480590062742230dc9bd4050358a15b4747bdf34"
+  floo_noc:
+    git: "https://github.com/pulp-platform/floo_noc.git"
+    rev: "HEAD"
+  hci:
+    git: "https://github.com/FondazioneChipsIT/hci.git"
+    rev: "3e63936991569d0b1e315d6914478937b37bb338"
+  hwpe-ctrl:
+    git: "https://github.com/LuigiGhionda/hwpe-ctrl.git"
+    rev: "3156cabafff3b4fb90c1c78fb02b912a931a037c"
+  hwpe-stream:
+    git: "https://github.com/LuigiGhionda/hwpe-stream.git"
+    rev: "4c676e44ccf70a0d8dc67a84c6e02372bfd22557"
+  hyperbus:
+    git: "https://github.com/FondazioneChipsIt/hyperbus.git"
+    rev: "e51bca81ea908b695808e32cdabbb4d9cd0b5d2d"
+  idma:
+    git: "https://github.com/FondazioneChipsIt/idma.git"
+    rev: "2e637216e0455d77706a50d0639b86891e2a83aa"
+  mailbox_unit:
+    git: "https://github.com/pulp-platform/mailbox_unit.git"
+    version: "1.1.0"
+  obi:
+    git: "https://github.com/pulp-platform/obi.git"
+    rev: "acfcd0f80c7539aa8da7821a66d9acf2074a5b4e"
+  opentitan:
+    git: "https://github.com/AlSaqr-platform/opentitan.git"
+    rev: "1753078bf733aeda1da4e2a5252e21dd938aa410"
+  pulp-ethernet:
+    git: "https://github.com/pulp-platform/pulp-ethernet.git"
+    rev: "db9a90dd27fa85ddbe9b7cd22e03bf43b2c14838"
+  pulp_cluster:
+    git: "https://github.com/FondazioneChipsIT/pulp_cluster.git"
+    rev: "b2dd982cb829b5b280a651d3312a69e5b4e3c3f3"
+  redmule:
+    git: "https://github.com/pulp-platform/redmule.git"
+    version: "2.0.4"
+  register_interface:
+    git: "https://github.com/pulp-platform/register_interface.git"
+    version: "0.4.7"
+  riscv-dbg:
+    git: "https://github.com/pulp-platform/riscv-dbg.git"
+    version: "0.8.1"
+  safety_island:
+    git: "https://github.com/pulp-platform/safety_island.git"
+    rev: "584eb697195c44ef1b1cbd1f4b7accdf5192200a"
+  spatz:
+    git: "https://github.com/pulp-platform/spatz.git"
+    rev: "98de97f24fe42675c9b4a8cc08354a03af57400a"
+  timer_unit:
+    git: "https://github.com/pulp-platform/timer_unit.git"
+    version: "1.0.3"

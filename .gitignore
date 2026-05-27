@@ -1,0 +1,37 @@
+# ==============================================================================
+# OLLIVANDER SoC GENERATOR - .gitignore
+# ==============================================================================
+
+# Generated Output Directories
+generated/
+
+# Hardware Dependency Manager (Bender)
+bender_work/
+.bender/
+Bender.lock
+
+# Verilator & Simulation Artifacts
+obj_dir/
+*.vcd
+*.fst
+*.wlf
+
+# Python Virtual Environments & Caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.bak
+*~
+*.tmp

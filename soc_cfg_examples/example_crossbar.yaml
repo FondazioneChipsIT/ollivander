@@ -1,0 +1,415 @@
+# ==============================================================================
+# OLLIVANDER UNIFIED SoC ARCHITECTURE SCHEMA - CARFIELD CONFIGURATION
+# ==============================================================================
+# This YAML file describes the Carfield SoC using the Unified Component Model.
+# Ollivander will parse this, recognize the "crossbar" topology switch, and map
+# the components to a central AXI4 global interconnect (provided by the host).
+# ==============================================================================
+
+project:
+  name: "carfield"
+  description: "Carfield Heterogeneous Multi-Core SoC Specification"
+  author: "Ollivander Generator"
+
+# ------------------------------------------------------------------------------
+# 1. TOPOLOGY & INTERCONNECT
+# ------------------------------------------------------------------------------
+# The master switch for Ollivander to use AXI Crossbar templates.
+# In a "crossbar" topology, the Host component encapsulates the main AXI crossbar.
+topology:
+  type: "crossbar"
+  global_bus:
+    protocol: "AXI4"
+    data_width: 64      # Main AXI data width (in bits)
+    addr_width: 48      # Main AXI address width (in bits)
+    user_width: 10      # User bits (used by Cheshire for RISC-V AMOs and bus errors)
+    mst_id_width: 2     # Master ID width assigned by the crossbar
+
+# ------------------------------------------------------------------------------
+# 2. SYSTEM MICROARCHITECTURE SETTINGS
+# ------------------------------------------------------------------------------
+# Defines global microarchitectural parameters to ensure system-wide coherence
+# across all components, avoiding parameter mismatches in the RTL.
+system_settings:
+  # Mapping of the AXI 'user' field bits for system-wide coherence
+  user_mapping:
+    amo_msb: 2          # MSB of the AMO Hart ID (used for LR/SC reservation tracking)
+    amo_lsb: 0          # LSB of the AMO Hart ID
+    ecc_err_bit: 4      # Bit index for ECC error reporting
+    
+  # Microarchitecture parameters for the Shared Memory (LLC/L2)
+  llc:
+    max_read_txns: 32   # Outstanding read transactions
+    max_write_txns: 32  # Outstanding write transactions
+    amo_num_cuts: 1     # AXI cuts for Atomic Memory Operations
+    
+  # Microarchitecture parameters for Peripheral RegBuses
+  reg_bus:
+    max_read_txns: 8    # Outstanding read transactions
+    max_write_txns: 8   # Outstanding write transactions
+    amo_num_cuts: 1     # AXI cuts for Atomic Memory Operations
+    amo_post_cut: true  # Do not bypass cut after AMO to RegBus conversion
+
+# ------------------------------------------------------------------------------
+# 3. CLOCK & RESET DOMAINS
+# ------------------------------------------------------------------------------
+# Defines the clock generation and distribution network.
+# Ollivander uses this to instantiate FLLs, dividers, and CDC synchronizers.
+# Resets are automatically derived from clock domains unless explicitly overridden.
+clock_tree:
+  flls: 4                     # Total number of Frequency Locked Loops (FLLs)
+  domains:
+    - name: "rt"
+      description: "Real-Time Clock for CLINT and AON timers"
+      is_real_time: true      # Uses static division, bypasses dynamic muxing
+      source_fll: 0           # Hardwired to FLL index 0
+      static_div: 100         # Static division value (e.g. FLL0 / 100)
+      has_mux: false
+      has_divider: false
+
+    - name: "host"
+      description: "Main Host Clock for Cheshire CPU"
+      has_divider: false      # Host usually runs at max speed
+      has_debug_divider: true # Generates a parallel debug clock
+      source_fll: 1           # Hardwired to FLL index 1 to prevent deadlocks
+      has_mux: false
+      
+    - name: "periph"
+      description: "Clock domain for slow/medium speed peripherals"
+      has_divider: true       # Generates SW-programmable divider registers
+      has_mux: true           # Generates a glitch-free mux to switch between FLLs
+      has_debug_divider: true
+      default_div: 1          # Default division value at boot
+
+    - name: "safety"
+      description: "Clock domain for the Safety Island"
+      has_divider: true
+      has_mux: true
+      has_debug_divider: true
+      default_div: 1
+
+    - name: "secure"
+      description: "Clock domain for the Security Island"
+      has_divider: true
+      has_mux: true
+      has_debug_divider: true
+      default_div: 1
+
+    - name: "pulp"
+      description: "Clock domain for the PULP Integer Cluster"
+      has_divider: true
+      has_mux: true
+      has_debug_divider: true
+      default_div: 1
+
+    - name: "spatz"
+      description: "Clock domain for the Spatz Vectorial Cluster"
+      has_divider: true
+      has_mux: true
+      has_debug_divider: true
+      default_div: 1
+
+    - name: "l2"
+      description: "Clock domain for the L2 Shared Memory"
+      has_divider: true
+      has_mux: true
+      has_debug_divider: true
+      default_div: 1
+
+# ------------------------------------------------------------------------------
+# 3. GLOBAL SYSTEM CONTROLLER & REGISTERS
+# ------------------------------------------------------------------------------
+# Instructs Ollivander to generate the central System Controller registers (PCRs).
+# This block generates the register file (sys_ctrl_regs) handling clock gating, 
+# software resets, isolation signals, and boot addresses for all components.
+system_controller:
+  description: "Main system control and status registers (PCRs)"
+  name: "sys_ctrl"
+  base_addr: 0x20010000       # Memory mapped base address
+  size: 0x00001000            # Size of the memory region
+  scratch_registers: 2        # Number of generic GENERIC_SCRATCHx registers
+  version_registers: 5        # Number of VERSIONx registers (e.g., for commit hashes)
+  jedec_id: 0x00000000        # Value for the JEDEC_IDCODE register
+  fll_status_regs: true       # Exposes FLL lock signals as read-only registers
+
+# ------------------------------------------------------------------------------
+# 4. HOST SYSTEM (Manager)
+# ------------------------------------------------------------------------------
+# The Host is the central orchestrator (typically a RISC-V application class CPU).
+# In a "crossbar" topology, it internally instantiates the main AXI interconnect.
+host:
+  name: "manager"
+  description: "Main application processor (Cheshire host)"
+  type: "cheshire_isle"       # Must match a wrapper in components/isles/ (e.g., cheshire_isle.sv)
+  clock_domain: "host"        # Wires the clk_i/rst_ni ports to the 'host' domain
+  export_interfaces: ["jtag", "uart", "spi", "i2c"]
+  interfaces:
+    axi_master: true          # Host acts as an AXI master (initiator)
+    axi_slave:
+      - name: "internal_subsystem"
+        base_addr: 0x00000000
+        size: 0x20000000 # 512 MB reserved for internal ROM/RAM/CSRs
+  parameters:
+    # These mapped directly to the SystemVerilog module parameters
+    NumCores: 1
+    RtcFreq: 1000000
+    Bootrom: true
+    Uart: true
+    I2c: true
+    SpiHost: true
+    Dma: true
+    SerialLink: false
+    Vga: false
+    Snooper: true
+    IrqRouter: true
+  interrupts:
+    # Interrupt routing mapping. 
+    # The Host aggregates interrupts from all other components.
+    intr_ext_i:
+      cdc: false              # Disable CDC synchronizers if not needed (e.g., source provides stable levels)
+      # Dictionary-style mapping creates a concatenated vector in SV.
+      source: >
+        {
+          [22] : ethernet.eth_rx_irq_o,
+          [21] : apb_subsystem.system_timer_irq_hi_o,
+          [20] : apb_subsystem.system_timer_irq_lo_o,
+          [19:16] : apb_subsystem.advanced_timer_events_o,
+          [15:12] : apb_subsystem.advanced_timer_channels_o,
+          [11] : apb_subsystem.can_bus_event_o,
+          [10] : apb_subsystem.watchdog_aon_timer_rst_req_o,
+          [9] : apb_subsystem.watchdog_wkup_req_o,
+          [8] : apb_subsystem.watchdog_nmi_wdog_timer_bark_o,
+          [7] : apb_subsystem.watchdog_intr_wdog_timer_bark_o,
+          [6] : apb_subsystem.watchdog_intr_wkup_timer_expired_o,
+          [5] : l2_shared_memory.ecc_error_o,
+          [4] : mailbox.snd_irq_o[11],
+          [3] : mailbox.snd_irq_o[15],
+          [2] : mailbox.snd_irq_o[7],
+          [1] : mailbox.snd_irq_o[9],
+          [0] : pulp_cluster.eoc_o
+        }
+
+# ------------------------------------------------------------------------------
+# 5. SYSTEM COMPONENTS (Compute, Memories, Peripherals)
+# ------------------------------------------------------------------------------
+# List of all hardware blocks attached to the SoC. 
+# Each block MUST be encapsulated in an "Isle" wrapper matching the 'type' field.
+components:
+  - name: "hyperbus"
+    description: "High-speed external memory interface (DRAM/Flash)"
+    type: "hyperbus_isle"
+    clock_domain: "periph"
+    export_interfaces: ["hyperbus"]
+    interfaces:
+      llc_port:
+        - base_addr: 0x80000000
+          size: 0x08000000
+      regbus_slave:
+        - base_addr: 0x20009000
+          size: 0x00001000
+          sync_domain: false   # True = Host Clock, False = Uses CDC to target clock_domain
+
+  - name: "l2_shared_memory"
+    description: "Level 2 shared SRAM with ECC"
+    type: "l2_isle"
+    clock_domain: "l2"
+    interfaces:
+      axi_slave:
+        - ports: 2             # Generates an array of AXI ports in the wrapper
+          base_addr: 0x78000000
+          size: 0x00200000
+          sync_domain: false
+      regbus_slave:
+        - base_addr: 0x2000B000
+          size: 0x00001000
+          sync_domain: false
+
+  - name: "safety_island"
+    description: "Triple-Core-Lockstep RV32 system for ASIL compliant tasks"
+    type: "safety_island_isle"
+    clock_domain: "safety"
+    export_interfaces: ["jtag"]
+    interfaces:
+      axi_master: true
+      axi_slave:
+        - base_addr: 0x60000000
+          size: 0x00800000
+          sync_domain: false
+    system_config:
+      # Connects standard control signals to the central System Controller
+      isolate: true
+      fetch_enable: true
+      boot_addr: 0x70000000
+    interrupts:
+      irqs_i: 
+        cdc: false
+        source: >
+          {
+            [55:29] : manager.intr_ext_o[55:29],
+            [28:4]  : manager.intr_ext_o[24:0],
+            [3] : mailbox.snd_irq_o[8],
+            [2] : mailbox.snd_irq_o[10],
+            [1] : mailbox.snd_irq_o[12],
+            [0] : mailbox.snd_irq_o[6]
+          }
+
+  - name: "security_island"
+    description: "Hardware Root-of-Trust (OpenTitan/Ibex)"
+    type: "security_island_isle"
+    clock_domain: "secure"
+    export_interfaces: ["jtag", "uart", "spi"]
+    interfaces:
+      axi_master: true
+    system_config:
+      isolate: true
+      fetch_enable: true
+      boot_addr: 0x70000000
+    interrupts:
+      # Simple string source maps a wire directly to the target component output
+      irq_ibex_i: { source: "mailbox.snd_irq_o[5] | mailbox.snd_irq_o[14]", cdc: false }
+      cfi_req_irq_i: { source: "manager.intr_ext_o[23]" }
+      cfi_watermark_irq_i: { source: "manager.intr_ext_o[22]" }
+
+  - name: "pulp_cluster"
+    description: "Multicore array for integer math acceleration"
+    type: "pulp_cluster_isle"
+    clock_domain: "pulp"
+    interfaces:
+      axi_master: true
+      axi_slave:
+        - base_addr: 0x50000000
+          size: 0x00800000
+          sync_domain: false
+      dma_events: true
+    system_config:
+      isolate: true
+      fetch_enable: true
+      boot_enable: true
+      boot_addr: 0x70000000
+      has_busy_status: true   # Generates a 'busy' status register in the System Controller
+      has_eoc_status: true
+    interrupts:
+      mbox_irq_i: { source: "mailbox.snd_irq_o[4]", cdc: false } 
+      dbg_irq_valid_i: { source: "safety_island.debug_req_o[39:32]", cdc: false }
+
+  - name: "spatz_cluster"
+    description: "Vectorial / Floating-point accelerator"
+    type: "spatz_cluster_isle"
+    clock_domain: "spatz"
+    interfaces:
+      axi_master: true
+      axi_slave:
+        - base_addr: 0x51000000
+          size: 0x00800000
+          sync_domain: false
+    system_config:
+      isolate: true
+      fetch_enable: false
+      boot_addr: 0x70000000
+      has_busy_status: true
+      debug_req: true
+    interrupts:
+      msip_i: 
+        cdc: false
+        source: >
+          {
+            [1] : mailbox.snd_irq_o[3] | mailbox.snd_irq_o[1],
+            [0] : mailbox.snd_irq_o[2] | mailbox.snd_irq_o[0]
+          }
+      mtip_i: { source: "manager.mtip_ext_o", cdc: false }
+      meip_i: { source: "none" } # 'none' explicitly ties the interrupt input to 0
+
+  - name: "mailbox"
+    description: "Centralized Mailbox for cross-domain Machine Software Interrupts (MSI)"
+    type: "mailbox_isle"
+    clock_domain: "host"
+    interfaces:
+      axi_slave:
+        - base_addr: 0x40000000
+          size: 0x00001000
+          sync_domain: true
+
+  - name: "pll_config"
+    description: "PLL configuration registers"
+    type: "pll_cfg"
+    interfaces:
+      regbus_slave:
+        - external: true       # Does not instantiate the module, just exports RegBus ports to top-level
+          base_addr: 0x20020000
+          size: 0x00001000
+          sync_domain: false
+
+  - name: "padframe_config"
+    description: "Padframe configuration registers"
+    type: "padframe_cfg"
+    interfaces:
+      regbus_slave:
+        - external: true
+          base_addr: 0x200A0000
+          size: 0x00001000
+          sync_domain: false
+
+  # - name: "l2_ecc_config"
+  #   description: "L2 ECC configuration registers"
+  #   type: "l2_ecc_cfg"
+  #   interfaces:
+  #     regbus_slave:
+  #       - external: true
+  #         base_addr: 0x200B0000
+  #         size: 0x00001000
+  #         sync_domain: false
+
+  - name: "ethernet"
+    description: "Gigabit Ethernet MAC with built-in DMA"
+    type: "ethernet_isle"
+    clock_domain: "periph"
+    export_interfaces: ["phy"]
+    interfaces:
+      axi_master: true
+      regbus_slave:
+        - base_addr: 0x20000000
+          size: 0x00001000
+          sync_domain: false
+    dedicated_clock_div:
+      name: "eth"
+      default_div: 10
+
+  - name: "apb_subsystem"
+    description: "Subsystem for low-speed automotive/industrial peripherals"
+    type: "apb_subsystem_isle"
+    clock_domain: "periph"
+    export_interfaces: ["can_bus"]
+    interfaces:
+      axi_slave:
+        - base_addr: 0x20001000
+          size: 0x00009000
+          sync_domain: false
+    parameters:
+      ApbDataWidth: 32
+      ApbAddrWidth: 32
+    # Components nested here will be instantiated inside the apb_subsystem wrapper
+    # and mapped to the internal APB bus generated by Ollivander.
+    components:
+      - name: "system_timer"
+        description: "General purpose system timer"
+        type: "apb_timer_unit"
+        base_addr: 0x20004000
+        size: 0x00001000
+
+      - name: "advanced_timer"
+        description: "Advanced timer with PWM and event capabilities"
+        type: "apb_adv_timer"
+        base_addr: 0x20005000
+        size: 0x00001000
+
+      - name: "watchdog"
+        description: "Always-On (AON) watchdog timer"
+        type: "aon_timer"
+        base_addr: 0x20007000
+        size: 0x00001000
+
+      - name: "can_bus"
+        description: "Controller Area Network (CAN) bus interface"
+        type: "can_top_apb"
+        base_addr: 0x20001000
+        size: 0x00001000

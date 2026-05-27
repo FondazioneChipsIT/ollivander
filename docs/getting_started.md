@@ -1,0 +1,113 @@
+# Getting Started: Integrating Ollivander
+
+This guide explains the recommended workflow for integrating the Ollivander SoC Generator into a new hardware project. 
+
+Because Ollivander is a flexible generator designed to weave together both standard and custom hardware IPs, the best practice is to include it as a **Git Submodule** rather than copying its source code directly into your repository.
+
+This approach guarantees:
+1. **Reproducibility**: Your SoC will always build exactly the same way, even years from now.
+2. **Cleanliness**: Your custom IPs and YAML configurations remain completely separated from the generator's source code.
+3. **Easy Updates**: You can pull new features or bug fixes from Ollivander without merge conflicts.
+
+---
+
+## 1. Ideal Repository Structure
+
+Imagine you are building a new chip called "Prometheus". Your repository should look like this:
+
+```text
+prometheus_soc/
+├── .git/
+├── tools/
+│   └── ollivander/          <-- Git Submodule (Read-Only)
+├── hw_ips/                  <-- Your custom IPs and wrappers (*_isle.sv)
+│   └── aes_crypto_isle.sv
+├── prometheus_env.yaml      <-- Environment bridge file
+├── prometheus.yaml          <-- Your SoC specification (SSoT)
+└── Makefile                 <-- Project automation
+```
+
+---
+
+## 2. Prerequisites
+
+Before running the generator, ensure you have **Python 3** and `make` installed on your system.
+Ollivander provides a fully automated setup for its Python dependencies (supporting both `uv` and `pip`).
+
+---
+
+## 3. Step-by-Step Integration
+
+### Step 1: Initialize your repository
+Create your project folder and initialize Git.
+```bash
+mkdir prometheus_soc
+cd prometheus_soc
+git init
+```
+
+### Step 2: Add Ollivander as a Submodule
+Add the Ollivander repository into a `tools/` directory.
+```bash
+git submodule add https://github.com/FondazioneChipsIT/ollivander.git tools/ollivander
+```
+
+### Step 3: "Freeze" the Version (Crucial)
+To ensure long-term reproducibility, checkout a specific tag, release, or commit hash. Do not track the `main` branch dynamically.
+```bash
+cd tools/ollivander
+git checkout v1.0.0  # Or a specific commit hash like a1b2c3d
+cd ../..
+git add .gitmodules tools/ollivander
+git commit -m "chore: add Ollivander v1.0.0 as submodule"
+```
+
+When your colleagues clone the repository, they simply run:
+```bash
+git clone --recursive https://github.com/your-org/prometheus_soc.git
+```
+
+### Step 4: Setup the Makefile & Environment
+Ollivander provides a ready-to-use Makefile template to automate your entire workflow, including environment setup and simulation.
+```bash
+cp tools/ollivander/Makefile.sample Makefile
+```
+Then, install all the required Python dependencies (it will automatically use `uv` if available, otherwise it falls back to `pip`):
+```bash
+make setup
+```
+
+---
+
+## 4. Injecting Custom IPs
+
+If you want to instantiate your own custom hardware block (e.g., an AES accelerator) inside the SoC, you place your `aes_crypto_isle.sv` inside your `hw_ips/` folder.
+
+You must never modify the files inside `tools/ollivander/components/`.
+
+Instead, create the **Environment Bridge File** (`prometheus_env.yaml`):
+
+```yaml
+# prometheus_env.yaml
+paths:
+  components:
+    - "hw_ips"  # Instructs Ollivander to also search here for Isles/Tiles
+```
+
+---
+
+## 5. Generation and Simulation
+
+Open the `Makefile` you copied in Step 4 and ensure the variables (`SOC_YAML`, `ENV_YAML`) match your actual filenames. 
+
+To build your SoC, simply run:
+```bash
+make generate
+```
+Ollivander will create the `generated/` directory containing your complete SoC RTL, the `Bender.yml` manifest in your project root, and a ready-to-use Verilator C++ testbench!
+
+To compile the generated hardware into a C++ model using Verilator and run the simulation:
+```bash
+make build-sim
+make run-sim
+```
