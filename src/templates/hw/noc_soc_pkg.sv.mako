@@ -146,6 +146,15 @@ package ${pkg};
   `AXI_TYPEDEF_ALL(soc_axi_slv, soc_axi_addr_t, soc_axi_slv_id_t, soc_axi_data_t, soc_axi_strb_t, soc_axi_user_t)
 
   // =========================================================================
+  // 0b. NOC AXI WIDTHS
+  // =========================================================================
+  localparam int unsigned NoCAxiAwWidth = (2**LogDepth)*axi_pkg::aw_width(AxiAddrWidth, AxiIdWidth, AxiUserWidth);
+  localparam int unsigned NoCAxiWWidth  = (2**LogDepth)*axi_pkg::w_width(AxiDataWidth, AxiUserWidth);
+  localparam int unsigned NoCAxiBWidth  = (2**LogDepth)*axi_pkg::b_width(AxiIdWidth, AxiUserWidth);
+  localparam int unsigned NoCAxiArWidth = (2**LogDepth)*axi_pkg::ar_width(AxiAddrWidth, AxiIdWidth, AxiUserWidth);
+  localparam int unsigned NoCAxiRWidth  = (2**LogDepth)*axi_pkg::r_width(AxiDataWidth, AxiIdWidth, AxiUserWidth);
+
+  // =========================================================================
   // 1. MESH DIMENSIONS AND TOPOLOGY
   // =========================================================================
   typedef struct packed {
@@ -197,13 +206,41 @@ package ${pkg};
   // =========================================================================
   // 3. MULTICAST CONFIGURATIONS
   // =========================================================================
-  // Helper to generate a RouteCfg without Multicast support (for memories/host)
-  function automatic floo_pkg::route_cfg_t gen_nomcast_route_cfg();
-    floo_pkg::route_cfg_t ret = floo_ollivander_noc_pkg::RouteCfg;
-    ret.CollectiveCfg = CollectiveDefaultCfg;
-    return ret;
-  endfunction
+  localparam floo_pkg::route_cfg_t RouteCfgNoMcast = floo_ollivander_noc_pkg::RouteCfg;
 
-  localparam floo_pkg::route_cfg_t RouteCfgNoMcast = gen_nomcast_route_cfg();
+  // =========================================================================
+  // 4. AXI CROSSBAR RULES (HOST -> CHIMNEY)
+  // =========================================================================
+  localparam int unsigned AxiExtNumRules = 1;
+  localparam logic [0:0][7:0] AxiExtRegionIdx = '{8'd0};
+  localparam logic [0:0][63:0] AxiExtRegionStart = '{64'h0000000000000000};
+  localparam logic [0:0][63:0] AxiExtRegionEnd   = '{64'hFFFFFFFFFFFFFFFF};
+
+  // =========================================================================
+  // 5. REGBUS SUBSYSTEM RULES
+  // =========================================================================
+<%
+  ext_regs = config.system_controller.external_registers if config.system_controller else []
+  reg_slaves = [{'name': config.system_controller.name, 'base': config.system_controller.base_addr, 'size': config.system_controller.size if config.system_controller.size else '0x1000'}] if config.system_controller else []
+  for ext in ext_regs:
+      reg_slaves.append({'name': ext.name, 'base': ext.base_addr, 'size': ext.size if ext.size else '0x1000'})
+  num_reg_slvs = len(reg_slaves)
+%>
+  localparam int unsigned RegExtNumRules = ${num_reg_slvs};
+  localparam logic [${num_reg_slvs-1}:0][7:0] RegExtRegionIdx = {
+% for i in reversed(range(num_reg_slvs)):
+    8'd${i}${"," if i != 0 else ""}
+% endfor
+  };
+  localparam logic [${num_reg_slvs-1}:0][63:0] RegExtRegionStart = {
+% for slv in reg_slaves[::-1]:
+    64'h${parse_hex(slv['base'])}${"," if not loop.last else ""}
+% endfor
+  };
+  localparam logic [${num_reg_slvs-1}:0][63:0] RegExtRegionEnd = {
+% for slv in reg_slaves[::-1]:
+    64'h${parse_hex(slv['base'])} + 64'h${parse_hex(slv['size'])}${"," if not loop.last else ""}
+% endfor
+  };
 
 endpackage : ${pkg}

@@ -44,13 +44,13 @@ dependencies:
     version: "1.38.0"
   datamover:
     git: "https://github.com/pulp-platform/datamover.git"
-    rev: "HEAD"
+    rev: "5df9c9bd9e10ad020763c4291c571adf35ef4ae2"
   dyn_mem:
     git: "https://github.com/pulp-platform/dyn_spm.git"
     rev: "480590062742230dc9bd4050358a15b4747bdf34"
   floo_noc:
-    git: "https://github.com/pulp-platform/floo_noc.git"
-    rev: "HEAD"
+    git: "https://github.com/pulp-platform/floonoc.git"
+    version: "0.8.0"
   hci:
     git: "https://github.com/FondazioneChipsIT/hci.git"
     rev: "3e63936991569d0b1e315d6914478937b37bb338"
@@ -93,6 +93,9 @@ dependencies:
   safety_island:
     git: "https://github.com/pulp-platform/safety_island.git"
     rev: "584eb697195c44ef1b1cbd1f4b7accdf5192200a"
+  snitch_cluster:
+    git: "https://github.com/pulp-platform/snitch.git"
+    rev: "main"
   spatz:
     git: "https://github.com/pulp-platform/spatz.git"
     rev: "98de97f24fe42675c9b4a8cc08354a03af57400a"

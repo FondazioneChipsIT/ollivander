@@ -65,7 +65,11 @@ module security_island_isle
 
   // GPIO
   input  logic gpio_0_i,
+  output logic gpio_0_o,
+  output logic gpio_0_oe_o,
   input  logic gpio_1_i,
+  output logic gpio_1_o,
+  output logic gpio_1_oe_o,
 
   // Standard AXI OUT (Master)
   output logic [AsyncAxiOutAwWidth-1:0] async_axi_out_aw_data_o,
@@ -141,7 +145,11 @@ module security_island_isle
     .spi_host_SD_i       ( spi_host_sd_i       ),
     .spi_host_SD_en_o    ( spi_host_sd_en_o    ),
     .gpio_0_i            ( gpio_0_i            ),
-    .gpio_1_i            ( gpio_1_i            )
+    .gpio_0_o            ( gpio_0_o            ),
+    .gpio_0_oe_o         ( gpio_0_oe_o         ),
+    .gpio_1_i            ( gpio_1_i            ),
+    .gpio_1_o            ( gpio_1_o            ),
+    .gpio_1_oe_o         ( gpio_1_oe_o         )
   );
 
 endmodule : security_island_isle

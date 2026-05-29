@@ -126,6 +126,7 @@ module ${p_name}
           prefixes = interface_port_map.get(if_name, [if_name + "_"])
           prefixes_to_export.extend(prefixes)
           
+      exported_seen = set()
       known_params = {}
       known_params.update(comp_info.get(comp.name, {}).get("supported_params", {}))
       known_params.update(comp_info.get(comp.name, {}).get("fixed_params", {}))
@@ -133,19 +134,25 @@ module ${p_name}
           for k, v in comp.parameters.items():
               known_params[k] = "1" if v is True else "0" if v is False else str(v)
               
-      port_matches = re.finditer(r'\b(input|output|inout)\b\s+([^,;]+)', c_header)
+      c_header_clean = re.sub(r'//.*', '', c_header)
+      c_header_clean = re.sub(r'/\*.*?\*/', '', c_header_clean, flags=re.DOTALL)
+      port_matches = re.finditer(r'\b(input|output|inout)\b([\s\S]*?)(?=\b(?:input|output|inout)\b|\)\s*(?:;|$))', c_header_clean)
       for m in port_matches:
           p_dir = m.group(1)
-          decl = re.sub(r'//.*', '', m.group(2)).strip()
-          decl = re.sub(r'/\*.*?\*/', '', decl, flags=re.DOTALL).strip().split('=')[0].strip()
+          decl = m.group(2).strip().split('=')[0].strip()
+          decl = re.sub(r'[,;]\s*$', '', decl).strip()
           
           name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
           if name_match:
               port_name = name_match.group(1)
+              if port_name in exported_seen: continue
+              exported_seen.add(port_name)
               if any(port_name.startswith(prefix) for prefix in prefixes_to_export):
                   # Evaluate parameters in the port declaration
                   for param_name, param_val in known_params.items():
                       decl = re.sub(rf'\b{param_name}\b', param_val, decl)
+                  
+                  name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
                   
                   is_host = (comp.name == config.host.name)
                   for inst_idx in range(num_instances):
@@ -169,8 +176,8 @@ module ${p_name}
   # Add RegBus ports for external registers
   if config.system_controller and config.system_controller.external_registers:
       for ext_reg in config.system_controller.external_registers:
-          all_extra_ports.append(f"output soc_reg_req_t {ext_reg.name}_reg_req_o")
-          all_extra_ports.append(f"input  soc_reg_rsp_t {ext_reg.name}_reg_rsp_i")
+          all_extra_ports.append(f"output {pkg}::soc_reg_req_t {ext_reg.name}_reg_req_o")
+          all_extra_ports.append(f"input  {pkg}::soc_reg_rsp_t {ext_reg.name}_reg_rsp_i")
 %>\
 ${"," if all_extra_ports else ""}
 % if all_extra_ports:
@@ -306,7 +313,8 @@ ${clock_and_reset_tree(config, p_name)}
     ctrl_group = None
     if config.system_controller and config.system_controller.auto_control_groups:
         for g in config.system_controller.auto_control_groups:
-            if g.target_component_type in [c.type, c.type.replace('_tile', '_subtile'), c.type.replace('_tile', '_isle')]:
+            orig_type = original_isle_types.get(c.name, c.type)
+            if g.target_component_type in [c.type, orig_type, orig_type.replace('_isle', '_tile').replace('_subtile', '_tile')]:
                 ctrl_group = g
                 break
                 
@@ -351,19 +359,6 @@ ${clock_and_reset_tree(config, p_name)}
             m = re.match(r'\.([a-zA-Z0-9_]+)\s*\((.*?)\)', hc)
             if m: host_conns_dict[m.group(1)] = m.group(2).strip()
             
-        h_header = comp_info.get(c.name, {}).get("header_content", "")
-        port_matches = re.finditer(r'\b(input|output|inout)\b\s+([^,;]+)', h_header)
-        for m in port_matches:
-            p_dir = m.group(1)
-            decl = re.sub(r'//.*', '', m.group(2)).strip()
-            decl = re.sub(r'/\*.*?\*/', '', decl, flags=re.DOTALL).strip().split('=')[0].strip()
-            decl = re.sub(r'\)\s*$', '', decl).strip()
-            name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-            if name_match:
-                port_name_from_header = name_match.group(1)
-                if port_name_from_header not in ["clk_i", "rst_ni", "test_mode_i", "id_i", "sys_clk_i", "sys_rst_ni", "rt_clk_i", "pwr_on_rst_ni", "floo_req_o", "floo_rsp_i", "floo_wide_o", "floo_req_i", "floo_rsp_o", "floo_wide_i"] and port_name_from_header not in host_conns_dict:
-                    host_conns_dict[port_name_from_header] = "'0" if p_dir == "input" else ""
-                    
         for p, w in host_conns_dict.items():
             conns.append(f".{p:<17} ( {w} )")
     else:
@@ -392,6 +387,12 @@ ${clock_and_reset_tree(config, p_name)}
             por_wire = 'host_pwr_on_rst_n' if c_rst == host_clk.replace('_clk', '_rst') else f'pwr_on_rsts_n[DomainIdx_{fmt_rst(c_rst)}]'
             conns.append(f".pwr_on_rst_ni ( {por_wire} )")
         if c_i.get('has_rt_clk'): conns.append(f".rt_clk_i      ( rtc_i )")
+        
+        # Connect dedicated clock divider if present
+        if c.dedicated_clock_div:
+            div_clk = c.dedicated_clock_div['name']
+            div_port = c.dedicated_clock_div.get('port', f"{div_clk}_i")
+            conns.append(f".{div_port:<17} ( {div_clk} )")
 
         exported_ports = []
         if (c.name, inst_idx) in comp_extra_conns:
@@ -416,16 +417,119 @@ ${clock_and_reset_tree(config, p_name)}
         # Inject exported interfaces
         if (c.name, inst_idx) in comp_extra_conns:
             conns.extend(comp_extra_conns[(c.name, inst_idx)])
+            
+    # Auto-tie-off remaining unconnected ports to prevent TFMPC warnings
+    connected_ports = []
+    for p in conns:
+        m = re.match(r'^\s*\.\s*([a-zA-Z0-9_]+)\s*\(', p)
+        if m: connected_ports.append(m.group(1))
+        
+    c_header = comp_info.get(c.name, {}).get("header_content", "")
+    c_header_clean = re.sub(r'//.*', '', c_header)
+    c_header_clean = re.sub(r'/\*.*?\*/', '', c_header_clean, flags=re.DOTALL)
+    port_matches = re.finditer(r'\b(input|output|inout)\b([\s\S]*?)(?=\b(?:input|output|inout)\b|\)\s*(?:;|$))', c_header_clean)
+    for m in port_matches:
+        p_dir = m.group(1)
+        decl = m.group(2).strip().split('=')[0].strip()
+        decl = re.sub(r'[,;]\s*$', '', decl).strip()
+        name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
+        if name_match:
+            auto_port_name = name_match.group(1)
+            if auto_port_name not in connected_ports:
+                val = "'0" if p_dir == "input" else ""
+                conns.append(f".{auto_port_name:<17} ( {val} )")
                 
-    param_conns = []
+    param_dict = {}
+    c_info = comp_info.get(c.name, {})
+    
+    # 1. Standard AXI/System parameters
+    supported = c_info.get("supported_params", [])
+    for p in supported:
+        if p in ['AxiAddrWidth', 'AxiDataWidth', 'AxiUserWidth', 'LogDepth']:
+            param_dict[p] = p
+        elif p == 'AxiMaxReadTxns': param_dict[p] = f"{pkg}::LlcMaxReadTxns" if 'l2' in c.name else f"{pkg}::RegMaxReadTxns"
+        elif p == 'AxiMaxWriteTxns': param_dict[p] = f"{pkg}::LlcMaxWriteTxns" if 'l2' in c.name else f"{pkg}::RegMaxWriteTxns"
+        elif p == 'AxiUserAmoMsb': param_dict[p] = f"{pkg}::AxiUserAmoMsb"
+        elif p == 'AxiUserAmoLsb': param_dict[p] = f"{pkg}::AxiUserAmoLsb"
+        elif p == 'AxiUserEccErrBit': param_dict[p] = f"{pkg}::AxiUserEccErrBit"
+        elif p == 'AxiAmoNumCuts': param_dict[p] = f"{pkg}::LlcAmoNumCuts" if 'l2' in c.name else f"{pkg}::RegAmoNumCuts"
+        elif p == 'AxiInIdWidth': param_dict[p] = 'AxiSlvIdWidth'
+        elif p == 'AxiOutIdWidth': param_dict[p] = 'AxiIdWidth'
+        elif p == 'AxiIdWidth':
+            interfaces = c.interfaces or {}
+            has_slave = 'axi_slave' in interfaces or 'llc_port' in interfaces
+            has_master = 'axi_master' in interfaces
+            if has_slave and not has_master: param_dict[p] = 'AxiSlvIdWidth'
+            else: param_dict[p] = 'AxiIdWidth'
+  
+        # --- Type Mappings ---
+        elif p in ['axi_req_t', 'axi_in_req_t', 'sync_axi_in_req_t', 'axi_slave_req_t']: 
+            if c.name == config.host.name: param_dict[p] = f"{pkg}::soc_axi_req_t"
+            elif 'llc_port' in (c.interfaces or {}): param_dict[p] = f"{pkg}::soc_axi_llc_req_t"
+            else: param_dict[p] = f"{pkg}::soc_axi_slv_req_t"
+        elif p in ['axi_resp_t', 'axi_in_resp_t', 'sync_axi_in_rsp_t', 'axi_slave_resp_t']: 
+            if c.name == config.host.name: param_dict[p] = f"{pkg}::soc_axi_resp_t"
+            elif 'llc_port' in (c.interfaces or {}): param_dict[p] = f"{pkg}::soc_axi_llc_resp_t"
+            else: param_dict[p] = f"{pkg}::soc_axi_slv_resp_t"
+        elif p in ['axi_out_req_t', 'sync_axi_out_req_t', 'axi_master_req_t']: 
+            if c.name == config.host.name: param_dict[p] = f"{pkg}::soc_axi_slv_req_t"
+            else: param_dict[p] = f"{pkg}::soc_axi_req_t"
+        elif p in ['axi_out_resp_t', 'sync_axi_out_rsp_t', 'axi_master_resp_t']: 
+            if c.name == config.host.name: param_dict[p] = f"{pkg}::soc_axi_slv_resp_t"
+            else: param_dict[p] = f"{pkg}::soc_axi_resp_t"
+        elif p in ['axi_aw_chan_t', 'axi_in_aw_chan_t', 'axi_out_aw_chan_t']: param_dict[p] = f"{pkg}::soc_axi_aw_chan_t" if c.name != config.host.name else f"{pkg}::soc_axi_slv_aw_chan_t"
+        elif p in ['axi_w_chan_t', 'axi_in_w_chan_t', 'axi_out_w_chan_t']: param_dict[p] = f"{pkg}::soc_axi_w_chan_t" if c.name != config.host.name else f"{pkg}::soc_axi_slv_w_chan_t"
+        elif p in ['axi_b_chan_t', 'axi_in_b_chan_t', 'axi_out_b_chan_t']: param_dict[p] = f"{pkg}::soc_axi_b_chan_t" if c.name != config.host.name else f"{pkg}::soc_axi_slv_b_chan_t"
+        elif p in ['axi_ar_chan_t', 'axi_in_ar_chan_t', 'axi_out_ar_chan_t']: param_dict[p] = f"{pkg}::soc_axi_ar_chan_t" if c.name != config.host.name else f"{pkg}::soc_axi_slv_ar_chan_t"
+        elif p in ['axi_r_chan_t', 'axi_in_r_chan_t', 'axi_out_r_chan_t']: param_dict[p] = f"{pkg}::soc_axi_r_chan_t" if c.name != config.host.name else f"{pkg}::soc_axi_slv_r_chan_t"
+
+        elif p in ['reg_req_t', 'sync_reg_in_req_t', 'sync_reg_out_req_t', 'async_reg_out_req_t']: 
+            param_dict[p] = f"{pkg}::soc_reg_req_t"
+        elif p in ['reg_rsp_t', 'sync_reg_in_rsp_t', 'sync_reg_out_rsp_t', 'async_reg_out_rsp_t']: 
+            param_dict[p] = f"{pkg}::soc_reg_rsp_t"
+  
+        # --- CDC Width Mappings ---
+        elif p.startswith('AsyncAxiLlc'):
+            if p == 'AsyncAxiLlcAwWidth': param_dict[p] = f'{pkg}::LlcAwWidth'
+            elif p == 'AsyncAxiLlcWWidth': param_dict[p] = f'{pkg}::LlcWWidth'
+            elif p == 'AsyncAxiLlcBWidth': param_dict[p] = f'{pkg}::LlcBWidth'
+            elif p == 'AsyncAxiLlcArWidth': param_dict[p] = f'{pkg}::LlcArWidth'
+            elif p == 'AsyncAxiLlcRWidth': param_dict[p] = f'{pkg}::LlcRWidth'
+        elif p in ['AsyncAxiInAwWidth', 'AxiSlvAwWidth', 'AsyncAxiOutAwWidth', 'AxiMstAwWidth']:
+            if 'llc_port' in (c.interfaces or {}): param_dict[p] = f'{pkg}::LlcAwWidth'
+            else: param_dict[p] = 'NoCAxiAwWidth'
+        elif p in ['AsyncAxiInWWidth', 'AxiSlvWWidth', 'AsyncAxiOutWWidth', 'AxiMstWWidth']:
+            if 'llc_port' in (c.interfaces or {}): param_dict[p] = f'{pkg}::LlcWWidth'
+            else: param_dict[p] = 'NoCAxiWWidth'
+        elif p in ['AsyncAxiInBWidth', 'AxiSlvBWidth', 'AsyncAxiOutBWidth', 'AxiMstBWidth']:
+            if 'llc_port' in (c.interfaces or {}): param_dict[p] = f'{pkg}::LlcBWidth'
+            else: param_dict[p] = 'NoCAxiBWidth'
+        elif p in ['AsyncAxiInArWidth', 'AxiSlvArWidth', 'AsyncAxiOutArWidth', 'AxiMstArWidth']:
+            if 'llc_port' in (c.interfaces or {}): param_dict[p] = f'{pkg}::LlcArWidth'
+            else: param_dict[p] = 'NoCAxiArWidth'
+        elif p in ['AsyncAxiInRWidth', 'AxiSlvRWidth', 'AsyncAxiOutRWidth', 'AxiMstRWidth']:
+            if 'llc_port' in (c.interfaces or {}): param_dict[p] = f'{pkg}::LlcRWidth'
+            else: param_dict[p] = 'NoCAxiRWidth'
+            
+        elif p in ['AsyncAxiOutAwWidth', 'AxiMstAwWidth']: param_dict[p] = f'{pkg}::NoCAxiAwWidth'
+        elif p in ['AsyncAxiOutWWidth', 'AxiMstWWidth']: param_dict[p] = f'{pkg}::NoCAxiWWidth'
+        elif p in ['AsyncAxiOutBWidth', 'AxiMstBWidth']: param_dict[p] = f'{pkg}::NoCAxiBWidth'
+        elif p in ['AsyncAxiOutArWidth', 'AxiMstArWidth']: param_dict[p] = f'{pkg}::NoCAxiArWidth'
+        elif p in ['AsyncAxiOutRWidth', 'AxiMstRWidth']: param_dict[p] = f'{pkg}::NoCAxiRWidth'
+            
+        elif p == 'RouteCfg':
+            param_dict[p] = f"{npkg}::RouteCfg"
+            
+    # 2. Custom parameters from YAML (override standard ones if specified)
     if c.parameters:
-        c_info = comp_info.get(c.name, {})
-        supported_params = c_info.get("supported_params", {})
-        for k, v in c.parameters.items():
-            if k in supported_params:
-                val = "1'b1" if v is True else "1'b0" if v is False else str(v)
-                param_conns.append(f".{k:<17} ( {val} )")
-  %>
+        for p_k, p_v in c.parameters.items():
+            if isinstance(p_v, bool):
+                param_dict[p_k] = "1'b1" if p_v else "1'b0"
+            else:
+                param_dict[p_k] = p_v
+        
+    param_conns = [f".{k:<17} ( {v} )" for k, v in param_dict.items()]
+    %>
   // --- ${c.name.upper()} @ (${x}, ${y}) ---
   ${module_type} \
 % if param_conns:

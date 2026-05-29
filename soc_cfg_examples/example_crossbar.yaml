@@ -316,7 +316,12 @@ components:
             [1] : mailbox.snd_irq_o[3] | mailbox.snd_irq_o[1],
             [0] : mailbox.snd_irq_o[2] | mailbox.snd_irq_o[0]
           }
-      mtip_i: { source: "manager.mtip_ext_o", cdc: false }
+      mtip_i:
+        cdc: false
+        source: >
+          {
+            [7:0] : {8{manager.mtip_ext_o}}
+          }
       meip_i: { source: "none" } # 'none' explicitly ties the interrupt input to 0
 
   - name: "mailbox"

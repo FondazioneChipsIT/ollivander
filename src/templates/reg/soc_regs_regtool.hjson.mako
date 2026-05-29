@@ -259,22 +259,22 @@ ${license()}\
     // Independent clock dividers dedicated to specific interfaces that require 
     // highly constrained frequencies (like RGMII for Ethernet or HyperBus PHYs).
 % for c in dedicated_clk_comps:
-    { name: "${fmt_comp(c['dedicated_clock_div']['name'])}_DIV_EN",
+    { name: "${fmt_dom(c['dedicated_clock_div']['name'])}_CLK_EN",
       desc: "${c['name']} dedicated clock divider enable bit",
       swaccess: "rw",
       hwaccess: "hro",
       resval: "1",
-      hwqe: "1",
+      hwqe: "0",
       fields: [ { bits: "0:0" } ],
     }
 
-    { name: "${fmt_comp(c['dedicated_clock_div']['name'])}_DIV_VALUE",
+    { name: "${fmt_dom(c['dedicated_clock_div']['name'])}_CLK_DIV_VALUE",
       desc: "${c['name']} dedicated clock divider value",
       swaccess: "rw",
       hwaccess: "hro",
       resval: "${c['dedicated_clock_div'].get('default_div', 1)}",
       hwqe: "1",
-      fields: [ { bits: "19:0" } ],
+      fields: [ { bits: "23:0" } ],
     }
 % endfor
 
@@ -327,9 +327,11 @@ ${license()}\
  % for group in sys_ctrl['auto_control_groups']:
   <%
     target_type = group.get('target_component_type')
+    target_tile_type = target_type.replace('_subtile', '_tile').replace('_isle', '_tile') if target_type else None
     count = 0
     for c in components:
-        if c.get('type') == target_type:
+        orig_type = original_isle_types.get(c.get('name'), c.get('type'))
+        if c.get('type') == target_type or c.get('type') == target_tile_type or orig_type == target_type:
             p = c.get('placement')
             if not p or 'logical' not in p:
                 count += 1

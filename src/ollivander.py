@@ -619,7 +619,7 @@ def main():
                     sys.exit(1)
                 
                 isle_type = c.type
-                tile_type = c.type.replace('_isle', '_tile').replace('_subtile', '_tile')
+                tile_type = f"{c.name}_tile"
                 print(f"  [INFO] Auto-converting Isle '{c.type}' -> Tile '{tile_type}'")
                 
                 # Stage the underlying Isle to the output directory with namespace substitution
@@ -630,6 +630,17 @@ def main():
                 try:
                     content = existing_isle.read_text(encoding='utf-8')
                     required_local_files.update(req_pattern.findall(content))
+                    
+                    for match in dep_pattern.finditer(content):
+                        dep_name = match.group(1)
+                        project_dependencies.setdefault(dep_name, {})
+                        if match.group(2): 
+                            project_dependencies[dep_name]['git'] = match.group(2)
+                        if match.group(3): 
+                            project_dependencies[dep_name]['rev'] = match.group(3)
+                        if match.group(4): 
+                            project_dependencies[dep_name]['version'] = match.group(4)
+                    
                     content = re.sub(r'\bollivander_soc_pkg\b', f'{soc_config.project.name}_soc_pkg', content)
                     content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{soc_config.project.name}_noc_pkg', content)
                     content = re.sub(rf'\bmodule\s+{isle_type}\b', f'module {soc_config.project.name}_{isle_type}', content)
@@ -652,6 +663,17 @@ def main():
                     required_local_files.update(req_pattern.findall(rendered_code))
                     if out_file.suffix == '.sv':
                         rendered_code = auto_import_sv_packages(rendered_code)
+                        
+                    if "reg2hw_t" in rendered_code and f"import {soc_config.project.name}_reg_pkg::*;" not in rendered_code:
+                        rendered_code = re.sub(rf'import {soc_config.project.name}_soc_pkg::\*;', 
+                                               rf'import {soc_config.project.name}_soc_pkg::*;\n  import {soc_config.project.name}_reg_pkg::*;', 
+                                               rendered_code)
+                    rendered_code = re.sub(rf'(?<!::)\b{soc_config.project.name}_reg2hw_t\b', f'{soc_config.project.name}_reg_pkg::{soc_config.project.name}_reg2hw_t', rendered_code)
+                    rendered_code = re.sub(rf'(?<!::)\b{soc_config.project.name}_hw2reg_t\b', f'{soc_config.project.name}_reg_pkg::{soc_config.project.name}_hw2reg_t', rendered_code)
+                    rendered_code = re.sub(r'\bfloo_[a-zA-Z0-9_]+_noc_pkg::noc_axi_req_t\b', f'{soc_config.project.name}_soc_pkg::soc_axi_req_t', rendered_code)
+                    rendered_code = re.sub(r'\bfloo_[a-zA-Z0-9_]+_noc_pkg::noc_axi_rsp_t\b', f'{soc_config.project.name}_soc_pkg::soc_axi_resp_t', rendered_code)
+                    rendered_code = re.sub(r'\bfloo_[a-zA-Z0-9_]+_noc_pkg::noc_axi_([a-z]+)_chan_t\b', rf'{soc_config.project.name}_soc_pkg::soc_axi_\1_chan_t', rendered_code)
+                                               
                     rendered_code = rendered_code.replace('\r\n', '\n')
                     write_if_changed(out_file, rendered_code)
                 except Exception as e:
@@ -800,6 +822,12 @@ def main():
     # Build the massive dictionary that maps every component port to a Top-Level wire
     wiring_matrix = build_connection_matrix(soc_config, comp_info)
 
+    # Extract all compilation macros requested by the components
+    global_defines = set()
+    for c in [soc_config.host] + (soc_config.components if soc_config.components else []):
+        if getattr(c, 'defines', None):
+            global_defines.update(c.defines)
+
     # =========================================================================
     # 9. MAKO TEMPLATE RENDERING
     # =========================================================================
@@ -812,6 +840,8 @@ def main():
         "domains": [d.model_dump(exclude_none=True) for d in soc_config.clock_tree.domains],
         "components": [c.model_dump(exclude_none=True) for c in soc_config.components] if soc_config.components else [],
         "comp_info": comp_info,
+        "global_defines": sorted(list(global_defines)),
+        "original_isle_types": original_isle_types,
         "fmt_dom": fmt_dom,
         "fmt_reg": fmt_reg,
         "fmt_rst": fmt_rst,
@@ -872,6 +902,13 @@ def main():
 
             if out_file.name.endswith('.sv'):
                 rendered_code = auto_import_sv_packages(rendered_code)
+                
+            if "reg2hw_t" in rendered_code and f"import {soc_config.project.name}_reg_pkg::*;" not in rendered_code:
+                rendered_code = re.sub(rf'import {soc_config.project.name}_soc_pkg::\*;', 
+                                       rf'import {soc_config.project.name}_soc_pkg::*;\n  import {soc_config.project.name}_reg_pkg::*;', 
+                                       rendered_code)
+            rendered_code = re.sub(rf'(?<!::)\b{soc_config.project.name}_reg2hw_t\b', f'{soc_config.project.name}_reg_pkg::{soc_config.project.name}_reg2hw_t', rendered_code)
+            rendered_code = re.sub(rf'(?<!::)\b{soc_config.project.name}_hw2reg_t\b', f'{soc_config.project.name}_reg_pkg::{soc_config.project.name}_hw2reg_t', rendered_code)
 
             # EXTRACT DYNAMIC PRAGMAS FROM RENDERED CODE
             required_local_files.update(req_pattern.findall(rendered_code))
@@ -966,6 +1003,18 @@ def main():
             template = Template(filename=str(bender_path), lookup=template_lookup)
             rendered_code = template.render(**template_kwargs)
             rendered_code = rendered_code.replace('\r\n', '\n')
+            rendered_code = re.sub(r',\s*rev:\s*"None"', '', rendered_code, flags=re.IGNORECASE)
+            rendered_code = re.sub(r',\s*version:\s*"None"', '', rendered_code, flags=re.IGNORECASE)
+            
+            # Ensure floo_noc_pkg is compiled before soc_pkg
+            soc_pkg_pattern = r'(\n\s*-\s*[^\n]*_soc_pkg\.sv)'
+            noc_pkg_pattern = r'(\n\s*-\s*[^\n]*_noc_pkg\.sv)'
+            noc_match = re.search(noc_pkg_pattern, rendered_code)
+            if noc_match:
+                noc_line = noc_match.group(1)
+                rendered_code = rendered_code.replace(noc_line, '')
+                rendered_code = re.sub(soc_pkg_pattern, lambda m: noc_line + m.group(1), rendered_code)
+                
             out_file = bender_manifest_path
             write_if_changed(out_file, rendered_code)
         except Exception as e:

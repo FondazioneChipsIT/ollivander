@@ -10,4 +10,4 @@ update-hw: $(LOCKFILE)
 
 $(LOCKFILE):
 	@echo "\n[MAKE] Resolving and downloading hardware dependencies via Bender..."
-	bender update
+	$(BENDER) update

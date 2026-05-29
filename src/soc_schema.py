@@ -87,15 +87,15 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     # 
     # Why? Separating them prevents false positives where an internal module instance
     # deep inside the file might have a parameter matching our search pattern.
-    module_decl_match = re.search(r'module\s+\w+\s*(#\s*\(([\s\S]*?)\))?\s*(\([\s\S]*?\))\s*;', content, re.MULTILINE)
+    module_decl_match = re.search(r'module\s+\w+\s*(?:import\s+[^;]+;\s*)*(?:#\s*\(([\s\S]*?)\))?\s*(\([\s\S]*?\))\s*;', content, re.MULTILINE)
     
     param_content = ""
     port_content = ""
 
     if module_decl_match:
-        # group(2) is the content inside #(), group(3) is the content inside ()
-        param_content = module_decl_match.group(2) or ""
-        port_content = module_decl_match.group(3) or ""
+        # group(1) is the content inside #(), group(2) is the content inside ()
+        param_content = module_decl_match.group(1) or ""
+        port_content = module_decl_match.group(2) or ""
     else:
         # Fallback for modules with unusual formatting. This is less safe.
         module_header_match = re.search(r'\bmodule\s+\w+[\s\S]*?\)\s*;', content)
@@ -350,6 +350,7 @@ class Component(BaseModel):
     parameters: Optional[Dict[str, Any]] = None    # Hardware parameters mapped to SystemVerilog
     system_config: Optional[Dict[str, Any]] = None # Isolation, Boot Address, etc.
     features: Optional[Dict[str, Any]] = None      # Custom boolean flags
+    defines: Optional[List[str]] = None            # Compilation macros (+define+) required by the IP
     interrupts: Optional[Dict[str, Any]] = None    # IRQ routing mapping
     dedicated_clock_div: Optional[Dict[str, Any]] = None # Specific clock divider (e.g., Ethernet)
     components: Optional[List['Component']] = None # For APB Subsystems

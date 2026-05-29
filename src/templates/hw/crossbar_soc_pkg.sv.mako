@@ -137,9 +137,11 @@ package ${pkg};
   typedef logic [AxiUserWidth-1:0]   soc_axi_user_t;
   typedef logic [AxiIdWidth-1:0]     soc_axi_mst_id_t;
   typedef logic [ExtSlvIdWidth-1:0]  soc_axi_slv_id_t;
+  typedef logic [LlcIdWidth-1:0]     soc_axi_llc_id_t;
 
   `AXI_TYPEDEF_ALL(soc_axi, soc_axi_addr_t, soc_axi_mst_id_t, soc_axi_data_t, soc_axi_strb_t, soc_axi_user_t)
   `AXI_TYPEDEF_ALL(soc_axi_slv, soc_axi_addr_t, soc_axi_slv_id_t, soc_axi_data_t, soc_axi_strb_t, soc_axi_user_t)
+  `AXI_TYPEDEF_ALL(soc_axi_llc, soc_axi_addr_t, soc_axi_llc_id_t, soc_axi_data_t, soc_axi_strb_t, soc_axi_user_t)
 
   // =========================================================================
   // 1b. SYSTEM MICROARCHITECTURE PARAMETERS

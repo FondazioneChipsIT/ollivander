@@ -19,7 +19,7 @@ module safety_island_isle
   localparam int unsigned AxiOutIdWidth      = 2,
   localparam int unsigned LogDepth           = 3,
   localparam int unsigned NumInterrupts      = 128,
-  localparam int unsigned NumDebug           = 64,
+  localparam int unsigned NumDebug           = 96,
   // Async AXI IN (Slave Port)
   localparam int unsigned AsyncAxiInAwWidth  = (2**LogDepth)*axi_pkg::aw_width(AxiAddrWidth, AxiInIdWidth, AxiUserWidth),
   localparam int unsigned AsyncAxiInWWidth   = (2**LogDepth)*axi_pkg::w_width(AxiDataWidth, AxiUserWidth),

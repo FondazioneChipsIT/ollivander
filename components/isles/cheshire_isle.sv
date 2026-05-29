@@ -8,6 +8,7 @@
 // BENDER: name="cheshire"
 // BENDER: name="axi"
 // BENDER: name="register_interface"
+// BENDER: name="apb"
 
 `include "cheshire/typedef.svh"
 `include "axi/typedef.svh"
@@ -76,6 +77,9 @@ module cheshire_isle
   parameter bit          Vga                = 0,
   parameter bit          Snooper            = 1,
   parameter bit          IrqRouter          = 1,
+  parameter int unsigned SpihNumCs          = 1,
+  parameter int unsigned SlinkNumChan       = 1,
+  parameter int unsigned SlinkNumLanes      = 4,
   parameter bit          LlcNotBypass       = 1,
   parameter int unsigned LlcSetAssoc        = 8,
   parameter int unsigned LlcNumLines        = 256,
@@ -218,9 +222,18 @@ module cheshire_isle
   output logic [SlinkNumChan-1:0][SlinkNumLanes-1:0] slink_o,
   output logic                         vga_hsync_o,
   output logic                         vga_vsync_o,
-  output logic [2:0]                   vga_red_o,
-  output logic [2:0]                   vga_green_o,
-  output logic [1:0]                   vga_blue_o
+  output logic [1:0]                   vga_red_o,
+  output logic [1:0]                   vga_green_o,
+  output logic [1:0]                   vga_blue_o ,
+  // USB interface
+  input  logic                         usb_clk_i  ,
+  input  logic                         usb_rst_ni ,
+  input  logic [UsbNumPorts-1:0]       usb_dm_i   ,
+  output logic [UsbNumPorts-1:0]       usb_dm_o   ,
+  output logic [UsbNumPorts-1:0]       usb_dm_oe_o,
+  input  logic [UsbNumPorts-1:0]       usb_dp_i   ,
+  output logic [UsbNumPorts-1:0]       usb_dp_o   ,
+  output logic [UsbNumPorts-1:0]       usb_dp_oe_o
 );
 
   // =================================================================================
@@ -254,9 +267,6 @@ module cheshire_isle
     cfg.SpiHost           = SpiHost;
     cfg.Dma               = Dma;
     cfg.SerialLink        = SerialLink;
-    cfg.Vga               = Vga;
-    cfg.Snooper           = Snooper;
-    cfg.IrqRouter         = IrqRouter;
 
     // Auto-calculated Topology Parameters & Arrays (Derived from YAML 'components')
     cfg.AxiExtNumSlv      = AxiNumSlvAsync + AxiNumSlvSync;
@@ -449,7 +459,16 @@ module cheshire_isle
     .vga_vsync_o,
     .vga_red_o  ,
     .vga_green_o,
-    .vga_blue_o
+    .vga_blue_o ,
+    // USB interface
+    .usb_clk_i  ,
+    .usb_rst_ni ,
+    .usb_dm_i   ,
+    .usb_dm_o   ,
+    .usb_dm_oe_o,
+    .usb_dp_i   ,
+    .usb_dp_o   ,
+    .usb_dp_oe_o
   );
 
   assign intr_ext_o = chs_intr_ext_o[0];

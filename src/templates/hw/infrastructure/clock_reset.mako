@@ -46,6 +46,7 @@
   
   ${require_file("lossy_valid_to_stream.sv")}
   lossy_valid_to_stream #(
+    .DATA_WIDTH(DomainClkDivValueWidth),
     .T(logic [DomainClkDivValueWidth-1:0])
   ) i_${dom.name}_decouple (
     .clk_i   ( ${host_clk} ),
@@ -148,4 +149,71 @@
     .inits_no       ( )
   );
 % endif
+
+  // =========================================================================
+  // DEDICATED CLOCK DIVIDERS
+  // =========================================================================
+<%
+  dedicated_divs = []
+  for c in [config.host] + (config.components if config.components else []):
+      if c.dedicated_clock_div:
+          dedicated_divs.append((c, c.dedicated_clock_div))
+%>
+% for comp, div_cfg in dedicated_divs:
+  <%
+    div_clk = div_cfg['name']
+    src_clk = comp.clock_domain or host_clk
+    c_rst = comp.reset_domain or src_clk.replace('_clk', '_rst')
+    src_rst = 'host_pwr_on_rst_n' if c_rst == host_clk.replace('_clk', '_rst') else f"pwr_on_rsts_n[DomainIdx_{fmt_rst(c_rst)}]"
+  %>
+  // --- Dedicated Divider: ${div_clk} for ${comp.name} ---
+  logic ${div_clk};
+  logic [DomainClkDivValueWidth-1:0] ${div_clk}_div_value, ${div_clk}_div_synced;
+  logic ${div_clk}_div_valid, ${div_clk}_div_ready, ${div_clk}_div_valid_synced, ${div_clk}_div_ready_synced;
+  
+  lossy_valid_to_stream #(
+    .DATA_WIDTH(DomainClkDivValueWidth),
+    .T(logic [DomainClkDivValueWidth-1:0])
+  ) i_${div_clk}_decouple (
+    .clk_i   ( ${host_clk} ),
+    .rst_ni  ( host_pwr_on_rst_n ),
+    .valid_i ( sys_regs_reg2hw.${fmt_reg(div_clk)}_clk_div_value.qe ),
+    .data_i  ( sys_regs_reg2hw.${fmt_reg(div_clk)}_clk_div_value.q ),
+    .valid_o ( ${div_clk}_div_valid ),
+    .ready_i ( ${div_clk}_div_ready ),
+    .data_o  ( ${div_clk}_div_value ),
+    .busy_o  ( )
+  );
+
+  cdc_4phase #(
+    .T(logic [DomainClkDivValueWidth-1:0])
+  ) i_${div_clk}_cdc (
+    .src_rst_ni  ( host_pwr_on_rst_n ),
+    .src_clk_i   ( ${host_clk} ),
+    .src_data_i  ( ${div_clk}_div_value ),
+    .src_valid_i ( ${div_clk}_div_valid ),
+    .src_ready_o ( ${div_clk}_div_ready ),
+    .dst_rst_ni  ( ${src_rst} ),
+    .dst_clk_i   ( ${src_clk} ),
+    .dst_data_o  ( ${div_clk}_div_synced ),
+    .dst_valid_o ( ${div_clk}_div_valid_synced ),
+    .dst_ready_i ( ${div_clk}_div_ready_synced )
+  );
+
+  clk_int_div #(
+    .DIV_VALUE_WIDTH(DomainClkDivValueWidth),
+    .DEFAULT_DIV_VALUE(${div_cfg.get('default_div', 1)}),
+    .ENABLE_CLOCK_IN_RESET(1)
+  ) i_${div_clk}_div (
+    .clk_i          ( ${src_clk} ),
+    .rst_ni         ( ${src_rst} ),
+    .en_i           ( sys_regs_reg2hw.${fmt_reg(div_clk)}_clk_en.q ),
+    .test_mode_en_i ( test_mode_i ),
+    .div_i          ( ${div_clk}_div_synced ),
+    .div_valid_i    ( ${div_clk}_div_valid_synced ),
+    .div_ready_o    ( ${div_clk}_div_ready_synced ),
+    .clk_o          ( ${div_clk} ),
+    .cycl_count_o   ( )
+  );
+% endfor
 </%def>

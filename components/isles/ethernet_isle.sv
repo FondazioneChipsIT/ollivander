@@ -103,7 +103,9 @@ module ethernet_isle #(
   input  logic                    reg_async_slv_ack_i,
   output reg_rsp_t                reg_async_slv_data_o,
   // irq cdc
-  output logic                    eth_rx_irq_o
+  output logic                    eth_rx_irq_o,
+  output idma_pkg::idma_busy_t    idma_busy_o,
+  input  logic                    eth_clk200_i
 );
 
   localparam bit CombinedShifter              = 1'b1;
@@ -251,7 +253,9 @@ module ethernet_isle #(
     .testmode_i          ( test_mode_i         ),
     .axi_req_o           ( axi_out_isolate_req  ),
     .axi_rsp_i           ( axi_out_isolate_resp ),
-    .eth_rx_irq_o        ( eth_rx_irq           )
+    .eth_rx_irq_o        ( eth_rx_irq           ),
+    .idma_busy_o         ( idma_busy_o          ),
+    .eth_clk200_i        ( eth_clk200_i         )
   );
 
 endmodule: ethernet_isle
