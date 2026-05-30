@@ -112,6 +112,7 @@ for path in sv_files:
         clean_content = re.sub(r'//.*', '', content)
         clean_content = re.sub(r'/\*.*?\*/', '', clean_content, flags=re.DOTALL)
     except: continue
+    
     for t in list(targets):
         sig = extract_module(clean_content, t)
         if sig:
@@ -127,13 +128,15 @@ for path in sv_files:
                 imports = chr(10).join(sorted(list(wildcard_imports)))
                 stubs_out.append(imports + chr(10) + sig + chr(10) + "endmodule")
             targets.remove(t)
+            
     if not targets: break
 
-with open('${rel_outdir_path}/hw/${config.project.name}_stubs.sv', 'w') as f:
+os.makedirs('${rel_outdir_path}/.stubs', exist_ok=True)
+with open('${rel_outdir_path}/.stubs/${config.project.name}_stubs.sv', 'w') as f:
     f.write("// AUTO-GENERATED STUBS FOR FAST-CHECK" + chr(10) + chr(10))
     f.write((chr(10) + chr(10)).join(stubs_out))
 
-with open('${rel_outdir_path}/hw/snitch_cluster_pkg_stub.sv', 'w') as f:
+with open('${rel_outdir_path}/.stubs/snitch_cluster_pkg_stub.sv', 'w') as f:
     f.write("// AUTO-GENERATED STUB FOR FAST-CHECK\n")
     stub_content = (
         "package snitch_cluster_pkg;\n"
@@ -174,7 +177,7 @@ with open('${rel_outdir_path}/hw/snitch_cluster_pkg_stub.sv', 'w') as f:
     )
     f.write(stub_content)
 
-with open('${rel_outdir_path}/hw/hardcoded_stubs.sv', 'w') as f:
+with open('${rel_outdir_path}/.stubs/hardcoded_stubs.sv', 'w') as f:
     f.write("// AUTO-GENERATED HARDCODED STUBS FOR DEEP INTERNALS\n\n")
     f.write("module axi_to_obi #(parameter int ObiCfg=0, parameter type obi_req_t=logic, parameter type obi_rsp_t=logic, parameter type obi_a_chan_t=logic, parameter type obi_r_chan_t=logic, parameter int AxiAddrWidth=0, parameter int AxiDataWidth=0, parameter int AxiIdWidth=0, parameter int AxiUserWidth=0, parameter int MaxTrans=0, parameter type axi_req_t=logic, parameter type axi_rsp_t=logic)(); endmodule\n\n")
     f.write("module snitch_cluster_wrapper(); endmodule\n\n")
@@ -188,7 +191,7 @@ fast_tcl = [
     'onerror {quit -code 1}',
     'if {[file exists work]} { file delete -force work }',
     'vlib work',
-    'vlog -suppress 13314 -sv ${rel_outdir_path}/hw/snitch_cluster_pkg_stub.sv'
+    'vlog -suppress 13314 -sv ${rel_outdir_path}/.stubs/snitch_cluster_pkg_stub.sv'
 ]
 
 tcl_code = tcl_code.replace('return 1', 'quit -code 1')
@@ -221,8 +224,8 @@ for line in tcl_code.split('\n'):
             fast_line = fast_line.replace('vlog ', 'vlog -suppress 13314 ')
             fast_tcl.append(fast_line)
     else: fast_tcl.append(line)
-fast_tcl.append('vlog -suppress 13314 -sv ${rel_outdir_path}/hw/${config.project.name}_stubs.sv')
-fast_tcl.append('vlog -suppress 13314 -sv ${rel_outdir_path}/hw/hardcoded_stubs.sv')
+fast_tcl.append('vlog -suppress 13314 -sv ${rel_outdir_path}/.stubs/${config.project.name}_stubs.sv')
+fast_tcl.append('vlog -suppress 13314 -sv ${rel_outdir_path}/.stubs/hardcoded_stubs.sv')
 open('${rel_outdir_path}/compile_vsim_fast.tcl', 'w').write('\n'.join(fast_tcl))
 endef
 export GEN_STUBS_SCRIPT

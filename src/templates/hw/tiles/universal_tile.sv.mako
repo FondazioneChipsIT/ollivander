@@ -60,59 +60,42 @@
   
   if isle_info:
       isle_params.update(isle_info.get('supported_params', {}))
-      header = isle_info.get('header_content', '')
       
-      # Safely extract standard Verilog ports
-      # We capture everything from input/output/inout up to the next comma or semicolon.
-      port_matches = re.finditer(r'\b(input|output|inout)\b\s+([^,;]+)', header)
-      
-      for m in port_matches:
-          p_dir = m.group(1)
-          # Strip inline comments to avoid matching words inside them
-          decl = re.sub(r'//.*', '', m.group(2)).strip()
-          decl = re.sub(r'/\*.*?\*/', '', decl, flags=re.DOTALL).strip()
+      for p_port_name, p_data in isle_info.get("ports", {}).items():
+          if p_port_name in known_ports: continue
+          p_dir = p_data["dir"]
+          p_type_dim = p_data["type_dim"]
+          p_unpacked_dim = p_data["unpacked"]
+              
+          known_ports.add(p_port_name)
+              
+          if p_port_name == 'axi_req_o':
+              axi_req_o_dim = p_type_dim
+          elif p_port_name == 'axi_req_i':
+              axi_req_i_dim = p_type_dim
           
-          # Remove default assignments and the final module closing parenthesis
-          decl = decl.split('=')[0].strip()
-          decl = re.sub(r'\)\s*$', '', decl).strip()
+          # Skip standard infra ports explicitly declared by the Tile wrapper
+          if p_port_name in ['clk_i', 'rst_ni', 'test_mode_i', 'id_i']: continue
           
-          # The port name is the last identifier before any unpacked dimensions at the end
-          name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-          if name_match:
-              p_port_name = name_match.group(1)
-              if p_port_name in known_ports: continue
-              p_unpacked_dim = name_match.group(2).strip()
-              p_type_dim = decl[:name_match.start()].strip()
-              
-              known_ports.add(p_port_name)
-              
-              if p_port_name == 'axi_req_o':
-                  axi_req_o_dim = p_type_dim
-              elif p_port_name == 'axi_req_i':
-                  axi_req_i_dim = p_type_dim
-              
-              # Skip standard infra ports explicitly declared by the Tile wrapper
-              if p_port_name in ['clk_i', 'rst_ni', 'test_mode_i', 'id_i']: continue
-              
-              if any(p_port_name.startswith(pfx) for pfx in error_slave_prefixes):
-                  error_slave_ports.append({'dir': p_dir, 'type': p_type_dim, 'name': p_port_name, 'unpacked': p_unpacked_dim})
-                  continue
+          if any(p_port_name.startswith(pfx) for pfx in error_slave_prefixes):
+              error_slave_ports.append({'dir': p_dir, 'type': p_type_dim, 'name': p_port_name, 'unpacked': p_unpacked_dim})
+              continue
 
-              # Handle explicit port terminations defined in YAML
-              if any(p_port_name.startswith(pfx) for pfx in terminate_prefixes):
-                  terminated_ports.append({'dir': p_dir, 'name': p_port_name})
-                  continue
-                  
-              # Core NoC AXI ports are handled internally by the Tile via Chimney/Join
-              if p_port_name in [
-                  'axi_req_o', 'axi_resp_i', 'axi_req_i', 'axi_resp_o',
-                  'axi_narrow_req_o', 'axi_narrow_resp_i', 'axi_narrow_req_i', 'axi_narrow_resp_o',
-                  'axi_wide_req_o', 'axi_wide_resp_i', 'axi_wide_req_i', 'axi_wide_resp_o'
-              ]: continue
+          # Handle explicit port terminations defined in YAML
+          if any(p_port_name.startswith(pfx) for pfx in terminate_prefixes):
+              terminated_ports.append({'dir': p_dir, 'name': p_port_name})
+              continue
               
-              if p_port_name in ['offload_wide_req_i', 'offload_wide_rsp_o', 'offload_narrow_req_i', 'offload_narrow_rsp_o']: continue
-              
-              isle_ports.append({'dir': p_dir, 'type': p_type_dim, 'name': p_port_name, 'unpacked': p_unpacked_dim})
+          # Core NoC AXI ports are handled internally by the Tile via Chimney/Join
+          if p_port_name in [
+              'axi_req_o', 'axi_resp_i', 'axi_req_i', 'axi_resp_o',
+              'axi_narrow_req_o', 'axi_narrow_resp_i', 'axi_narrow_req_i', 'axi_narrow_resp_o',
+              'axi_wide_req_o', 'axi_wide_resp_i', 'axi_wide_req_i', 'axi_wide_resp_o'
+          ]: continue
+          
+          if p_port_name in ['offload_wide_req_i', 'offload_wide_rsp_o', 'offload_narrow_req_i', 'offload_narrow_rsp_o']: continue
+          
+          isle_ports.append({'dir': p_dir, 'type': p_type_dim, 'name': p_port_name, 'unpacked': p_unpacked_dim})
   
   valid_user_params = {k: v for k, v in (comp.parameters or {}).items() if k in isle_params}
   all_params = {**isle_params, **valid_user_params}
@@ -196,8 +179,7 @@ module ${p_name}_${c_type}
   import ${p_name}_reg_pkg::*;
 <%
   # Auto-inject imports from the underlying IP header
-  imports = re.findall(r'\bimport\s+([a-zA-Z_][a-zA-Z0-9_]*)::\*;', header)
-  isle_imports = set(imp for imp in imports if imp not in ["floo_pkg", f"floo_{p_name}_noc_pkg"])
+  isle_imports = set(imp for imp in isle_info.get("imports", []) if imp not in ["floo_pkg", f"floo_{p_name}_noc_pkg"])
 %>\
 % for imp in sorted(isle_imports):
   import ${imp}::*;

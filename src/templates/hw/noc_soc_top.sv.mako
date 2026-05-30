@@ -63,8 +63,7 @@ module ${p_name}
   # Auto-inject imports from component headers to resolve exported constants and types
   all_imports = set()
   for c in [config.host] + config.components:
-      h_header = comp_info.get(c.name, {}).get("header_content", "")
-      imports = re.findall(r'\bimport\s+([a-zA-Z_][a-zA-Z0-9_]*)::\*;', h_header)
+      imports = comp_info.get(c.name, {}).get("imports", [])
       for imp in imports:
           if imp not in [pkg, rpkg, "floo_pkg", npkg]:
               all_imports.add(imp)
@@ -134,44 +133,37 @@ module ${p_name}
           for k, v in comp.parameters.items():
               known_params[k] = "1" if v is True else "0" if v is False else str(v)
               
-      c_header_clean = re.sub(r'//.*', '', c_header)
-      c_header_clean = re.sub(r'/\*.*?\*/', '', c_header_clean, flags=re.DOTALL)
-      port_matches = re.finditer(r'\b(input|output|inout)\b([\s\S]*?)(?=\b(?:input|output|inout)\b|\)\s*(?:;|$))', c_header_clean)
-      for m in port_matches:
-          p_dir = m.group(1)
-          decl = m.group(2).strip().split('=')[0].strip()
-          decl = re.sub(r'[,;]\s*$', '', decl).strip()
-          
-          name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-          if name_match:
-              port_name = name_match.group(1)
-              if port_name in exported_seen: continue
+      for port_name, p_info in comp_info.get(comp.name, {}).get("ports", {}).items():
+          if port_name in exported_seen: continue
+          if any(port_name.startswith(prefix) for prefix in prefixes_to_export):
               exported_seen.add(port_name)
-              if any(port_name.startswith(prefix) for prefix in prefixes_to_export):
-                  # Evaluate parameters in the port declaration
-                  for param_name, param_val in known_params.items():
-                      decl = re.sub(rf'\b{param_name}\b', param_val, decl)
-                  
-                  name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-                  
-                  is_host = (comp.name == config.host.name)
-                  for inst_idx in range(num_instances):
-                      if is_host:
-                          top_port_name = port_name
+              decl = p_info["decl"]
+              p_dir = p_info["dir"]
+              
+              # Evaluate parameters in the port declaration
+              for param_name, param_val in known_params.items():
+                  decl = re.sub(rf'\b{param_name}\b', param_val, decl)
+              
+              name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
+              
+              is_host = (comp.name == config.host.name)
+              for inst_idx in range(num_instances):
+                  if is_host:
+                      top_port_name = port_name
+                  else:
+                      if num_instances > 1:
+                          cx, cy = inst_coords.get(inst_idx, (0,0))
+                          top_port_name = f"{comp.name}_{cx}_{cy}_{port_name}"
                       else:
-                          if num_instances > 1:
-                              cx, cy = inst_coords.get(inst_idx, (0,0))
-                              top_port_name = f"{comp.name}_{cx}_{cy}_{port_name}"
-                          else:
-                              top_port_name = f"{comp.name}_{port_name}"
-                      
-                      inst_decl = decl[:name_match.start()] + top_port_name + name_match.group(2)
-                      all_extra_ports.append(f"{p_dir} {inst_decl}")
-                      
-                      key = (comp.name, inst_idx)
-                      if key not in comp_extra_conns:
-                          comp_extra_conns[key] = []
-                      comp_extra_conns[key].append(f".{port_name:<17} ( {top_port_name} )")
+                          top_port_name = f"{comp.name}_{port_name}"
+                  
+                  inst_decl = decl[:name_match.start()] + top_port_name + name_match.group(2)
+                  all_extra_ports.append(f"{p_dir} {inst_decl}")
+                  
+                  key = (comp.name, inst_idx)
+                  if key not in comp_extra_conns:
+                      comp_extra_conns[key] = []
+                  comp_extra_conns[key].append(f".{port_name:<17} ( {top_port_name} )")
 
   # Add RegBus ports for external registers
   if config.system_controller and config.system_controller.external_registers:
@@ -424,23 +416,13 @@ ${clock_and_reset_tree(config, p_name)}
         m = re.match(r'^\s*\.\s*([a-zA-Z0-9_]+)\s*\(', p)
         if m: connected_ports.append(m.group(1))
         
-    c_header = comp_info.get(c.name, {}).get("header_content", "")
-    c_header_clean = re.sub(r'//.*', '', c_header)
-    c_header_clean = re.sub(r'/\*.*?\*/', '', c_header_clean, flags=re.DOTALL)
-    port_matches = re.finditer(r'\b(input|output|inout)\b([\s\S]*?)(?=\b(?:input|output|inout)\b|\)\s*(?:;|$))', c_header_clean)
-    for m in port_matches:
-        p_dir = m.group(1)
-        decl = m.group(2).strip().split('=')[0].strip()
-        decl = re.sub(r'[,;]\s*$', '', decl).strip()
-        name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-        if name_match:
-            auto_port_name = name_match.group(1)
-            if auto_port_name not in connected_ports:
-                val = "'0" if p_dir == "input" else ""
-                conns.append(f".{auto_port_name:<17} ( {val} )")
+    c_info = comp_info.get(c.name, {})
+    for port_name, p_info in c_info.get("ports", {}).items():
+        if port_name not in connected_ports:
+            val = "'0" if p_info["dir"] == "input" else ""
+            conns.append(f".{port_name:<17} ( {val} )")
                 
     param_dict = {}
-    c_info = comp_info.get(c.name, {})
     
     # 1. Standard AXI/System parameters
     supported = c_info.get("supported_params", [])

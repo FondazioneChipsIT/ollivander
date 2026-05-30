@@ -17,6 +17,24 @@ VENV_DIR   = .venv
 PYTHON     = $(VENV_DIR)/bin/python
 HOST_PYTHON ?= python3.12
 
+# --- Tools ---
+OS := $(shell uname -s)
+ARCH := $(shell uname -m)
+
+ifeq ($(OS),Linux)
+	ifeq ($(ARCH),x86_64)
+		VERIBLE_PLATFORM = linux-static-x86_64
+	else ifneq (,$(filter $(ARCH),aarch64 arm64))
+		VERIBLE_PLATFORM = linux-static-arm64
+	else
+		$(error Unsupported Linux architecture: $(ARCH))
+	endif
+else ifeq ($(OS),Darwin)
+	VERIBLE_PLATFORM = macOS
+else
+	$(error Unsupported OS: $(OS))
+endif
+
 # --- Default Target ---
 .PHONY: all
 all: generate build-sim run-sim
@@ -31,17 +49,30 @@ setup:
 		echo "  -> 'uv' detected. Fast installation enabled."; \
 		uv venv $(VENV_DIR); \
 		uv pip install -p $(PYTHON) -r $(REQS_FILE); \
-		echo "\n[SUCCESS] Environment created. Activate it with: source $(VENV_DIR)/bin/activate"; \
 	elif $(HOST_PYTHON) -m pip --version >/dev/null 2>&1; then \
 		echo "  -> 'pip' detected. Creating standard venv..."; \
 		$(HOST_PYTHON) -m venv $(VENV_DIR); \
 		$(PYTHON) -m pip install --upgrade pip; \
 		$(PYTHON) -m pip install -r $(REQS_FILE); \
-		echo "\n[SUCCESS] Environment created. Activate it with: source $(VENV_DIR)/bin/activate"; \
 	else \
 		echo "\n[ERROR] Neither 'uv' nor 'pip' is available in your PATH."; \
 		exit 1; \
 	fi
+	@echo "\n[MAKE] Fetching latest Verible release for $(VERIBLE_PLATFORM)..."
+	@URL=$$(curl -s https://api.github.com/repos/chipsalliance/verible/releases/latest | grep browser_download_url | grep $(VERIBLE_PLATFORM) | cut -d '"' -f 4); \
+	if [ -z "$$URL" ]; then \
+		echo "\n[ERROR] Could not find Verible release for $(VERIBLE_PLATFORM)!"; \
+		exit 1; \
+	fi; \
+	echo "  -> Downloading from $$URL..."; \
+	curl -fLsSo verible.tar.gz "$$URL"; \
+	echo "  -> Extracting binaries..."; \
+	mkdir -p $(VENV_DIR)/verible_tmp; \
+	tar -xzf verible.tar.gz --strip-components=1 -C $(VENV_DIR)/verible_tmp; \
+	cp $(VENV_DIR)/verible_tmp/bin/verible-verilog-format $(VENV_DIR)/bin/; \
+	cp $(VENV_DIR)/verible_tmp/bin/verible-verilog-syntax $(VENV_DIR)/bin/; \
+	rm -rf $(VENV_DIR)/verible_tmp verible.tar.gz
+	@echo "\n[SUCCESS] Environment and tools created. Activate it with: source $(VENV_DIR)/bin/activate"
 
 # ==============================================================================
 # 1. HARDWARE GENERATION

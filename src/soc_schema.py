@@ -5,9 +5,60 @@
 # Pydantic Schema Definitions for the Ollivander SoC Generator
 
 import re
+import os
+import sys
+import json
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field, model_validator
+
+def get_verible_ast(filepath: Path) -> Optional[Dict[str, Any]]:
+    verible_exe = shutil.which("verible-verilog-syntax")
+    if not verible_exe:
+        venv_verible = Path(sys.executable).parent / "verible-verilog-syntax"
+        if venv_verible.is_file() and os.access(venv_verible, os.X_OK):
+            verible_exe = str(venv_verible)
+            
+    if not verible_exe:
+        return None
+        
+    try:
+        result = subprocess.run([verible_exe, "--export_json", str(filepath)], capture_output=True, text=True, check=True)
+        json_data = json.loads(result.stdout)
+        # Verible outputs {"/absolute/path": {AST} or null}
+        return json_data.get(str(filepath))
+    except Exception as e:
+        return None
+
+def walk_ast(node, tags):
+    """Recursively yields nodes that match any of the given tags."""
+    if isinstance(node, dict):
+        if node.get("tag") in tags:
+            yield node
+        for child in node.get("children", []):
+            if child:
+                yield from walk_ast(child, tags)
+    elif isinstance(node, list):
+        for item in node:
+            if item:
+                yield from walk_ast(item, tags)
+
+def extract_tokens(node, tag=None):
+    """Extracts tokens (leaves) from an AST node."""
+    if isinstance(node, dict):
+        if "children" not in node:
+            if not tag or node.get("tag") == tag:
+                yield node
+        else:
+            for child in node.get("children", []):
+                if child:
+                    yield from extract_tokens(child, tag)
+    elif isinstance(node, list):
+        for item in node:
+            if item:
+                yield from extract_tokens(item, tag)
 
 def _clean_param_val(val: Any) -> str:
     """Converts a parameter value from YAML or SV into a canonical string form (base-10 integer if possible)."""
@@ -74,6 +125,8 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     except Exception:
         return None
         
+    ast = get_verible_ast(filepath)
+
     info = {
         "supported_params": {},
         "fixed_params": {},
@@ -81,47 +134,71 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
         "required_files": []
     }
     
-    # Extract parameter and port declaration blocks separately to avoid parsing the whole file body.
-    # This regex finds the module declaration and captures the parameter block (group 2)
-    # and the port block (group 3) separately.
-    # 
-    # Why? Separating them prevents false positives where an internal module instance
-    # deep inside the file might have a parameter matching our search pattern.
+    # Unify header extraction since both methods need it (AST needs it for ports)
     module_decl_match = re.search(r'module\s+\w+\s*(?:import\s+[^;]+;\s*)*(?:#\s*\(([\s\S]*?)\))?\s*(\([\s\S]*?\))\s*;', content, re.MULTILINE)
-    
-    param_content = ""
-    port_content = ""
-
     if module_decl_match:
-        # group(1) is the content inside #(), group(2) is the content inside ()
         param_content = module_decl_match.group(1) or ""
-        port_content = module_decl_match.group(2) or ""
+        header_content = module_decl_match.group(2) or ""
     else:
-        # Fallback for modules with unusual formatting. This is less safe.
         module_header_match = re.search(r'\bmodule\s+\w+[\s\S]*?\)\s*;', content)
         if module_header_match:
             param_content = module_header_match.group(0)
-            port_content = module_header_match.group(0)
+            header_content = module_header_match.group(0)
         else:
             param_content = content
-            port_content = content
+            header_content = content
 
-    # Regex to find: [parameter|localparam] [type] [name] = [value]
-    pattern = re.compile(r'\b(parameter|localparam)\b\s+(?:type\s+|[A-Za-z0-9_\[\]\$:]+\s+)*([A-Za-z0-9_]+)\s*=\s*([^,;\n]+)[,;]?')
-    
-    # Search for parameters only within the parameter block #()
-    for match in pattern.finditer(param_content):
-        param_kind = match.group(1).strip()
-        param_name = match.group(2).strip()
-        param_val = match.group(3).strip()
-        
-        clean_val = _clean_param_val(param_val)
-            
-        if param_kind == "parameter":
-            info["supported_params"][param_name] = clean_val
-        elif param_kind == "localparam":
-            info["fixed_params"][param_name] = clean_val
-            
+    ast_found_params = False
+    if ast:
+        # =====================================================================
+        # AST-BASED PARAMETER EXTRACTION
+        # =====================================================================
+        decl_tags = {"kParamDeclaration", "kLocalParamDeclaration", "kParameterPortDeclaration"}
+        assign_tags = {"kVariableDeclarationAssignment", "kTypeAssignment", "kParamAssignment", "kParameterAssignment", "kAssignment"}
+        for decl in walk_ast(ast, decl_tags):
+            is_local = (decl.get("tag") == "kLocalParamDeclaration")
+            for assign in walk_ast(decl, assign_tags):
+                tokens = list(extract_tokens(assign))
+                eq_index = -1
+                for i, t in enumerate(tokens):
+                    if t.get("text") == "=":
+                        eq_index = i
+                        break
+                        
+                if eq_index > 0:
+                    param_name = ""
+                    for i in range(eq_index - 1, -1, -1):
+                        text = tokens[i].get("text", "")
+                        # The first token before '=' that is a valid C identifier
+                        if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', text):
+                            param_name = text
+                            break
+                            
+                    if param_name:
+                        val_tokens = [t.get("text", "") for t in tokens[eq_index + 1:]]
+                        if val_tokens:
+                            param_val = "".join(val_tokens).strip(";")
+                            clean_val = _clean_param_val(param_val)
+                            if is_local:
+                                info["fixed_params"][param_name] = clean_val
+                            else:
+                                info["supported_params"][param_name] = clean_val
+                            ast_found_params = True
+
+    if not ast or not ast_found_params:
+        # =====================================================================
+        # LEGACY REGEX-BASED PARAMETER EXTRACTION (Fallback)
+        # =====================================================================
+        pattern = re.compile(r'\b(parameter|localparam)\b\s+(?:type\s+|[A-Za-z0-9_\[\]\$:]+\s+)*([A-Za-z0-9_]+)\s*=\s*([^,;\n]+)[,;]?')
+        for match in pattern.finditer(param_content):
+            param_kind = match.group(1).strip()
+            param_name = match.group(2).strip()
+            clean_val = _clean_param_val(match.group(3).strip())
+            if param_kind == "parameter":
+                info["supported_params"][param_name] = clean_val
+            elif param_kind == "localparam":
+                info["fixed_params"][param_name] = clean_val
+
     # Extract Bender dependencies from comments
     dep_pattern = re.compile(r'(?://|##)\s*BENDER:\s*name="([^"]+)"(?:.*?git="([^"]+)")?(?:.*?rev="([^"]+)")?(?:.*?version="([^"]+)")?')
     for match in dep_pattern.finditer(content):
@@ -136,36 +213,120 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     for match in req_pattern.finditer(content):
         info["required_files"].append(match.group(1))
 
-    header_content = port_content
+    # Clean comments from header_content for safe regex matching
+    header_clean = re.sub(r'//.*', '', header_content)
+    header_clean = re.sub(r'/\*.*?\*/', '', header_clean, flags=re.DOTALL)
+
+    # =====================================================================
+    # PORT NAMES EXTRACTION (AST + Regex Fallback)
+    # =====================================================================
+    port_names = set()
+    info["ports"] = {}
+    if ast:
+        for port_decl in walk_ast(ast, {"kPortDeclaration", "kPort"}):
+            tokens = list(extract_tokens(port_decl))
             
+            # Dividiamo i token usando le virgole per gestire dichiarazioni multiple (es: input a, b;)
+            sub_decls_tokens = []
+            current_decl = []
+            bracket_level = 0
+            for t in tokens:
+                text = t.get("text", "")
+                if text == ',' and bracket_level == 0:
+                    if current_decl:
+                        sub_decls_tokens.append(current_decl)
+                    current_decl = []
+                else:
+                    current_decl.append(t)
+                    if text in ['[', '(', '{']: bracket_level += 1
+                    elif text in [']', ')', '}']: bracket_level -= 1
+            if current_decl:
+                sub_decls_tokens.append(current_decl)
+
+            for decl_tokens in sub_decls_tokens:
+                # Il nome della porta è l'ultimo SymbolIdentifier prima degli array di dimensione (Unpacked)
+                unpacked_level = 0
+                port_name = ""
+                for t in reversed(decl_tokens):
+                    text = t.get("text", "")
+                    if text == ']': unpacked_level += 1
+                    elif text == '[': unpacked_level -= 1
+                    elif unpacked_level == 0 and t.get("tag") == "SymbolIdentifier":
+                        port_name = text
+                        break
+                if port_name:
+                    port_names.add(port_name)
+
+    # Fallback Regex per recuperare le porte nascoste all'interno di chiamate a Macro (kMacroCall)
+    port_matches = re.finditer(r'\b(input|output|inout)\b([\s\S]*?)(?=\b(?:input|output|inout)\b|\)\s*(?:;|$))', header_clean)
+    for m in port_matches:
+        p_dir = m.group(1)
+        decl = m.group(2).strip().split('=')[0].strip()
+        decl = re.sub(r'[,;]\s*$', '', decl).strip()
+        name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
+        if name_match:
+            p_name = name_match.group(1)
+            port_names.add(p_name)
+            info["ports"][p_name] = {
+                "dir": p_dir,
+                "decl": decl,
+                "type_dim": decl[:name_match.start()].strip(),
+                "unpacked": name_match.group(2).strip()
+            }
+            
+    # Aggiungiamo eventuali porte rilevate solo dall'AST (es. multi-porte o macro opache)
+    for p_name in port_names:
+        if p_name not in info["ports"]:
+            info["ports"][p_name] = {
+                "dir": "inout",
+                "decl": f"logic {p_name}",
+                "type_dim": "logic",
+                "unpacked": ""
+            }
+            
+    # =====================================================================
+    # IMPORTS EXTRACTION (AST + Regex Fallback)
+    # =====================================================================
+    imports = set()
+    if ast:
+        for imp_decl in walk_ast(ast, {"kPackageImportItem"}):
+            ids = list(extract_tokens(imp_decl, "SymbolIdentifier"))
+            if ids:
+                imports.add(ids[0].get("text", ""))
+    else:
+        for m in re.finditer(r'\bimport\s+([a-zA-Z_][a-zA-Z0-9_]*)::\*;', header_clean):
+            imports.add(m.group(1))
+    info["imports"] = list(imports)
+
     # Detect interfaces based on standardized port naming conventions defined 
     # in the Ollivander "Isle Standardization" guidelines.
-    info["has_sync_axi_slave"] = re.search(r'\baxi_req_i\b', header_content) is not None
-    info["has_sync_axi_master"] = re.search(r'\baxi_req_o\b', header_content) is not None
-    info["has_async_axi_slave"] = re.search(r'\basync_axi_in_aw_data_i\b', header_content) is not None
-    info["has_async_axi_master"] = re.search(r'\basync_axi_out_aw_data_o\b', header_content) is not None
+    info["has_sync_axi_slave"] = 'axi_req_i' in port_names or re.search(r'\baxi_req_i\b', header_clean) is not None
+    info["has_sync_axi_master"] = 'axi_req_o' in port_names or re.search(r'\baxi_req_o\b', header_clean) is not None
+    info["has_async_axi_slave"] = 'async_axi_in_aw_data_i' in port_names or re.search(r'\basync_axi_in_aw_data_i\b', header_clean) is not None
+    info["has_async_axi_master"] = 'async_axi_out_aw_data_o' in port_names or re.search(r'\basync_axi_out_aw_data_o\b', header_clean) is not None
     
     # Dual network variants
-    info["has_sync_axi_narrow_slave"] = re.search(r'\baxi_narrow_req_i\b', header_content) is not None
-    info["has_sync_axi_wide_slave"] = re.search(r'\baxi_wide_req_i\b', header_content) is not None
-    info["has_sync_axi_narrow_master"] = re.search(r'\baxi_narrow_req_o\b', header_content) is not None
-    info["has_sync_axi_wide_master"] = re.search(r'\baxi_wide_req_o\b', header_content) is not None
-    info["has_async_axi_narrow_slave"] = re.search(r'\basync_axi_narrow_in_aw_data_i\b', header_content) is not None
-    info["has_async_axi_wide_slave"] = re.search(r'\basync_axi_wide_in_aw_data_i\b', header_content) is not None
-    info["has_async_axi_narrow_master"] = re.search(r'\basync_axi_narrow_out_aw_data_o\b', header_content) is not None
-    info["has_async_axi_wide_master"] = re.search(r'\basync_axi_wide_out_aw_data_o\b', header_content) is not None
+    info["has_sync_axi_narrow_slave"] = 'axi_narrow_req_i' in port_names or re.search(r'\baxi_narrow_req_i\b', header_clean) is not None
+    info["has_sync_axi_wide_slave"] = 'axi_wide_req_i' in port_names or re.search(r'\baxi_wide_req_i\b', header_clean) is not None
+    info["has_sync_axi_narrow_master"] = 'axi_narrow_req_o' in port_names or re.search(r'\baxi_narrow_req_o\b', header_clean) is not None
+    info["has_sync_axi_wide_master"] = 'axi_wide_req_o' in port_names or re.search(r'\baxi_wide_req_o\b', header_clean) is not None
+    info["has_async_axi_narrow_slave"] = 'async_axi_narrow_in_aw_data_i' in port_names or re.search(r'\basync_axi_narrow_in_aw_data_i\b', header_clean) is not None
+    info["has_async_axi_wide_slave"] = 'async_axi_wide_in_aw_data_i' in port_names or re.search(r'\basync_axi_wide_in_aw_data_i\b', header_clean) is not None
+    info["has_async_axi_narrow_master"] = 'async_axi_narrow_out_aw_data_o' in port_names or re.search(r'\basync_axi_narrow_out_aw_data_o\b', header_clean) is not None
+    info["has_async_axi_wide_master"] = 'async_axi_wide_out_aw_data_o' in port_names or re.search(r'\basync_axi_wide_out_aw_data_o\b', header_clean) is not None
 
-    info["has_test_mode"] = re.search(r'\btest_mode_i\b', header_content) is not None
-    info["has_pwr_on_rst"] = re.search(r'\bpwr_on_rst_ni\b', header_content) is not None
-    info["has_ref_clk"] = re.search(r'\bref_clk_i\b', header_content) is not None
-    info["has_rt_clk"] = re.search(r'\brt_clk_i\b', header_content) is not None
-    info["has_sys_clk"] = re.search(r'\bsys_clk_i\b', header_content) is not None
-    info["has_sys_rst"] = re.search(r'\bsys_rst_ni\b', header_content) is not None
-    info["has_rtc"] = re.search(r'\brtc_i\b', header_content) is not None
-    info["has_boot_mode"] = re.search(r'\bboot_mode_i\b', header_content) is not None
-    info["has_bootmode"] = re.search(r'\bbootmode_i\b', header_content) is not None
-    info["has_boot_addr"] = re.search(r'\bboot_addr_i\b', header_content) is not None
-    info["has_jtag_oe"] = re.search(r'\bjtag_tdo_oe_o\b', header_content) is not None
+    info["has_test_mode"] = 'test_mode_i' in port_names or re.search(r'\btest_mode_i\b', header_clean) is not None
+    info["has_pwr_on_rst"] = 'pwr_on_rst_ni' in port_names or re.search(r'\bpwr_on_rst_ni\b', header_clean) is not None
+    info["has_ref_clk"] = 'ref_clk_i' in port_names or re.search(r'\bref_clk_i\b', header_clean) is not None
+    info["has_rt_clk"] = 'rt_clk_i' in port_names or re.search(r'\brt_clk_i\b', header_clean) is not None
+    info["has_sys_clk"] = 'sys_clk_i' in port_names or re.search(r'\bsys_clk_i\b', header_clean) is not None
+    info["has_sys_rst"] = 'sys_rst_ni' in port_names or re.search(r'\bsys_rst_ni\b', header_clean) is not None
+    info["has_rtc"] = 'rtc_i' in port_names or re.search(r'\brtc_i\b', header_clean) is not None
+    info["has_boot_mode"] = 'boot_mode_i' in port_names or re.search(r'\bboot_mode_i\b', header_clean) is not None
+    info["has_bootmode"] = 'bootmode_i' in port_names or re.search(r'\bbootmode_i\b', header_clean) is not None
+    info["has_boot_addr"] = 'boot_addr_i' in port_names or re.search(r'\bboot_addr_i\b', header_clean) is not None
+    info["has_jtag_oe"] = 'jtag_tdo_oe_o' in port_names or re.search(r'\bjtag_tdo_oe_o\b', header_clean) is not None
+    
     info["header_content"] = header_content
             
     return info

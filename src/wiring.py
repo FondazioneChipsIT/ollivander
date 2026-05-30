@@ -34,15 +34,15 @@ def is_external(comp):
     return any(slv.get('external', False) for slv in slaves)
 
 def is_array_port(comp_name, port_name, comp_info, is_input=True):
-    header = comp_info.get(comp_name, {}).get("header_content", "")
-    direction = "input" if is_input else "output"
-    base_port = port_name
-    if is_input and base_port.endswith('_i'): 
-        base_port = base_port[:-2]
-    elif not is_input and base_port.endswith('_o'): 
-        base_port = base_port[:-2]
-    pattern = re.compile(r'\b' + direction + r'\b[^,;]*?\[[^\]]+\][^,;]*?\b(?:' + re.escape(base_port) + r'|' + re.escape(port_name) + r')\b')
-    return pattern.search(header) is not None
+    ports = comp_info.get(comp_name, {}).get("ports", {})
+    p_info = ports.get(port_name)
+    if not p_info:
+        base_port = port_name[:-2] if (is_input and port_name.endswith('_i')) or (not is_input and port_name.endswith('_o')) else port_name
+        p_info = ports.get(base_port)
+        
+    if p_info:
+        return '[' in p_info["type_dim"] or '[' in p_info["unpacked"]
+    return False
 
 def infer_interrupts(soc_config, comp_info):
     """
@@ -77,14 +77,11 @@ def infer_interrupts(soc_config, comp_info):
                                 src_c.interrupts = {}
                             if src_port not in src_c.interrupts:
                                 dim_str = ""
-                                c_info = comp_info.get(src_comp, {})
-                                header = c_info.get("header_content", "")
-                                # Extract dimensions from SystemVerilog port declaration
-                                pattern = re.compile(r'\boutput\b\s+([^,;]*?)\b' + re.escape(src_port) + r'(?:_o)?\b')
-                                m = pattern.search(header)
-                                if m:
-                                    type_decl = m.group(1)
-                                    dims = re.findall(r'\[.*?\]', type_decl)
+                                src_ports = comp_info.get(src_comp, {}).get("ports", {})
+                                p_info = src_ports.get(src_port) or src_ports.get(f"{src_port}_o")
+                                
+                                if p_info:
+                                    dims = re.findall(r'\[.*?\]', p_info["type_dim"])
                                     if dims:
                                         dim_str = "".join(dims)
                                 

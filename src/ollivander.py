@@ -1106,6 +1106,42 @@ def main():
             else:
                 print(f"[WARNING] regtool.py not found at {regtool_path}. Skipping register RTL generation.")
 
+    # =========================================================================
+    # 13. PHASE 6: RTL FORMATTING (VERIBLE)
+    # =========================================================================
+    # Automatically formats all generated SystemVerilog files to ensure a clean,
+    # professional and highly readable output.
+    print("=" * 70)
+    print("[*] Starting Phase 6: Formatting RTL with Verible...\n")
+    
+    import shutil
+    verible_exe = shutil.which("verible-verilog-format")
+    if not verible_exe:
+        venv_verible = Path(sys.executable).parent / "verible-verilog-format"
+        if venv_verible.is_file() and os.access(venv_verible, os.X_OK):
+            verible_exe = str(venv_verible)
+            
+    if verible_exe:
+        sv_files = list(hw_dir.rglob("*.sv")) + list(hw_dir.rglob("*.svh")) + list(tb_dir.rglob("*.sv"))
+        if sv_files:
+            print(f"  -> Formatting {len(sv_files)} SystemVerilog files...")
+            try:
+                cmd = [
+                    verible_exe, 
+                    "--inplace", 
+                    "--column_limit=150",
+                    "--port_declarations_alignment=align", 
+                    "--named_port_alignment=align",
+                    "--named_parameter_alignment=align"
+                ] + [str(f) for f in sv_files]
+                subprocess.run(cmd, check=True, capture_output=True, text=True)
+                print("  [SUCCESS] RTL formatting complete.")
+            except subprocess.CalledProcessError as e:
+                print(f"  [WARNING] Verible formatting failed:\n{e.stderr}")
+    else:
+        print("  [INFO] verible-verilog-format not found. Skipping RTL formatting.")
+        print("         Run 'make setup' to install it in your virtual environment.")
+
     print(f"\n[SUCCESS] Generation complete! Files saved to '{outdir_path.resolve()}'")
 
 if __name__ == "__main__":

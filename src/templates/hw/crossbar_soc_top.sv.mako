@@ -41,17 +41,14 @@
   # the SystemVerilog header extracted during Phase 2.
   def get_port_dim(c_name, port_name, is_input):
       c_info = comp_info.get(c_name, {})
-      header = c_info.get("header_content", "")
-      direction = "input" if is_input else "output"
-      
-      base_port = port_name
-      if is_input and base_port.endswith('_i'): base_port = base_port[:-2]
-      elif not is_input and base_port.endswith('_o'): base_port = base_port[:-2]
-      
-      pattern = re.compile(r'\b' + direction + r'\b\s+([^,;]*?)\b(?:' + re.escape(base_port) + r'|' + re.escape(port_name) + r')\b')
-      m = pattern.search(header)
-      if m:
-          dims = re.findall(r'\[.*?\]', m.group(1))
+      ports = c_info.get("ports", {})
+      p_info = ports.get(port_name)
+      if not p_info:
+          base_port = port_name[:-2] if (is_input and port_name.endswith('_i')) or (not is_input and port_name.endswith('_o')) else port_name
+          p_info = ports.get(base_port)
+          
+      if p_info:
+          dims = re.findall(r'\[.*?\]', p_info["type_dim"])
           if dims:
               c_obj = next((x for x in [config.host] + config.components if x.name == c_name), None)
               return resolve_dim(c_obj, c_info, "".join(dims))
@@ -118,11 +115,11 @@
               parse_dim = irq_cfg.get('parse_sv_dim', True)
               dim = ""
               if parse_dim:
+                  ports = c_info.get("ports", {})
                   base_port = port_name[:-2] if port_name.endswith('_o') else port_name
-                  pattern = re.compile(r'\boutput\b\s+([^,;]*?)\b(?:' + re.escape(base_port) + r'|' + re.escape(port_name) + r')\b')
-                  m = pattern.search(header)
-                  if m:
-                      dims = re.findall(r'\[.*?\]', m.group(1))
+                  p_info = ports.get(port_name) or ports.get(base_port)
+                  if p_info:
+                      dims = re.findall(r'\[.*?\]', p_info["type_dim"])
                       if dims:
                           dim = resolve_dim(c, c_info, "".join(dims))
               if not dim and fallback > 1:
@@ -154,8 +151,7 @@ module ${p_name}
   # Auto-inject imports from component headers to resolve exported constants and types
   all_imports = set()
   for c in [config.host] + config.components:
-      h_header = comp_info.get(c.name, {}).get("header_content", "")
-      imports = re.findall(r'\bimport\s+([a-zA-Z_][a-zA-Z0-9_]*)::\*;', h_header)
+      imports = comp_info.get(c.name, {}).get("imports", [])
       for imp in imports:
           if imp not in [pkg, rpkg, "axi_pkg"]:
               all_imports.add(imp)
@@ -234,32 +230,25 @@ module ${p_name}
                 known_params[k] = "1" if v is True else "0" if v is False else str(v)
                 
         comp_extra_conns[comp.name] = []
-        c_header_clean = re.sub(r'//.*', '', c_header)
-        c_header_clean = re.sub(r'/\*.*?\*/', '', c_header_clean, flags=re.DOTALL)
-        port_matches = re.finditer(r'\b(input|output|inout)\b([\s\S]*?)(?=\b(?:input|output|inout)\b|\)\s*(?:;|$))', c_header_clean)
-        for m in port_matches:
-            p_dir = m.group(1)
-            decl = m.group(2).strip().split('=')[0].strip()
-            decl = re.sub(r'[,;]\s*$', '', decl).strip()
-            
-            name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-            if name_match:
-                port_name = name_match.group(1)
-                if port_name in exported_seen: continue
+        for port_name, p_info in comp_info.get(comp.name, {}).get("ports", {}).items():
+            if port_name in exported_seen: continue
+            if any(port_name.startswith(prefix) for prefix in prefixes_to_export):
                 exported_seen.add(port_name)
-                if any(port_name.startswith(prefix) for prefix in prefixes_to_export):
-                    # Evaluate parameters in the port declaration
-                    for param_name, param_val in known_params.items():
-                        decl = re.sub(rf'\b{param_name}\b', param_val, decl)
-                    
-                    name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-                    
-                    is_host = (comp.name == config.host.name)
-                    top_port_name = port_name if is_host else f"{comp.name}_{port_name}"
-                    decl = decl[:name_match.start()] + top_port_name + name_match.group(2)
-                    
-                    top_ports.append(f"{p_dir} {decl}")
-                    comp_extra_conns[comp.name].append(f".{port_name:<17} ( {top_port_name} )")
+                decl = p_info["decl"]
+                p_dir = p_info["dir"]
+                
+                # Evaluate parameters in the port declaration
+                for param_name, param_val in known_params.items():
+                    decl = re.sub(rf'\b{param_name}\b', param_val, decl)
+                
+                name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
+                
+                is_host = (comp.name == config.host.name)
+                top_port_name = port_name if is_host else f"{comp.name}_{port_name}"
+                decl = decl[:name_match.start()] + top_port_name + name_match.group(2)
+                
+                top_ports.append(f"{p_dir} {decl}")
+                comp_extra_conns[comp.name].append(f".{port_name:<17} ( {top_port_name} )")
 %>\
 % if top_ports:
 ,
@@ -806,20 +795,10 @@ ${clock_and_reset_tree(config, p_name)}
       m = re.match(r'^\s*\.\s*([a-zA-Z0-9_]+)\s*\(', p)
       if m: connected_ports.append(m.group(1))
       
-  c_header = comp_info.get(comp.name, {}).get("header_content", "")
-  c_header_clean = re.sub(r'//.*', '', c_header)
-  c_header_clean = re.sub(r'/\*.*?\*/', '', c_header_clean, flags=re.DOTALL)
-  port_matches = re.finditer(r'\b(input|output|inout)\b([\s\S]*?)(?=\b(?:input|output|inout)\b|\)\s*(?:;|$))', c_header_clean)
-  for m in port_matches:
-      p_dir = m.group(1)
-      decl = m.group(2).strip().split('=')[0].strip()
-      decl = re.sub(r'[,;]\s*$', '', decl).strip()
-      name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-      if name_match:
-          auto_port_name = name_match.group(1)
-          if auto_port_name not in connected_ports:
-              val = "'0" if p_dir == "input" else ""
-              port_list.append(f".{auto_port_name:<17} ( {val} )")
+  for port_name, p_info in c_info.get("ports", {}).items():
+      if port_name not in connected_ports:
+          val = "'0" if p_info["dir"] == "input" else ""
+          port_list.append(f".{port_name:<17} ( {val} )")
 %>
   ${p_name}_${comp.type} ${"#(" if param_list else ""}
 % for i, p_str in enumerate(param_list):
