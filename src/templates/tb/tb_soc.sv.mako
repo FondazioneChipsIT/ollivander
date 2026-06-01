@@ -52,6 +52,22 @@ module tb_${config.project.name}();
   );
 
   // ===========================================================================
+  // Memory Preload ($readmemh)
+  // ===========================================================================
+<%
+testbench_cfg = config.testbench or {}
+preload_mems = testbench_cfg.get("preload_memories", [])
+%>
+% if preload_mems:
+  initial begin
+  % for mem in preload_mems:
+    $display("[TB] Preloading memory ${mem['instance']} with ${mem['file']}...");
+    $readmemh("${mem['file']}", dut.${mem['instance']});
+  % endfor
+  end
+% endif
+
+  // ===========================================================================
   // Test Sequence
   // ===========================================================================
   initial begin

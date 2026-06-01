@@ -31,23 +31,29 @@ $(abspath ./bender):
 	@echo "\n[MAKE] Downloading Bender..."
 	@curl --proto '=https' --tlsv1.2 -sSf https://fabianschuiki.github.io/bender/init | bash -s -- 0.31.0
 
-.PHONY: prep-sim build-sim run-sim fast-check
+.PHONY: prep-sim build-sim run-sim fast-check build-sw
 
 # Force Bender to be downloaded before updating hardware dependencies
 Bender.lock: $(BENDER_PREREQ)
 
-prep-sim: update-hw $(BENDER_PREREQ)
-	@echo "\n[MAKE] Fetching dependencies and generating IPs..."
+# Create a state file to ensure Bender fetches dependencies only when needed
+bender_work/.fetched: $(BENDER_PREREQ) Bender.yml
+	@echo "\n[MAKE] Fetching dependencies via Bender..."
 	@$(BENDER) checkout --force || true
-	@echo "\n[MAKE] Applying patch to OpenTitan manifest..."
-	@sed -i 's/prim_flop_macros.svh/prim_flop_macros.sv/g' bender_work/opentitan/Bender.yml || true
-	@mkdir -p bender_work/idma/target/rtl/include
-	@mkdir -p bender_work/cheshire/target/sim/models
-	@touch bender_work/cheshire/target/sim/models/s25fs512s.v
-	@touch bender_work/cheshire/target/sim/models/24FC1025.v
-	@echo "\n[MAKE] Installing on-the-fly Python dependencies for IP generation..."
-	@. .venv/bin/activate && pip install -q flatdict mako
-	@. .venv/bin/activate && $(MAKE) -C bender_work/idma idma_hw_all BENDER="$(BENDER)"
+	@mkdir -p bender_work
+	@touch bender_work/.fetched
+
+update-hw: bender_work/.fetched
+
+build-sw:
+% if config.get("software_stack"):
+	@echo "\n[MAKE] Compiling C firmware..."
+	@$(MAKE) -C $(OUT_DIR)/sw all || { echo "\n[ERROR] Software compilation failed!"; exit 1; }
+% else:
+	@echo "\n[MAKE] No software stack configured. Skipping firmware compilation."
+% endif
+
+prep-sim: update-hw build-sw
 	@echo "\n[MAKE] Extracting SystemVerilog compilation script for QuestaSim via Bender..."
 	$(BENDER) script vsim $(BENDER_TARGETS) > $(OUT_DIR)/compile_vsim.tcl
 % if global_defines:
@@ -59,6 +65,22 @@ build-sim: prep-sim
 	@echo "\n[MAKE] Compiling RTL with QuestaSim (vlog)..."
 	$(VSIM) -c -do "if {[source $(OUT_DIR)/compile_vsim.tcl]} {quit -code 1}; quit"
 
+<%
+import json
+# Gather all excluded targets and stubs from the environment config
+fast_check_excludes = set()
+fast_check_stubs = []
+deps = env_config.get("dependencies", {})
+for dep_name, dep_info in deps.items():
+    if "fast_check_exclude" in dep_info:
+        for exc in dep_info["fast_check_exclude"]:
+            fast_check_excludes.add(exc)
+    if "fast_check_stubs" in dep_info:
+        for stub in dep_info["fast_check_stubs"]:
+            fast_check_stubs.append(stub)
+
+exclude_str = ", ".join([f"'{x}'" for x in fast_check_excludes])
+%>
 define GEN_STUBS_SCRIPT
 import os, re, glob
 
@@ -79,8 +101,9 @@ for f in our_files:
     except: pass
 keywords = {'if', 'case', 'for', 'while', 'always', 'always_comb', 'always_ff', 'always_latch', 'assign', 'logic', 'wire', 'reg', 'bit', 'int', 'struct', 'typedef', 'enum', 'return'}
 targets = (inst_modules - defined_modules) - keywords
-# Exclude complex deep-cluster IPs that have macro/generation issues. We provide hardcoded stubs for them.
-targets -= {'axi_to_obi', 'snitch_cluster_wrapper', 'generic_reqrsp_cut', 'snitch_hwpe_subsystem', 'snitch_tcdm_aligner', 'axi_to_tcdm'}
+% if exclude_str:
+targets -= {${exclude_str}}
+% endif
 
 # 2. Extract paths from compile_vsim.tcl
 sv_files = []
@@ -138,55 +161,10 @@ with open('${rel_outdir_path}/.stubs/${config.project.name}_stubs.sv', 'w') as f
     f.write("// AUTO-GENERATED STUBS FOR FAST-CHECK" + chr(10) + chr(10))
     f.write((chr(10) + chr(10)).join(stubs_out))
 
-with open('${rel_outdir_path}/.stubs/snitch_cluster_pkg_stub.sv', 'w') as f:
-    f.write("// AUTO-GENERATED STUB FOR FAST-CHECK\n")
-    stub_content = (
-        "package snitch_cluster_pkg;\n"
-        "  localparam int unsigned NrCores = 9;\n"
-        "  localparam int unsigned AddrWidth = 48;\n"
-        "  localparam int unsigned NarrowDataWidth = 64;\n"
-        "  localparam int unsigned WideDataWidth = 512;\n"
-        "  localparam int unsigned NarrowIdWidthOut = 2;\n"
-        "  localparam int unsigned NarrowIdWidthIn = 5;\n"
-        "  localparam int unsigned WideIdWidthOut = 1;\n"
-        "  localparam int unsigned WideIdWidthIn = 3;\n"
-        "  localparam int unsigned TcdmAddrWidth = 32;\n"
-        "  typedef logic [63:0] addr_t;\n"
-        "  typedef logic narrow_out_req_t;\n"
-        "  typedef logic narrow_out_resp_t;\n"
-        "  typedef logic wide_out_req_t;\n"
-        "  typedef logic wide_out_resp_t;\n"
-        "  typedef logic narrow_in_req_t;\n"
-        "  typedef logic narrow_in_resp_t;\n"
-        "  typedef logic wide_in_req_t;\n"
-        "  typedef logic wide_in_resp_t;\n"
-        "  typedef logic tcdm_dma_req_t;\n"
-        "  typedef logic tcdm_dma_rsp_t;\n"
-        "  typedef logic dca_req_chan_t;\n"
-        "  typedef logic dca_rsp_chan_t;\n"
-        "  typedef logic narrow_out_aw_chan_t;\n"
-        "  typedef logic narrow_out_w_chan_t;\n"
-        "  typedef logic narrow_out_b_chan_t;\n"
-        "  typedef logic narrow_out_ar_chan_t;\n"
-        "  typedef logic narrow_out_r_chan_t;\n"
-        "  typedef logic [NarrowIdWidthOut-1:0] narrow_out_id_t;\n"
-        "  typedef logic [NarrowDataWidth-1:0] user_narrow_t;\n"
-        "  typedef struct packed { logic [2:0][63:0] operands; logic [2:0] src_fmt; logic [2:0] dst_fmt; logic [2:0] int_fmt; logic vectorial_op; logic op_mod; logic [2:0] rnd_mode; logic [3:0] op; } dca_req_q_t;\n"
-        "  typedef struct packed { logic q_valid; logic p_ready; dca_req_q_t q; } dca_req_t;\n"
-        "  typedef struct packed { logic [63:0] result; } dca_rsp_p_t;\n"
-        "  typedef struct packed { logic q_ready; logic p_valid; dca_rsp_p_t p; } dca_rsp_t;\n"
-        "endpackage\n"
-    )
-    f.write(stub_content)
-
-with open('${rel_outdir_path}/.stubs/hardcoded_stubs.sv', 'w') as f:
-    f.write("// AUTO-GENERATED HARDCODED STUBS FOR DEEP INTERNALS\n\n")
-    f.write("module axi_to_obi #(parameter int ObiCfg=0, parameter type obi_req_t=logic, parameter type obi_rsp_t=logic, parameter type obi_a_chan_t=logic, parameter type obi_r_chan_t=logic, parameter int AxiAddrWidth=0, parameter int AxiDataWidth=0, parameter int AxiIdWidth=0, parameter int AxiUserWidth=0, parameter int MaxTrans=0, parameter type axi_req_t=logic, parameter type axi_rsp_t=logic)(); endmodule\n\n")
-    f.write("module snitch_cluster_wrapper(); endmodule\n\n")
-    f.write("module generic_reqrsp_cut #(parameter type req_chan_t=logic, parameter type rsp_chan_t=logic, parameter bit BypassReq=1'b0, parameter bit BypassRsp=1'b0)(); endmodule\n\n")
-    f.write("module snitch_hwpe_subsystem #(parameter type tcdm_req_t=logic, parameter type tcdm_rsp_t=logic, parameter type periph_req_t=logic, parameter type periph_rsp_t=logic, parameter int HwpeDataWidth=0, parameter int IdWidth=0, parameter int NrCores=0, parameter int TCDMDataWidth=0)(); endmodule\n\n")
-    f.write("module snitch_tcdm_aligner #(parameter type tcdm_req_t=logic, parameter type tcdm_rsp_t=logic, parameter int DataWidth=0, parameter int TCDMDataWidth=0, parameter int AddrWidth=0)(); endmodule\n\n")
-    f.write("module axi_to_tcdm #(parameter type axi_req_t=logic, parameter type axi_rsp_t=logic, parameter type tcdm_req_t=logic, parameter type tcdm_rsp_t=logic, parameter int IdWidth=0, parameter int AddrWidth=0, parameter int DataWidth=0)(); endmodule\n")
+% for stub in fast_check_stubs:
+with open('${rel_outdir_path}/.stubs/${stub["name"]}', 'w') as f:
+    f.write(${json.dumps(stub["content"]).replace('$', '$$')})
+% endfor
 
 # 3. Create a fast compilation script that skips heavy RTL
 fast_tcl = [
@@ -227,7 +205,9 @@ for line in tcl_code.split('\n'):
             fast_tcl.append(fast_line)
     else: fast_tcl.append(line)
 fast_tcl.append('vlog -suppress 13314 -sv ${rel_outdir_path}/.stubs/${config.project.name}_stubs.sv')
-fast_tcl.append('vlog -suppress 13314 -sv ${rel_outdir_path}/.stubs/hardcoded_stubs.sv')
+% for stub in fast_check_stubs:
+fast_tcl.append('vlog -suppress 13314 -sv ${rel_outdir_path}/.stubs/${stub["name"]}')
+% endfor
 open('${rel_outdir_path}/compile_vsim_fast.tcl', 'w').write('\n'.join(fast_tcl))
 endef
 export GEN_STUBS_SCRIPT

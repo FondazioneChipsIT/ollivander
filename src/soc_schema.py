@@ -575,6 +575,12 @@ class OllivanderConfig(BaseModel):
     system_controller: Optional[SystemController] = None
     host: Component
     components: Optional[List[Component]] = Field(default_factory=list, alias='tiles')
+    testbench: Optional[Dict[str, Any]] = None
+    software_stack: Optional[Dict[str, Any]] = None
+
+    # Allows Mako templates to safely use config.get("key", default) as if it were a dictionary
+    def get(self, key, default=None):
+        return getattr(self, key, default)
 
 
 def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] = None, exclude_dir: str = None, original_types: Dict[str, str] = None):

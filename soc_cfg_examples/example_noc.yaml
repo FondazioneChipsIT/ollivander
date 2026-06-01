@@ -232,3 +232,23 @@ components:
     parameters:
       SpmWordsPerBank: 1024
       SpmDataWidth: 128
+
+# ------------------------------------------------------------------------------
+# 7. TESTBENCH CONFIGURATION
+# ------------------------------------------------------------------------------
+# Instructions for the simulation environment.
+testbench:
+  preload_memories:
+    - instance: "i_tile_0_0.sram_array" # Hierarchical RTL path to the first L2 tile
+      file: "generated/sw/hello_world.hex"    # Path to the compiled hex binary
+
+# ------------------------------------------------------------------------------
+# 8. SOFTWARE STACK & FIRMWARE
+# ------------------------------------------------------------------------------
+# Defines the toolchain and target memory for automated bare-metal C compilation.
+software_stack:
+  toolchain: "riscv64-unknown-elf-"
+  boot_memory: "l2_shared_memory"    # Ollivander will use this to auto-generate the Linker Script
+  test_app:
+    name: "hello_world"
+    auto_generate_c: true            # Instructs Ollivander to create a basic main.c

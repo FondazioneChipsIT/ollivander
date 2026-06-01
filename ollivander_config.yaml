@@ -33,12 +33,23 @@ dependencies:
   axi:
     git: "https://github.com/pulp-platform/axi.git"
     version: "0.39.9"
+  idma:
+    git: "https://github.com/pulp-platform/idma.git"
+    version: "0.6.5"
+    # Commands executed by Ollivander's generated Makefile.hw BEFORE resolving Bender
+    pre_build_cmds:
+      - "$(PYTHON) -m pip install -q flatdict mako"
+      - "$(MAKE) -C {bender_work}/idma idma_hw_all BENDER=\"$(BENDER)\""
   can_bus:
     git: "https://github.com/AlSaqr-platform/can_bus.git"
     rev: "0ec0bf8b7dab6d5e4b3f7ec58338a8efee066379"
   cheshire:
     git: "https://github.com/pulp-platform/cheshire.git"
     version: "0.3.1"
+    pre_build_cmds:
+      - "mkdir -p {bender_work}/cheshire/target/sim/models"
+      - "touch {bender_work}/cheshire/target/sim/models/s25fs512s.v"
+      - "touch {bender_work}/cheshire/target/sim/models/24FC1025.v"
   common_cells:
     git: "https://github.com/pulp-platform/common_cells.git"
     version: "1.39.0"
@@ -66,6 +77,11 @@ dependencies:
   opentitan:
     git: "https://github.com/AlSaqr-platform/opentitan.git"
     rev: "chips-it"
+    # File text replacements executed dynamically
+    patches:
+      - file: "{bender_work}/opentitan/Bender.yml"
+        search: "prim_flop_macros.svh"
+        replace: "prim_flop_macros.sv"
   pulp-ethernet:
     git: "https://github.com/pulp-platform/pulp-ethernet.git"
     rev: "fdaff021a36e5fcaf0b4945c9aef6bc9d4487ca9"
@@ -83,8 +99,12 @@ dependencies:
     git: "https://github.com/pulp-platform/safety_island.git"
     rev: "584eb697195c44ef1b1cbd1f4b7accdf5192200a"
   snitch_cluster:
-    git: "https://github.com/pulp-platform/snitch.git"
+    git: "https://github.com/pulp-platform/snitch_cluster.git"
     rev: "main"
+    pre_build_cmds:
+      - "$(PYTHON) -m pip install -q json5 jsonref jsonschema peakrdl peakrdl-rawheader"
+      - "mkdir -p .tmp_llvm_bin && ln -sfn /opt/riscv/snitch-llvm-15.0.0-snitch-0.2.0/bin/* .tmp_llvm_bin/ && ln -sfn /opt/riscv/snitch-llvm-15.0.0-snitch-0.2.0/bin/clang .tmp_llvm_bin/riscv32-unknown-elf-clang"
+      - "PATH=$$(pwd)/.tmp_llvm_bin:$$PATH $(MAKE) -C {bender_work}/snitch_cluster rtl"
   spatz:
     git: "https://github.com/pulp-platform/spatz.git"
     rev: "main"

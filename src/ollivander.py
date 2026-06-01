@@ -945,6 +945,7 @@ def main():
         "components": [c.model_dump(exclude_none=True) for c in soc_config.components] if soc_config.components else [],
         "comp_info": comp_info,
         "global_defines": sorted(list(global_defines)),
+        "env_config": {"dependencies": registry_dependencies},
         "original_isle_types": original_isle_types,
         "fmt_dom": fmt_dom,
         "fmt_reg": fmt_reg,
@@ -987,6 +988,13 @@ def main():
             "Makefile.vsim.mako": outdir_path / "Makefile.vsim",
             "tb/tb_soc.sv.mako": tb_dir / f"tb_{soc_config.project.name}.sv"
         }
+
+    # Add Software templates dynamically if a software stack is configured
+    if getattr(soc_config, "software_stack", None):
+        templates_to_render["sw/linker.ld.mako"] = sw_dir / "linker.ld"
+        templates_to_render["sw/Makefile.sw.mako"] = sw_dir / "Makefile"
+        if soc_config.software_stack.get("test_app", {}).get("auto_generate_c", False):
+            templates_to_render["sw/main.c.mako"] = sw_dir / "main.c"
 
     # Render all top-level templates and dynamically extract any pragmas.
     for tpl_name, out_file in templates_to_render.items():

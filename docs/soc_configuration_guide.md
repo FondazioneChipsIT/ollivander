@@ -18,6 +18,8 @@ clock_tree: ...          # 4. Clock and reset domains
 system_controller: ...   # 5. Central PCRs (Optional but recommended)
 host: ...                # 6. Main Manager component
 components: ...          # 7. List of Subordinate/Peripheral components
+testbench: ...           # 8. Simulation configuration (Optional)
+software_stack: ...      # 9. Firmware compilation setup (Optional)
 ```
 
 ---
@@ -168,7 +170,7 @@ Ollivander will automatically instantiate edge-to-level propagators or synchroni
     ```
 
 ### 3.5 NoC Placement (`placement`) - *Topology: "noc" only*
-Maps the component to the physical 2D FlooNoC mesh grid.
+Maps the component to the logical 2D FlooNoC mesh grid.
 
 *   **Single Node:**
     ```yaml
@@ -188,3 +190,52 @@ Maps the component to the physical 2D FlooNoC mesh grid.
         - box: { x_start: 0, x_end: 0, y_start: 0, y_end: 3 }
         - box: { x_start: 8, x_end: 8, y_start: 0, y_end: 3 }
     ```
+
+    ## 4. Testbench (`testbench`)
+
+Instructs the simulation environment on how to initialize the SoC. Since Ollivander targets bare-metal validation, the most common action is preloading compiled software binaries directly into the hardware memory arrays before the processor comes out of reset.
+
+| Field              | Type | Description                                                                                 |
+| :----------------- | :--- | :------------------------------------------------------------------------------------------ |
+| `preload_memories` | List | A list of memory arrays to be initialized in the SystemVerilog testbench using `$readmemh`. |
+
+**Memory Preload Object**
+*   `instance`: String. The hierarchical RTL path to the memory array instance inside the top-level.
+    *   *For Crossbar topologies*: It is usually `<component_name>.sram_array`.
+    *   *For NoC topologies*: Memories are physically split across tiles. You must target the specific tile instance, typically the first one where the Host expects to boot (e.g., `i_tile_0_0.sram_array`).
+*   `file`: String. The path to the compiled hex binary (e.g., `generated/sw/hello_world.hex`).
+
+**Example (Crossbar):**
+```yaml
+testbench:
+  preload_memories:
+    - instance: "l2_shared_memory.sram_array"
+      file: "generated/sw/hello_world.hex"
+```
+
+---
+
+## 5. Software Stack (`software_stack`)
+
+Defines the parameters for automated bare-metal C firmware generation and compilation. Ollivander uses these settings to dynamically construct a **Linker Script** (`link.ld`) that aligns exactly with the physical memory map defined in the `components` section, preventing hard-to-debug memory faults.
+
+| Field         | Type   | Description                                                                                               |
+| :------------ | :----- | :-------------------------------------------------------------------------------------------------------- |
+| `toolchain`   | String | The GCC toolchain prefix (e.g., `"riscv64-unknown-elf-"`).                                                |
+| `boot_memory` | String | **Required**. The `name` of the memory component (from the `components` list) where the `.text`, `.data`, | 
+|               |        | and `.bss` sections will be placed. Ollivander will automatically fetch its `base_addr` and `size`.       |
+| `test_app`    | Object | Configuration for the automatically generated test application.                                           |
+
+**Test App Object**:
+*   `name`: String. The base name used for the output files (`<name>.elf`, `<name>.hex`).
+*   `auto_generate_c`: Boolean. If `true`, Ollivander creates a starter `main.c` file. This file automatically `#include`s the generated hardware headers (e.g., `<project>_soc_regs.h`) so you have immediate access to all peripheral base addresses and CSR macros.
+
+**Example:**
+```yaml
+software_stack:
+  toolchain: "riscv64-unknown-elf-"
+  boot_memory: "l2_shared_memory"
+  test_app:
+    name: "hello_world"
+    auto_generate_c: true
+```

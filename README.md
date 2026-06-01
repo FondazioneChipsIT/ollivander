@@ -70,6 +70,13 @@ If the NoC topology is selected, Ollivander invokes `floogen` to generate the No
 ### Phase 5: Register RTL Generation
 Ollivander invokes external tools (like OpenTitan's `regtool.py` or PeakRDL) to parse the generated HJSON file. This produces the synthesis-ready SystemVerilog for the System Controller (handling software resets, AXI isolation, and clock gating) and the C-header files (`.h`) for bare-metal software drivers.
 
+### Phase 6: Software Bridging & Testbench Preloading (Optional)
+To close the gap between hardware generation and bare-metal validation, Ollivander can fully automate the software build and simulation setup. If defined in your YAML, it will:
+1. Generate a **Linker Script** (`link.ld`) perfectly synchronized with your SoC's physical memory map, eliminating manual offset errors.
+2. Create a starter **`main.c` firmware skeleton** that automatically includes the generated hardware CSR headers.
+3. Compile the application into `.elf` and `.hex` binaries using the specified RISC-V toolchain.
+4. Configure the auto-generated SystemVerilog testbench (`_tb.sv`) to seamlessly preload your `.hex` binary into the correct physical SRAM instances using `$readmemh` before the host processor exits reset.
+
 ---
 
 ## 4. Key Automated Features
@@ -79,6 +86,7 @@ Ollivander invokes external tools (like OpenTitan's `regtool.py` or PeakRDL) to 
 *   **Automated Dependency Management**: Ollivander actively parses your SystemVerilog files and Mako templates to extract `// BENDER:` and `// OLLIVANDER:` dependencies, automatically building a precise `Bender.yml` manifest that links standard IP libraries and local infrastructure files without duplicating code.
 *   **Implicit Interrupt Routing**: You only need to define the interrupt *destination* in the YAML (e.g., `manager` listens to `ethernet.rx_irq`). Ollivander automatically infers the output port on the source component and wires them together.
 *   **AXI Isolation**: Heterogeneous SoCs require IPs to be powered down or reset independently. Ollivander automatically generates AXI isolation fences controlled by the central System Controller to prevent bus deadlocks.
+*   **Hardware-to-Software Synchronization**: Linker scripts and C-headers are dynamically generated directly from the hardware specification, guaranteeing that your bare-metal software always targets the correct memory map and peripheral base addresses.
 
 ---
 
@@ -111,19 +119,23 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 
 ```text
 <outdir>/
-├── <sub_hw>/          # Hardware RTL (*.sv)
+├── <sub_hw>/                     # Hardware RTL (*.sv)
 │   ├── <project_name>.sv
 │   ├── <project_name>_soc_pkg.sv
 │   └── ...
-├── <sub_sw>/          # Software headers for bare-metal drivers (*.h)
-├── <sub_reg>/         # Register specification files (*.hjson)
-├── <sub_tb>/          # Auto-generated SystemVerilog testbench (*.sv)
-├── <sub_cfg>/         # Generated configuration files for tools like FlooGen (*.yml)
-├── <sub_doc>/         # Output documentation and mapping tables (*.csv)
-├── Makefile.hw        # Auto-generated targets for hardware dependencies
-└── Makefile.vsim      # Auto-generated targets for QuestaSim simulation
+├── <sub_sw>/                     # Software bridging artifacts:
+│   ├── <project_name>_soc_regs.h # Auto-generated C-headers for bare-metal CSR access
+│   ├── link.ld                   # Memory-mapped Linker Script
+│   ├── main.c                    # Starter C firmware skeleton
+│   └── *.elf, *.hex              # Compiled software binaries ready for simulation
+├── <sub_reg>/                    # Register specification files (*.hjson)
+├── <sub_tb>/                     # Auto-generated SystemVerilog testbench with memory preloading (*.sv)
+├── <sub_cfg>/                    # Generated configuration files for tools like FlooGen (*.yml)
+├── <sub_doc>/                    # Output documentation and mapping tables (*.csv)
+├── Makefile.hw                   # Auto-generated targets for hardware dependencies
+└── Makefile.vsim                 # Auto-generated targets for QuestaSim simulation
 
-<bender_manifest>      # Main compilation manifest linking external IPs and generated RTL
+<bender_manifest>                 # Main compilation manifest linking external IPs and generated RTL
 ```
 
 ---
@@ -133,7 +145,9 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 *   `Makefile.sample`: The starting point for project automation and environment setup.
 *   `ollivander_config.yaml`: Environment configuration and centralized dependency registry.
 *   `src/`: The core engine, containing the Python scripts (`ollivander.py`, `soc_schema.py`, `wiring.py`) and the `templates/` folder (Mako blueprints for SystemVerilog and C).
-*   `soc_cfg/`: Contains example YAML configurations (the "Single Source of Truth" for the SoC).
+*   `soc_cfg_examples/`: Contains example YAML configurations (the "Single Source of Truth" for the SoC).
 *   `components/isles/`: Standardized SystemVerilog wrappers (and their Mako templates if dynamically generated) for the hardware IPs.
+*   `components/tiles/`: Specialized wrappers for Network-on-Chip (NoC) topologies, automatically instantiating routers and network adapters.
 *   `components/infrastructure/`: The Hardware Abstraction Layer (HAL) containing simulation-ready physical primitives (glitch-free clock muxes, integer dividers, reset generators, CDCs, and edge-to-level propagators) intended to be mapped to technology-specific standard cells during ASIC/FPGA synthesis.
+*   `docs/`: Official documentation, tutorials, and configuration guides.
 *   `tools/`: External utilities (e.g., OpenTitan's regtool).
