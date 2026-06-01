@@ -15,13 +15,19 @@
       if isinstance(val, int): return f"{val:X}"
       return str(val).replace('0x', '').replace('_', '').upper()
 
-  # 1. Extract Clock Domains
-  # We only need indices for gateable domains to generate the reset arrays.
+  # ============================================================================
+  # 1. CLOCK DOMAINS EXTRACTION
+  # ============================================================================
+  # We only need indices for gateable (non-real-time) domains to generate the
+  # reset arrays. The host clock is excluded as it is the root domain.
   gateable_domains = [d for d in config.clock_tree.domains if not d.is_real_time and d.name != 'host_clk']
   
-  # 2. Extract AXI Slaves (Crossbar Targets)
-  # Unrolls multiple ports of the same component (e.g., dual-port L2) into 
-  # discrete routing targets for the crossbar.
+  # ============================================================================
+  # 2. AXI SLAVES (CROSSBAR TARGETS) EXTRACTION
+  # ============================================================================
+  # Scans all components for AXI slave interfaces. It unrolls multiple ports of 
+  # the same component (e.g., a dual-port L2 Memory) into discrete routing targets 
+  # for the central crossbar, categorizing them by synchronous/asynchronous domains.
   axi_slaves_async = []
   axi_slaves_sync = []
   for c in config.components:
@@ -41,15 +47,20 @@
                   
   axi_slaves = axi_slaves_async + axi_slaves_sync
                   
-  # 3. Extract AXI Masters (Crossbar Initiators)
+  # ============================================================================
+  # 3. AXI MASTERS (CROSSBAR INITIATORS) EXTRACTION
+  # ============================================================================
   axi_masters = []
   for c in config.components:
       if c.interfaces and c.interfaces.get('axi_master'):
           axi_masters.append(c.name)
           
-  # 4. Extract RegBus Slaves (Peripheral Targets)
-  # Separates synchronous from asynchronous targets to route them to the 
-  # correct conversion pipelines in the top-level.
+  # ============================================================================
+  # 4. REGBUS SLAVES (PERIPHERAL TARGETS) EXTRACTION
+  # ============================================================================
+  # Scans for low-speed peripheral slaves on the RegBus. It separates synchronous
+  # from asynchronous targets to route them to the correct conversion pipelines 
+  # in the top-level.
   reg_sync = []
   reg_async = []
   # The central System Controller is always a synchronous RegBus slave
@@ -119,6 +130,8 @@ package ${pkg};
   // =========================================================================
   // 1a. GLOBAL BUS TYPES
   // =========================================================================
+  // Defines the SystemVerilog structs and channels for the AXI and RegBus
+  // interconnects. These types are used globally across all component wrappers.
   localparam int unsigned LogDepth   = 3;
   localparam int unsigned LlcAwWidth = (2**LogDepth)*axi_pkg::aw_width(AxiAddrWidth, LlcIdWidth, AxiUserWidth);
   localparam int unsigned LlcWWidth  = (2**LogDepth)*axi_pkg::w_width(AxiDataWidth, AxiUserWidth);
@@ -146,7 +159,8 @@ package ${pkg};
   // =========================================================================
   // 1b. SYSTEM MICROARCHITECTURE PARAMETERS
   // =========================================================================
-  // Sizing for transaction tracking FIFOs and Atomics.
+  // Deep microarchitectural sizing for transaction tracking FIFOs and RISC-V 
+  // Atomic Memory Operations (AMOs) adapters within the crossbar.
   localparam int unsigned LlcMaxReadTxns  = ${config.system_settings.llc.max_read_txns};
   localparam int unsigned LlcMaxWriteTxns = ${config.system_settings.llc.max_write_txns};
   localparam int unsigned LlcAmoNumCuts   = ${config.system_settings.llc.amo_num_cuts};
@@ -173,8 +187,8 @@ package ${pkg};
   // =========================================================================
   // 3. AXI CROSSBAR (SYSTEM MEMORY MAP)
   // =========================================================================
-  // Master and Slave indices used to access the multidimensional AXI arrays 
-  // exposed by the Host in the Top-Level.
+  // Master and Slave enumeration indices. These are crucial to correctly wire 
+  // components to specific ports of the central multidimensional AXI crossbar.
   localparam int unsigned NumAxiMasters = ${len(axi_masters)};
   typedef enum int {
 % for mst in axi_masters:

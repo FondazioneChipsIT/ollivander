@@ -8,8 +8,10 @@
 // The user is required to implement the logic to capture a short pulse (edge) 
 // in the source clock domain, safely cross it to the destination clock domain, 
 // and output it as a stable level-sensitive signal.
+//
+// BENDER: name="common_cells"
 
-module edge_propagator (
+module olli_edge_propagator (
   input  logic clk_tx_i,
   input  logic rstn_tx_i,
   input  logic edge_i,
@@ -19,6 +21,18 @@ module edge_propagator (
   output logic edge_o
 );
 
-  // TODO: Implement pulse-capture and CDC edge-to-level logic.
+`ifndef TARGET_SYNTHESIS
+  // Simulation: use common_cells behavioral model
+  edge_propagator i_sim_edge_prop (
+    .clk_tx_i  ( clk_tx_i ),
+    .rstn_tx_i ( rstn_tx_i ),
+    .edge_i    ( edge_i ),
+    .clk_rx_i  ( clk_rx_i ),
+    .rstn_rx_i ( rstn_rx_i ),
+    .edge_o    ( edge_o )
+  );
+`else
+  // Synthesis: instantiate foundry-specific CDC macro here
+`endif
 
 endmodule

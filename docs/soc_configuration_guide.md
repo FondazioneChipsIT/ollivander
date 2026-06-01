@@ -63,20 +63,20 @@ Microarchitectural definitions for system-wide coherence.
 ### 2.4 Clock Tree (`clock_tree`)
 Defines the hardware clock distribution network, generating glitch-free muxes and dividers.
 
-| Field     | Type    | Description                                                    |
-| :-------- | :------ | :------------------------------------------------------------- |
-| `flls`    | Integer | Total number of Frequency Locked Loops (FLLs) driving the SoC. |
-| `domains` | List    | List of clock domain objects.                                  |
+| Field     | Type    | Description                                                                                             |
+| :-------- | :------ | :------------------------------------------------------------------------------------------------------ |
+| `flls`    | Integer | Total number of analog Frequency Locked Loops (FLLs) available. Setting to `0` means FLLs are external. |
+| `domains` | List    | List of clock domain objects.                                                                           |
 
 **Domain Object**:
-*   `name`: String. Name of the domain (e.g., `periph`).
-*   `is_real_time`: Boolean. If `true`, avoids dynamic division/muxing.
-*   `source_fll`: Integer. Hardwired FLL index (avoids deadlocks).
-*   `static_div`: Integer. Static division factor.
-*   `has_mux`: Boolean. Generates a software-controllable glitch-free mux.
-*   `has_divider`: Boolean. Generates a software-controllable integer divider.
-*   `has_debug_divider`: Boolean. Generates a parallel clock branch for JTAG/Debug.
-*   `default_div`: Integer. Default division factor at reset (default `1`).
+*   `name`: String. Name of the clock domain (e.g., `periph`).
+*   `is_real_time`: Boolean. If `true`, the domain bypasses software control (always-on, cannot be gated).
+*   `source_fll`: Integer. Hardwired FLL index. Critical for the host clock to ensure it ticks at boot and avoids deadlocks.
+*   `static_div`: Integer. Static, non-programmable division factor (e.g., `100` for an RTC).
+*   `has_mux`: Boolean. Generates a software-controllable glitch-free multiplexer to switch between FLLs.
+*   `has_divider`: Boolean. Generates a software-controllable integer divider with glitch-free gating.
+*   `has_debug_divider`: Boolean. Generates a parallel, slower clock branch specifically for JTAG and Debug Module Interfaces.
+*   `default_div`: Integer. Default division factor applied at power-on reset (default `1`).
 
 ### 2.5 System Controller (`system_controller`)
 Instructs Ollivander to generate a unified Control and Status Register (CSR) block.
@@ -99,28 +99,29 @@ Instructs Ollivander to generate a unified Control and Status Register (CSR) blo
 
 The `host` block and the items in the `components` list share the **exact same schema**. They represent the hardware IPs (Isles/Tiles) stitched together by Ollivander.
 
-| Field               | Type    | Description                                                                                       |
-| :------------------ | :------ | :------------------------------------------------------------------------------------------------ |
-| `name`              | String  | **Required**. Unique instance name in the SoC.                                                    |
-| `type`              | String  | **Required**. Must match the exact filename of the SystemVerilog wrapper (e.g., `cheshire_isle`). |
-| `clock_domain`      | String  | **Required**. Assigns the component to a domain in the `clock_tree`.                              |
-| `reset_domain`      | String  | *Optional*. Derived automatically from `clock_domain` if omitted.                                 |
-| `base_addr`         | Int/Hex | *Optional*. Used mainly for APB sub-components.                                                   |
-| `size`              | Int/Hex | *Optional*. Used mainly for APB sub-components.                                                   |
-| `export_interfaces` | List    | *Optional*. Raw I/O pins to route directly to the SoC top-level (e.g., `["uart", "jtag"]`).       |
-| `interfaces`        | Object  | *Optional*. Standardized bus connections (AXI, RegBus, NoC).                                      |
-| `system_config`     | Object  | *Optional*. Links the component to the System Controller (resets, clock gating, boot).            |
-| `interrupts`        | Object  | *Optional*. Defines IRQ routing logic.                                                            |
-| `parameters`        | Object  | *Optional*. Overrides `parameter` values in the SV hardware wrapper.                              |
-| `placement`         | Object  | **Required in NoC**. Defines X/Y coordinates on the mesh.                                         |
-| `components`        | List    | *Optional*. Nested components (e.g., IPs inside an APB Subsystem).                                |
+| Field               | Type    | Description                                                                                                              |
+| :------------------ | :------ | :----------------------------------------------------------------------------------------------------------------------- |
+| `name`              | String  | **Required**. Unique instance name in the SoC. Used to prefix generated wires and CSRs.                                  |
+| `type`              | String  | **Required**. Must match the exact filename of the SystemVerilog wrapper (e.g., `cheshire_isle`).                        |
+| `clock_domain`      | String  | **Required**. Assigns the component's `clk_i` to a domain in the `clock_tree`.                                           |
+| `reset_domain`      | String  | *Optional*. Derived automatically from `clock_domain` if omitted.                                                        |
+| `base_addr`         | Int/Hex | *Optional*. Base address in the memory map. (Mainly used for APB sub-components; AXI slaves declare it in `interfaces`). |
+| `size`              | Int/Hex | *Optional*. Size of the memory region.                                                                                   |
+| `export_interfaces` | List    | *Optional*. Raw I/O pins to route directly to the SoC top-level (e.g., `["uart", "jtag"]`).                              |
+| `interfaces`        | Object  | *Optional*. Standardized bus connections (AXI Master/Slave, RegBus, NoC routing).                                        |
+| `system_config`     | Object  | *Optional*. Links the component to the System Controller (isolation, fetch enable, status flags).                        |
+| `interrupts`        | Object  | *Optional*. Defines IRQ routing logic.                                                                                   |
+| `dedicated_clock_div`| Object | *Optional*. Auto-generates an independent clock divider specifically for this IP (e.g., for Ethernet RGMII).             |
+| `parameters`        | Object  | *Optional*. Overrides `parameter` values in the SV hardware wrapper.                                                     |
+| `placement`         | Object  | **Required in NoC**. Defines X/Y coordinates on the mesh.                                                                |
+| `components`        | List    | *Optional*. Nested components (e.g., Timers/Watchdogs instantiated inside an APB Subsystem wrapper).                     |
 
 ### 3.1 Interfaces (`interfaces`)
 *   `axi_master`: Boolean (`true` / `false`).
-*   `axi_slave`: List of memory regions. Each region takes `name`, `base_addr`, `size` (or `size_per_instance`), `ports` (integer, default 1), and `sync_domain` (Boolean, default `true`).
-*   `regbus_slave`: List of register regions. Same format as `axi_slave`, plus an `external` boolean flag.
+*   `axi_slave`: List of memory regions. Each region takes `name`, `base_addr`, `size` (or `size_per_instance`), `ports` (integer, default 1), and `sync_domain` (Boolean, default `true`). Setting `sync_domain: false` instructs Ollivander to automatically instantiate an asynchronous Clock Domain Crossing (CDC) adapter.
+*   `regbus_slave`: List of register regions. Same format as `axi_slave`, plus an `external` boolean flag. Setting `external: true` means the IP is physically outside the generated Top-Level (e.g., in the Padframe); Ollivander will NOT instantiate it, but will export its RegBus ports to the SoC I/O.
 *   `llc_port`: List of memory regions. Point-to-point asynchronous AXI link to the Host.
-*   `noc_networks` (NoC Only): Dictionary with `master` (list of networks, e.g. `["narrow"]`), `slave` (list of networks), and `noc_mode` (`"joined"` or `"dual"`).
+*   `noc_networks` (NoC Only): Dictionary with `master` (list of networks, e.g. `["narrow"]`), `slave` (list of networks), and `noc_mode` (`"joined"` or `"dual"`). `"joined"` automatically instantiates a FlooNoC Join adapter to merge narrow and wide traffic into a single AXI port. `"dual"` requires the component to natively expose two separate AXI ports.
 
 ### 3.2 System Configuration (`system_config`)
 Wires the component to the central `system_controller`.
@@ -134,9 +135,11 @@ Wires the component to the central `system_controller`.
 Key-value pairs corresponding to SystemVerilog `parameter` declarations in the Isle/Tile wrapper. 
 *   Ollivander verifies that the parameter physically exists in the SV file.
 *   Ollivander ensures you do not attempt to override a fixed `localparam`.
+*   You can pass standard integer values, booleans (`true`/`false`), or even SystemVerilog macros (e.g., `pkg::MyParam`).
 
 ### 3.4 Interrupts (`interrupts`)
-Defines the routing of level-sensitive interrupts. Key is the destination port name, value is an object defining the source.
+Defines the routing of level-sensitive interrupts. The key is the destination port name on the component, and the value is an object defining the source.
+Ollivander will automatically instantiate edge-to-level propagators or synchronizers if the source is in a different clock domain and `cdc: false` is not explicitly set.
 
 *   **Simple Wire Routing:**
     ```yaml
@@ -144,6 +147,14 @@ Defines the routing of level-sensitive interrupts. Key is the destination port n
       cfi_req_irq_i: 
         source: "manager.intr_ext_o[23]"
         cdc: false # Optional: disables the clock-domain crossing synchronizer
+    ```
+*   **Bitwise Logic and Tie-Offs:**
+    ```yaml
+    interrupts:
+      # Standard bitwise logic operators are supported
+      irq_ibex_i: { source: "mailbox.snd_irq_o[5] | mailbox.snd_irq_o[14]", cdc: false }
+      # Tie the input to 0 to avoid floating wires
+      meip_i: { source: "none" }
     ```
 *   **Sparse Array Mapping (e.g., Host aggregators):**
     ```yaml

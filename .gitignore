@@ -9,12 +9,20 @@ generated/
 bender_work/
 .bender/
 Bender.lock
+Bender.yml
+compile.tcl
 
-# Verilator & Simulation Artifacts
+# Ignore temporary commit message files
+commit_message.txt
+
+# Simulation Artifacts
 obj_dir/
+work/
 *.vcd
 *.fst
 *.wlf
+transcript
+modelsim.ini
 
 # Python Virtual Environments & Caches
 __pycache__/

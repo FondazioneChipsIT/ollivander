@@ -40,9 +40,11 @@ ${license()}\
 // and the corresponding C headers for software drivers.
 {
   name: "${project_name}",
-  clock_primary: "clk_i",
+  clocking: [
+    { clock: "clk_i", reset: "rst_ni", primary: true }
+  ],
   bus_interfaces: [
-    { protocol: "reg_iface", direction: "device" }
+    { protocol: "tlul", direction: "device" }
   ],
   regwidth: "32",
   registers: [

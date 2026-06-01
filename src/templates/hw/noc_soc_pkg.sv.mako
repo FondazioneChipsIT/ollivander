@@ -2,7 +2,12 @@
   p_name = config.project.name
   pkg = "ollivander_soc_pkg"
 
-  # Calcoliamo le dimensioni della griglia basandoci sul YAML (Placement)
+  # ============================================================================
+  # 1. NOC MESH GRID CALCULATION
+  # ============================================================================
+  # Parses the 'placement' constraints from the YAML configuration to determine
+  # the physical dimensions of the 2D mesh. It calculates the maximum X and Y
+  # coordinates and tracks which tiles are active vs empty.
   tiles = [] # list of (x, y, component)
   
   def add_placement(c, placement):
@@ -37,7 +42,7 @@
   mesh_dim_x = max_x + 1
   mesh_dim_y = max_y + 1
   
-  # Creiamo la mappa 2D della mesh per distinguere le tile attive da quelle vuote (Dummy)
+  # Create a 2D bitmap of the mesh to distinguish active tiles from empty ones (Dummy routers).
   mesh_map = [[0 for _ in range(mesh_dim_x)] for _ in range(mesh_dim_y)]
   for x, y, _ in tiles: mesh_map[y][x] = 1
 
@@ -77,6 +82,8 @@ package ${pkg};
   // =========================================================================
   // 0. GLOBAL ARCHITECTURE PARAMETERS & TYPES
   // =========================================================================
+  // Defines the standard widths for addresses, data, and sideband signals
+  // used by the AXI and RegBus interfaces across the entire SoC.
 <%
   if config.topology.global_bus:
       g_addr_w = config.topology.global_bus.addr_width
@@ -98,7 +105,7 @@ package ${pkg};
   localparam int unsigned ExtSlvIdWidth    = AxiIdWidth + $clog2(${len(axi_masters)} > 1 ? ${len(axi_masters)} : 2);
   localparam int unsigned LlcIdWidth       = ExtSlvIdWidth + 1; // Margin for LLC bypass bit
 
-  // L2 Memory Base Addresses (Extracted from components)
+  // L2 Memory Base Addresses (Extracted from components for memory interleaving)
 <%
   l2_slv = next((s for s in axi_slaves if 'l2' in s['name']), None)
   l2_base = l2_slv['base'] if l2_slv else 0
@@ -148,6 +155,7 @@ package ${pkg};
   // =========================================================================
   // 0b. NOC AXI WIDTHS
   // =========================================================================
+  // Specific widths for the internal NoC packet payloads.
   localparam int unsigned NoCAxiAwWidth = (2**LogDepth)*axi_pkg::aw_width(AxiAddrWidth, AxiIdWidth, AxiUserWidth);
   localparam int unsigned NoCAxiWWidth  = (2**LogDepth)*axi_pkg::w_width(AxiDataWidth, AxiUserWidth);
   localparam int unsigned NoCAxiBWidth  = (2**LogDepth)*axi_pkg::b_width(AxiIdWidth, AxiUserWidth);
@@ -157,6 +165,8 @@ package ${pkg};
   // =========================================================================
   // 1. MESH DIMENSIONS AND TOPOLOGY
   // =========================================================================
+  // Defines the physical limits of the Network-on-Chip and provides a static
+  // bitmap (MeshMap) indicating the presence of active tiles vs dummy routers.
   typedef struct packed {
     int unsigned x;
     int unsigned y;
@@ -181,6 +191,8 @@ package ${pkg};
   // =========================================================================
   // 2. ROUTING HELPER FUNCTIONS
   // =========================================================================
+  // Pure SystemVerilog functions used at elaboration time to compute
+  // node connections, boundary tie-offs, and relative coordinates within the NoC.
 
   // Whether the connection is a tie-off (edge of the mesh)
   function automatic bit is_tie_off(int x, int y, route_direction_e dir);
@@ -211,6 +223,7 @@ package ${pkg};
   // =========================================================================
   // 4. AXI CROSSBAR RULES (HOST -> CHIMNEY)
   // =========================================================================
+  // Address map rules for routing AXI traffic from the Host into the NoC.
   localparam int unsigned AxiExtNumRules = 1;
   localparam logic [0:0][7:0] AxiExtRegionIdx = '{8'd0};
   localparam logic [0:0][63:0] AxiExtRegionStart = '{64'h0000000000000000};
@@ -219,6 +232,8 @@ package ${pkg};
   // =========================================================================
   // 5. REGBUS SUBSYSTEM RULES
   // =========================================================================
+  // Address map rules for the peripheral configuration bus (RegBus).
+  // Contains the base addresses for the System Controller and external registers.
 <%
   ext_regs = config.system_controller.external_registers if config.system_controller else []
   reg_slaves = [{'name': config.system_controller.name, 'base': config.system_controller.base_addr, 'size': config.system_controller.size if config.system_controller.size else '0x1000'}] if config.system_controller else []

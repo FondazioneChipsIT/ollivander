@@ -8,9 +8,12 @@
 // The user is required to implement the logic to convert a static valid signal
 // into a valid/ready stream, dropping intermediate values if the downstream
 // logic is not ready.
+//
+// BENDER: name="common_cells"
 
-module lossy_valid_to_stream #(
-  parameter type T = logic
+module olli_lossy_valid_to_stream #(
+  parameter int unsigned DATA_WIDTH = 32,
+  parameter type T = logic [DATA_WIDTH-1:0]
 ) (
   input  logic    clk_i,
   input  logic    rst_ni,
@@ -22,6 +25,23 @@ module lossy_valid_to_stream #(
   output logic    busy_o
 );
 
-  // TODO: Implement lossy valid-to-stream adapter logic.
+`ifndef TARGET_SYNTHESIS
+  // Simulation: use common_cells behavioral model
+  lossy_valid_to_stream #(
+    .DATA_WIDTH ( DATA_WIDTH ),
+    .T          ( T )
+  ) i_sim_lossy_valid_to_stream (
+    .clk_i   ( clk_i ),
+    .rst_ni  ( rst_ni ),
+    .valid_i ( valid_i ),
+    .data_i  ( data_i ),
+    .valid_o ( valid_o ),
+    .ready_i ( ready_i ),
+    .data_o  ( data_o ),
+    .busy_o  ( busy_o )
+  );
+`else
+  // Synthesis: instantiate custom IP or foundry macro here
+`endif
 
 endmodule

@@ -2,6 +2,10 @@
   # ============================================================================
   # MAKO TEMPLATE FOR THE SOC GLOBAL RESET TREE
   # ============================================================================
+  # This template generates a project-specific wrapper that aggregates multiple 
+  # reset generators. It takes a global asynchronous Power-On Reset (POR) and an 
+  # array of software-controlled resets, and synchronizes them into the respective 
+  # clock domains to ensure safe, glitch-free de-assertions.
   p_name = config.project.name
 %><%namespace file="/license_header.mako" import="license"/>\
 ${license()}\
@@ -27,8 +31,13 @@ module ${p_name}_rstgen #(
   for (genvar i = 0; i < NumRstDomains; i++) begin : gen_rst_domains
     logic pwr_on_rst_n;
 
-    // 1. Synchronize the global asynchronous power-on reset to the domain clock
-    rstgen i_pwr_on_rstgen (
+    ${require_file("olli_rstgen.sv")}
+    // =======================================================================
+    // 1. HARDWARE POWER-ON RESET (POR) SYNCHRONIZATION
+    // =======================================================================
+    // Synchronize the global asynchronous power-on reset into the local domain clock.
+    // This reset bypasses the software-controlled CSRs and cannot be gated.
+    olli_rstgen i_pwr_on_rstgen (
       .clk_i       ( clks_i[i] ),
       .rst_ni      ( pwr_on_rst_ni ),
       .test_mode_i ( test_mode_i ),
@@ -38,9 +47,13 @@ module ${p_name}_rstgen #(
 
     assign pwr_on_rsts_no[i] = pwr_on_rst_n;
 
-    // 2. Combine the synchronized POR with the software reset and synchronize again.
-    // Software reset is active low, meaning sw_rsts_ni = 0 triggers a reset.
-    rstgen i_sw_rstgen (
+    // =======================================================================
+    // 2. SOFTWARE-CONTROLLED RESET SYNCHRONIZATION
+    // =======================================================================
+    // Combine the synchronized POR with the software reset (driven by the System 
+    // Controller CSRs) and synchronize the result again to ensure a safe release.
+    // Note: Software reset is active low, meaning sw_rsts_ni[i] == 0 triggers a reset.
+    olli_rstgen i_sw_rstgen (
       .clk_i       ( clks_i[i] ),
       .rst_ni      ( pwr_on_rst_n & sw_rsts_ni[i] ),
       .test_mode_i ( test_mode_i ),

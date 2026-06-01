@@ -14,8 +14,9 @@ project:
 # ------------------------------------------------------------------------------
 # 1. TOPOLOGY & INTERCONNECT
 # ------------------------------------------------------------------------------
-# The master switch for Ollivander to use AXI Crossbar templates.
-# In a "crossbar" topology, the Host component encapsulates the main AXI crossbar.
+# The master switch for Ollivander to select the interconnect generation engine.
+# In a "crossbar" topology, the Host component instantiates a central, multi-dimensional
+# AXI interconnect. All masters and slaves connect directly to this central router.
 topology:
   type: "crossbar"
   global_bus:
@@ -28,22 +29,23 @@ topology:
 # ------------------------------------------------------------------------------
 # 2. SYSTEM MICROARCHITECTURE SETTINGS
 # ------------------------------------------------------------------------------
-# Defines global microarchitectural parameters to ensure system-wide coherence
-# across all components, avoiding parameter mismatches in the RTL.
+# Defines deep microarchitectural parameters to ensure system-wide coherence.
+# Ollivander passes these down to the AXI adapters and FIFOs in the top-level
+# to guarantee there are no parameter mismatches between different IPs.
 system_settings:
-  # Mapping of the AXI 'user' field bits for system-wide coherence
+  # Mapping of the AXI 'user' sideband signal bits.
   user_mapping:
     amo_msb: 2          # MSB of the AMO Hart ID (used for LR/SC reservation tracking)
     amo_lsb: 0          # LSB of the AMO Hart ID
     ecc_err_bit: 4      # Bit index for ECC error reporting
     
-  # Microarchitecture parameters for the Shared Memory (LLC/L2)
+  # Crossbar sizing for the Last Level Cache (LLC/L2) AXI network
   llc:
     max_read_txns: 32   # Outstanding read transactions
     max_write_txns: 32  # Outstanding write transactions
     amo_num_cuts: 1     # AXI cuts for Atomic Memory Operations
     
-  # Microarchitecture parameters for Peripheral RegBuses
+  # Crossbar sizing for the low-speed peripheral configuration bus (RegBus)
   reg_bus:
     max_read_txns: 8    # Outstanding read transactions
     max_write_txns: 8   # Outstanding write transactions
@@ -54,14 +56,15 @@ system_settings:
 # 3. CLOCK & RESET DOMAINS
 # ------------------------------------------------------------------------------
 # Defines the clock generation and distribution network.
-# Ollivander uses this to instantiate FLLs, dividers, and CDC synchronizers.
-# Resets are automatically derived from clock domains unless explicitly overridden.
+# Ollivander uses this to automatically instantiate glitch-free muxes, dividers, 
+# and the related configuration registers in the System Controller.
+# Reset trees are automatically derived from these clock domains.
 clock_tree:
-  flls: 4                     # Total number of Frequency Locked Loops (FLLs)
+  flls: 4                     # Total number of analog Frequency Locked Loops (FLLs) available
   domains:
     - name: "rt"
       description: "Real-Time Clock for CLINT and AON timers"
-      is_real_time: true      # Uses static division, bypasses dynamic muxing
+      is_real_time: true      # Bypass SW control: always-on, cannot be gated
       source_fll: 0           # Hardwired to FLL index 0
       static_div: 100         # Static division value (e.g. FLL0 / 100)
       has_mux: false
@@ -69,9 +72,9 @@ clock_tree:
 
     - name: "host"
       description: "Main Host Clock for Cheshire CPU"
-      has_divider: false      # Host usually runs at max speed
-      has_debug_divider: true # Generates a parallel debug clock
-      source_fll: 1           # Hardwired to FLL index 1 to prevent deadlocks
+      has_divider: false      # Host usually runs at max speed (no divider)
+      has_debug_divider: true # Generates a parallel, slower clock for JTAG/DMI
+      source_fll: 1           # Hardwired to FLL 1 to ensure it ticks at boot (prevents deadlocks)
       has_mux: false
       
     - name: "periph"
@@ -119,38 +122,39 @@ clock_tree:
 # ------------------------------------------------------------------------------
 # 3. GLOBAL SYSTEM CONTROLLER & REGISTERS
 # ------------------------------------------------------------------------------
-# Instructs Ollivander to generate the central System Controller registers (PCRs).
-# This block generates the register file (sys_ctrl_regs) handling clock gating, 
-# software resets, isolation signals, and boot addresses for all components.
+# Instructs Ollivander to generate the central System Controller (PCRs).
+# It auto-generates an HJSON specification that OpenTitan's regtool will convert
+# into physical SystemVerilog registers and C-headers for firmware drivers.
 system_controller:
   description: "Main system control and status registers (PCRs)"
   name: "sys_ctrl"
   base_addr: 0x20010000       # Memory mapped base address
   size: 0x00001000            # Size of the memory region
   scratch_registers: 2        # Number of generic GENERIC_SCRATCHx registers
-  version_registers: 5        # Number of VERSIONx registers (e.g., for commit hashes)
-  jedec_id: 0x00000000        # Value for the JEDEC_IDCODE register
+  version_registers: 5        # Number of VERSIONx registers (e.g., for storing Git hashes)
+  jedec_id: 0x00000000        # Value for the JEDEC_IDCODE register (Silicon ID)
   fll_status_regs: true       # Exposes FLL lock signals as read-only registers
 
 # ------------------------------------------------------------------------------
 # 4. HOST SYSTEM (Manager)
 # ------------------------------------------------------------------------------
-# The Host is the central orchestrator (typically a RISC-V application class CPU).
-# In a "crossbar" topology, it internally instantiates the main AXI interconnect.
+# The Host is the central orchestrator (e.g., a RISC-V application class CPU like Cheshire).
+# It boots the system, configures the clock tree, and manages the PLIC/CLINT.
 host:
   name: "manager"
   description: "Main application processor (Cheshire host)"
-  type: "cheshire_isle"       # Must match a wrapper in components/isles/ (e.g., cheshire_isle.sv)
-  clock_domain: "host"        # Wires the clk_i/rst_ni ports to the 'host' domain
-  export_interfaces: ["jtag", "uart", "spi", "i2c"]
+  type: "cheshire_isle"       # Must match a SystemVerilog wrapper (e.g., cheshire_isle.sv)
+  clock_domain: "host"        # Automatically wires clk_i/rst_ni to the 'host' clock tree
+  export_interfaces: ["jtag", "uart", "spi", "i2c"] # Routes these physical pins to the Top-Level
   interfaces:
-    axi_master: true          # Host acts as an AXI master (initiator)
+    axi_master: true          # The Host initiates transactions
     axi_slave:
       - name: "internal_subsystem"
         base_addr: 0x00000000
-        size: 0x20000000 # 512 MB reserved for internal ROM/RAM/CSRs
+        size: 0x20000000      # 512 MB reserved for internal ROM/RAM/CSRs
   parameters:
-    # These mapped directly to the SystemVerilog module parameters
+    # These are mapped directly to the SystemVerilog module #parameters.
+    # Ollivander checks them against the SV header to ensure they exist.
     NumCores: 1
     RtcFreq: 1000000
     Bootrom: true
@@ -163,11 +167,12 @@ host:
     Snooper: true
     IrqRouter: true
   interrupts:
-    # Interrupt routing mapping. 
-    # The Host aggregates interrupts from all other components.
+    # INTERRUPT ROUTING
+    # The Host aggregates interrupts from all peripherals into its PLIC.
     intr_ext_i:
-      cdc: false              # Disable CDC synchronizers if not needed (e.g., source provides stable levels)
-      # Dictionary-style mapping creates a concatenated vector in SV.
+      cdc: false              # Disable CDC synchronizers if the source provides stable levels
+      # Dictionary-style mapping automatically creates a concatenated SystemVerilog vector.
+      # Syntax: { [target_bit] : source_component.source_port }
       source: >
         {
           [22] : ethernet.eth_rx_irq_o,
@@ -192,8 +197,9 @@ host:
 # ------------------------------------------------------------------------------
 # 5. SYSTEM COMPONENTS (Compute, Memories, Peripherals)
 # ------------------------------------------------------------------------------
-# List of all hardware blocks attached to the SoC. 
-# Each block MUST be encapsulated in an "Isle" wrapper matching the 'type' field.
+# List of all hardware IPs attached to the SoC interconnect.
+# Each block MUST be encapsulated in an "Isle" SystemVerilog wrapper 
+# (e.g., `<type>.sv`) placed in the `components/` directory.
 components:
   - name: "hyperbus"
     description: "High-speed external memory interface (DRAM/Flash)"
@@ -207,7 +213,9 @@ components:
       regbus_slave:
         - base_addr: 0x20009000
           size: 0x00001000
-          sync_domain: false   # True = Host Clock, False = Uses CDC to target clock_domain
+          # sync_domain: false means this IP runs on a different clock (periph) than the host.
+          # Ollivander will automatically instantiate an async AXI/RegBus CDC adapter!
+          sync_domain: false
 
   - name: "l2_shared_memory"
     description: "Level 2 shared SRAM with ECC"
@@ -215,7 +223,7 @@ components:
     clock_domain: "l2"
     interfaces:
       axi_slave:
-        - ports: 2             # Generates an array of AXI ports in the wrapper
+        - ports: 2             # Automatically splits the crossbar routing into an array of 2 AXI ports
           base_addr: 0x78000000
           size: 0x00200000
           sync_domain: false
@@ -236,10 +244,10 @@ components:
           size: 0x00800000
           sync_domain: false
     system_config:
-      # Connects standard control signals to the central System Controller
-      isolate: true
-      fetch_enable: true
-      boot_addr: 0x70000000
+      # These flags tell the System Controller to generate dedicated CSRs for this IP.
+      isolate: true           # Generates an AXI isolation fence (to safely turn off the domain)
+      fetch_enable: true      # Generates a boot-enable bit
+      boot_addr: 0x70000000   # Generates a programmable boot address register
     interrupts:
       irqs_i: 
         cdc: false
@@ -265,7 +273,8 @@ components:
       fetch_enable: true
       boot_addr: 0x70000000
     interrupts:
-      # Simple string source maps a wire directly to the target component output
+      # A simple string directly connects an output wire to this input.
+      # Standard bitwise logic operators (like OR '|') are supported!
       irq_ibex_i: { source: "mailbox.snd_irq_o[5] | mailbox.snd_irq_o[14]", cdc: false }
       cfi_req_irq_i: { source: "manager.intr_ext_o[23]" }
       cfi_watermark_irq_i: { source: "manager.intr_ext_o[22]" }
@@ -286,8 +295,8 @@ components:
       fetch_enable: true
       boot_enable: true
       boot_addr: 0x70000000
-      has_busy_status: true   # Generates a 'busy' status register in the System Controller
-      has_eoc_status: true
+      has_busy_status: true   # Auto-generates a read-only 'busy' status register in the System Controller
+      has_eoc_status: true    # Auto-generates an End-Of-Computation flag
     interrupts:
       mbox_irq_i: { source: "mailbox.snd_irq_o[4]", cdc: false } 
       dbg_irq_valid_i: { source: "safety_island.debug_req_o[39:32]", cdc: false }
@@ -322,7 +331,8 @@ components:
           {
             [7:0] : {8{manager.mtip_ext_o}}
           }
-      meip_i: { source: "none" } # 'none' explicitly ties the interrupt input to 0
+      # 'none' explicitly ties the interrupt input to 0 to avoid floating wires
+      meip_i: { source: "none" }
 
   - name: "mailbox"
     description: "Centralized Mailbox for cross-domain Machine Software Interrupts (MSI)"
@@ -339,7 +349,9 @@ components:
     type: "pll_cfg"
     interfaces:
       regbus_slave:
-        - external: true       # Does not instantiate the module, just exports RegBus ports to top-level
+        # external: true means the IP is physically outside the generated Top-Level (e.g., in the Padframe).
+        # Ollivander will NOT instantiate it, but will export its RegBus request/response ports to the SoC I/O!
+        - external: true
           base_addr: 0x20020000
           size: 0x00001000
           sync_domain: false
@@ -354,16 +366,6 @@ components:
           size: 0x00001000
           sync_domain: false
 
-  # - name: "l2_ecc_config"
-  #   description: "L2 ECC configuration registers"
-  #   type: "l2_ecc_cfg"
-  #   interfaces:
-  #     regbus_slave:
-  #       - external: true
-  #         base_addr: 0x200B0000
-  #         size: 0x00001000
-  #         sync_domain: false
-
   - name: "ethernet"
     description: "Gigabit Ethernet MAC with built-in DMA"
     type: "ethernet_isle"
@@ -376,6 +378,7 @@ components:
           size: 0x00001000
           sync_domain: false
     dedicated_clock_div:
+      # Auto-generates an independent clock divider specifically for this IP (e.g., for RGMII)
       name: "eth"
       default_div: 10
 
@@ -392,8 +395,8 @@ components:
     parameters:
       ApbDataWidth: 32
       ApbAddrWidth: 32
-    # Components nested here will be instantiated inside the apb_subsystem wrapper
-    # and mapped to the internal APB bus generated by Ollivander.
+    # Components nested inside an 'apb_subsystem' will be instantiated within its wrapper.
+    # Ollivander automatically generates the AXI-to-APB conversion pipeline and demultiplexer!
     components:
       - name: "system_timer"
         description: "General purpose system timer"

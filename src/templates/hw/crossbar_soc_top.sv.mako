@@ -147,6 +147,7 @@ module ${p_name}
   import ${pkg}::*;
   import ${rpkg}::*;
   import axi_pkg::*;
+  import tlul_pkg::*;
 <%
   # Auto-inject imports from component headers to resolve exported constants and types
   all_imports = set()
@@ -289,7 +290,6 @@ ${clock_and_reset_tree(config, p_name)}
   soc_reg_rsp_t pcrs_rsp_cut;
   
   // Pipeline cut for timing closure on the central system registers
-  ${require_file("reg_cut.sv")}
   reg_cut #(
     .req_t ( soc_reg_req_t ),
     .rsp_t ( soc_reg_rsp_t )
@@ -302,17 +302,34 @@ ${clock_and_reset_tree(config, p_name)}
     .dst_rsp_i ( pcrs_rsp_cut )
   );
   
-  ${p_name}_reg_top #(
-    .reg_req_t(soc_reg_req_t),
-    .reg_rsp_t(soc_reg_rsp_t)
-  ) i_sys_ctrl_reg_top (
+  // RegBus to TL-UL Adapter for OpenTitan regtool
+  ${require_file("reg_to_tlul.sv")}
+  tl_h2d_t sys_ctrl_tl_req;
+  tl_d2h_t sys_ctrl_tl_rsp;
+
+  reg_to_tlul #(
+    .reg_req_t ( soc_reg_req_t ),
+    .reg_rsp_t ( soc_reg_rsp_t ),
+    .tl_h2d_t  ( tl_h2d_t ),
+    .tl_d2h_t  ( tl_d2h_t )
+  ) i_sys_ctrl_reg_to_tlul (
     .clk_i     ( host_clk ),
     .rst_ni    ( host_pwr_on_rst_n ),
     .reg_req_i ( pcrs_req_cut ),
     .reg_rsp_o ( pcrs_rsp_cut ),
-    .reg2hw    ( sys_regs_reg2hw ),
-    .hw2reg    ( sys_regs_hw2reg ),
-    .devmode_i ( 1'b1 )
+    .tl_o      ( sys_ctrl_tl_req ),
+    .tl_i      ( sys_ctrl_tl_rsp )
+  );
+
+  ${p_name}_reg_top i_sys_ctrl_reg_top (
+    .clk_i      ( host_clk ),
+    .rst_ni     ( host_pwr_on_rst_n ),
+    .tl_i       ( sys_ctrl_tl_req ),
+    .tl_o       ( sys_ctrl_tl_rsp ),
+    .reg2hw     ( sys_regs_reg2hw ),
+    .hw2reg     ( sys_regs_hw2reg ),
+    .intg_err_o ( /* unused */ ),
+    .devmode_i  ( 1'b1 )
   );
   
 % if config.system_controller and config.system_controller.fll_status_regs:
@@ -536,11 +553,12 @@ ${clock_and_reset_tree(config, p_name)}
   assign intr_${c.name}_${irq_name}_async = ${f"'{{default: {processed_str}}}" if rep else processed_str};
   % endif
   
+  ${require_file("olli_sync.sv")}
   logic ${dim + " " if dim else ""}intr_${c.name}_${irq_name}_sync;
   
   % if dim:
   for (genvar i = 0; i < $bits(intr_${c.name}_${irq_name}_async); i++) begin : gen_sync_${c.name}_${irq_name}
-  sync #(
+  olli_sync #(
     .STAGES    (3),
     .ResetValue(1'b0)
   ) i_sync_${c.name}_${irq_name} (
@@ -551,7 +569,7 @@ ${clock_and_reset_tree(config, p_name)}
   );
   end
   % else:
-  sync #(
+  olli_sync #(
     .STAGES    (3),
     .ResetValue(1'b0)
   ) i_sync_${c.name}_${irq_name} (

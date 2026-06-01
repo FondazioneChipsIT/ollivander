@@ -101,7 +101,7 @@ make setup
 make generate
 ```
 
-5. **Simulate**: You can instantly compile the generated hardware into a C++ model using Verilator and run the simulation:
+5. **Simulate**: You can compile the generated hardware and run the simulation using QuestaSim:
 ```bash
 make build-sim
 make run-sim
@@ -117,11 +117,11 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 │   └── ...
 ├── <sub_sw>/          # Software headers for bare-metal drivers (*.h)
 ├── <sub_reg>/         # Register specification files (*.hjson)
-├── <sub_tb>/          # Auto-generated C++ testbench for Verilator (*.cpp)
+├── <sub_tb>/          # Auto-generated SystemVerilog testbench (*.sv)
 ├── <sub_cfg>/         # Generated configuration files for tools like FlooGen (*.yml)
 ├── <sub_doc>/         # Output documentation and mapping tables (*.csv)
 ├── Makefile.hw        # Auto-generated targets for hardware dependencies
-└── Makefile.verilator # Auto-generated targets for Verilator simulation
+└── Makefile.vsim      # Auto-generated targets for QuestaSim simulation
 
 <bender_manifest>      # Main compilation manifest linking external IPs and generated RTL
 ```
@@ -135,5 +135,5 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 *   `src/`: The core engine, containing the Python scripts (`ollivander.py`, `soc_schema.py`, `wiring.py`) and the `templates/` folder (Mako blueprints for SystemVerilog and C).
 *   `soc_cfg/`: Contains example YAML configurations (the "Single Source of Truth" for the SoC).
 *   `components/isles/`: Standardized SystemVerilog wrappers (and their Mako templates if dynamically generated) for the hardware IPs.
-*   `components/infrastructure/`: Placeholders for physical primitives (Clock muxes, CDC, Reset generators, Pipeline cuts).
+*   `components/infrastructure/`: The Hardware Abstraction Layer (HAL) containing simulation-ready physical primitives (glitch-free clock muxes, integer dividers, reset generators, CDCs, and edge-to-level propagators) intended to be mapped to technology-specific standard cells during ASIC/FPGA synthesis.
 *   `tools/`: External utilities (e.g., OpenTitan's regtool).

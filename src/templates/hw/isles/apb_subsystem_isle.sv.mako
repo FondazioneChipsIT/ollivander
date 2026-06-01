@@ -2,8 +2,13 @@
   # ============================================================================
   # MAKO TEMPLATE FOR THE APB SUBSYSTEM ISLE
   # ============================================================================
-  # If the generator context does not provide the list of APB peripherals, 
-  # we use a fallback based on the default configuration of Carfield.
+  # This template generates a complete SystemVerilog Isle containing a fully
+  # featured APB Subsystem. It auto-generates the entire protocol conversion
+  # pipeline (AXI4 -> AXI4-Lite -> APB) and instantiates all the peripherals
+  # defined in the YAML configuration (Timers, Watchdogs, CAN, etc.).
+  
+  # If the generator context does not provide the list of APB peripherals,
+  # we use a fallback based on a default configuration.
   _apb_periphs = context.get('apb_peripherals')
   if _apb_periphs is None:
       _apb_periphs = [
@@ -14,7 +19,9 @@
       ]
   num_apb_slaves = len(_apb_periphs)
 
-  # Determine the synchronization domain from the component's interfaces
+  # Determine the synchronization domain from the component's interfaces.
+  # This tells the template whether to instantiate a Clock Domain Crossing (CDC)
+  # at the boundary of the Isle.
   is_sync_domain = True
   if comp.interfaces and 'axi_slave' in comp.interfaces:
       slvs = comp.interfaces['axi_slave']
@@ -26,6 +33,8 @@
               
   comp_clk = comp.clock_domain or config.host.clock_domain or "host_clk"
   sys_clk = config.host.clock_domain or "host_clk"
+  # Calculate if an internal CDC is needed when the component is marked as 
+  # synchronous, but its clock domain is physically different from the host clock.
   needs_internal_cdc = is_sync_domain and (comp_clk != sys_clk)
 %><%namespace file="/license_header.mako" import="license"/>\
 ${license()}\
@@ -52,7 +61,7 @@ ${license()}\
 % for b in sorted(required_benders):
 ${require_bender(b)}
 % endfor
-${require_file("edge_propagator.sv")}
+${require_file("olli_edge_propagator.sv")}
 
 `include "axi/typedef.svh"
 `include "axi/assign.svh"
@@ -141,9 +150,12 @@ module ${p_name}_${c_type}
 % endfor
 );
 
-  // ---------------------------------------------------------
-  // 1. Bus Type Definitions
-  // ---------------------------------------------------------
+  // =========================================================================
+  // 1. BUS TYPE DEFINITIONS
+  // =========================================================================
+  // Generates the struct definitions for all the intermediate buses in the 
+  // conversion pipeline: AXI (64-bit), AXI (32-bit), AXI-Lite, and APB.
+  
   typedef logic [AxiDataWidth-1:0]   axi_data_t;
   typedef logic [AxiDataWidth/8-1:0] axi_strb_t;
   typedef logic [AxiAddrWidth-1:0]   axi_addr_t;
@@ -166,9 +178,9 @@ module ${p_name}_${c_type}
   `APB_TYPEDEF_RESP_T(apb_sys_rsp_t, apb_data_t)
   // verilog_lint: waive-stop line-length
 
-  // ---------------------------------------------------------
-  // 2. AXI Conversion Pipeline
-  // ---------------------------------------------------------
+  // =========================================================================
+  // 2. AXI CONVERSION PIPELINE
+  // =========================================================================
   // The following blocks convert the wide, asynchronous, full-featured AXI bus
   // from the central crossbar into a narrow, synchronous, simple APB bus.
   
@@ -176,8 +188,11 @@ module ${p_name}_${c_type}
   axi_resp_t axi_cdc_rsp;
 
 % if not is_sync_domain:
-  // 2.0 AXI CDC
-  // Receives split CDC signals from the external crossbar and completes the crossing.
+  // =======================================================================
+  // 2.0a ASYNCHRONOUS AXI CDC
+  // =======================================================================
+  // Receives split asynchronous CDC signals directly from the external 
+  // Crossbar and completes the crossing into the local clock domain.
   axi_cdc_dst #(
     .LogDepth   ( LogDepth       ),
     .SyncStages ( CdcSyncStages  ),
@@ -210,8 +225,12 @@ module ${p_name}_${c_type}
     .dst_resp_i                 ( axi_cdc_rsp            )
   );
 % elif needs_internal_cdc:
-  // 2.0 Full AXI CDC
-  // The external bus provides synchronous AXI on sys_clk_i. We cross it to clk_i entirely inside the Isle.
+  // =======================================================================
+  // 2.0b FULL INTERNAL AXI CDC
+  // =======================================================================
+  // The external interconnect provides synchronous AXI on sys_clk_i, but this 
+  // Isle operates on a different local clock (clk_i). We must instantiate a 
+  // full CDC here before feeding the pipeline.
   axi_cdc #(
     .AwDepth    ( 2**LogDepth    ),
     .WDepth     ( 2**LogDepth    ),
@@ -236,7 +255,9 @@ module ${p_name}_${c_type}
     .dst_resp_i ( axi_cdc_rsp    )
   );
 % else:
-  // 2.0 No CDC required (Synchronous and same clock domain)
+  // =======================================================================
+  // 2.0c NO CDC REQUIRED
+  // =======================================================================
   assign axi_cdc_req = axi_req_i;
   assign axi_resp_o  = axi_cdc_rsp;
 % endif
@@ -244,9 +265,12 @@ module ${p_name}_${c_type}
   axi_req_t  axi_amo_req;
   axi_resp_t axi_amo_rsp;
 
-  // 2.1 Shim atomics (not natively supported by APB)
-  // Handles RISC-V Atomic Memory Operations (AMOs) locally, as the downstream
-  // APB bus cannot handle them. Returns the atomic response to the host.
+  // =======================================================================
+  // 2.1 SHIM ATOMICS (RISC-V AMOs)
+  // =======================================================================
+  // Handles RISC-V Atomic Memory Operations (AMOs) locally. The downstream
+  // APB protocol does not support atomics, so this adapter performs the 
+  // read-modify-write sequence and returns the correct response to the Host.
   axi_riscv_atomics_structs #(
     .AxiAddrWidth     ( AxiAddrWidth    ),
     .AxiDataWidth     ( AxiDataWidth    ),
@@ -274,9 +298,11 @@ module ${p_name}_${c_type}
   axi_req_t  axi_cut_req;
   axi_resp_t axi_cut_rsp;
 
-  // 2.2 AXI Cut
-  // Inserts pipeline registers to cut combinatorial paths and improve timing closure,
-  // especially after the complex atomics block.
+  // =======================================================================
+  // 2.2 AXI PIPELINE CUT
+  // =======================================================================
+  // Inserts pipeline registers to cut long combinatorial paths and improve 
+  // timing closure, especially after the complex Atomics adapter logic.
   axi_cut #(
     .Bypass     ( ~RegAmoPostCut ),
     .aw_chan_t  ( axi_aw_chan_t  ),
@@ -298,8 +324,11 @@ module ${p_name}_${c_type}
   apb_sys_axi_dw_req_t axi_dw_req;
   apb_sys_axi_dw_rsp_t axi_dw_rsp;
 
-  // 2.3 Data Downsize
-  // Converts the 64-bit AXI data bus to a 32-bit AXI data bus.
+  // =======================================================================
+  // 2.3 DATA DOWNSIZE
+  // =======================================================================
+  // Converts the 64-bit AXI data bus from the system crossbar down to a 
+  // 32-bit AXI data bus to match the APB peripheral specifications.
   axi_dw_converter #(
     .AxiSlvPortDataWidth ( AxiDataWidth ),
     .AxiMstPortDataWidth ( ApbDataWidth ),
@@ -328,8 +357,11 @@ module ${p_name}_${c_type}
   apb_sys_axi_narrow_req_t axi_narrow_req;
   apb_sys_axi_narrow_rsp_t axi_narrow_rsp;
 
-  // 2.4 Address Downsize
-  // Truncates the 48-bit AXI address down to 32-bit to match the APB address space.
+  // =======================================================================
+  // 2.4 ADDRESS DOWNSIZE
+  // =======================================================================
+  // Truncates the 48-bit AXI address down to a 32-bit address space, as 
+  // APB peripherals do not require the full system-level addressing range.
   axi_modify_address #(
     .slv_req_t  ( apb_sys_axi_dw_req_t     ),
     .mst_addr_t ( apb_addr_t               ),
@@ -347,9 +379,11 @@ module ${p_name}_${c_type}
   apb_sys_axi_lite_req_t axi_lite_req;
   apb_sys_axi_lite_rsp_t axi_lite_rsp;
 
-  // 2.5 AXI to AXI-Lite
+  // =======================================================================
+  // 2.5 AXI TO AXI-LITE CONVERTER
+  // =======================================================================
   // Strips away AXI burst and ID tracking capabilities, simplifying the protocol
-  // to AXI-Lite, which is a necessary stepping stone before APB conversion.
+  // to AXI-Lite. This is a mandatory stepping stone before the final APB conversion.
   axi_to_axi_lite #(
     .AxiAddrWidth    ( ApbAddrWidth             ),
     .AxiDataWidth    ( ApbDataWidth             ),
@@ -372,11 +406,11 @@ module ${p_name}_${c_type}
     .mst_resp_i ( axi_lite_rsp   )
   );
 
-  // ---------------------------------------------------------
-  // 3. APB Demux & Instantiations
-  // ---------------------------------------------------------
+  // =========================================================================
+  // 3. APB DEMUX & PERIPHERAL INSTANTIATIONS
+  // =========================================================================
   
-  // APB Address map definition dynamically built from the YAML configuration
+  // APB Address map definition dynamically built from the YAML configuration.
   typedef struct packed {
     int unsigned             idx;
     logic [ApbAddrWidth-1:0] start_addr;
@@ -392,7 +426,11 @@ module ${p_name}_${c_type}
   apb_sys_req_t [${num_apb_slaves}-1:0] apb_req;
   apb_sys_rsp_t [${num_apb_slaves}-1:0] apb_rsp;
 
-  // Final conversion from AXI-Lite to APB and demultiplexing to the peripherals
+  // =======================================================================
+  // 3.1 AXI-LITE TO APB & DEMULTIPLEXER
+  // =======================================================================
+  // Final conversion from AXI-Lite to APB and demultiplexing of the requests 
+  // to the various instantiated peripherals based on the address map.
   axi_lite_to_apb #(
     .NoApbSlaves      ( ${num_apb_slaves}        ),
     .NoRules          ( ${num_apb_slaves}        ),
@@ -415,9 +453,9 @@ module ${p_name}_${c_type}
     .addr_map_i      ( ApbAddrMap   )
   );
 
-  // ---------------------------------------------------------
-  // Generated Peripheral Instances
-  // ---------------------------------------------------------
+  // =======================================================================
+  // 4. GENERATED PERIPHERAL INSTANCES
+  // =======================================================================
   // Instantiates the IPs defined in the YAML and maps them to the APB bus array.
 % for p in _apb_periphs:
  % if p['type'] == 'apb_timer_unit':
@@ -449,7 +487,7 @@ module ${p_name}_${c_type}
   
   // Ollivander automatically generates edge-to-level propagators for IPs that
   // natively generate pulsed/edge interrupts, to comply with the level-sensitive SoC rules.
-  edge_propagator i_sync_${p['name']}_lo (
+  olli_edge_propagator i_sync_${p['name']}_lo (
     .clk_tx_i  ( clk_i ),
     .rstn_tx_i ( pwr_on_rst_ni ),
     .edge_i    ( ${p['name']}_irq_lo_async ),
@@ -458,7 +496,7 @@ module ${p_name}_${c_type}
     .edge_o    ( ${p['name']}_irq_lo_o )
   );
 
-  edge_propagator i_sync_${p['name']}_hi (
+  olli_edge_propagator i_sync_${p['name']}_hi (
     .clk_tx_i  ( clk_i ),
     .rstn_tx_i ( pwr_on_rst_ni ),
     .edge_i    ( ${p['name']}_irq_hi_async ),
@@ -500,7 +538,7 @@ module ${p_name}_${c_type}
   // Ollivander automatically generates edge-to-level propagators for IPs that
   // natively generate pulsed/edge interrupts, to comply with the level-sensitive SoC rules.
   for (genvar i = 0; i < 4; i++) begin : gen_sync_${p['name']}_events
-    edge_propagator i_sync_${p['name']}_events (
+    olli_edge_propagator i_sync_${p['name']}_events (
       .clk_tx_i  ( clk_i ),
       .rstn_tx_i ( pwr_on_rst_ni ),
       .edge_i    ( ${p['name']}_events_async[i] ),
@@ -511,7 +549,7 @@ module ${p_name}_${c_type}
   end
 
   for (genvar i = 0; i < 4; i++) begin : gen_sync_${p['name']}_channels
-    edge_propagator i_sync_${p['name']}_channels (
+    olli_edge_propagator i_sync_${p['name']}_channels (
       .clk_tx_i  ( clk_i ),
       .rstn_tx_i ( pwr_on_rst_ni ),
       .edge_i    ( ${p['name']}_channels_async[i] ),

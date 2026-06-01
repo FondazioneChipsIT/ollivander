@@ -31,8 +31,8 @@ prometheus_soc/
 
 ## 2. Prerequisites
 
-Before running the generator, ensure you have **Python 3** and `make` installed on your system.
-Ollivander provides a fully automated setup for its Python dependencies (supporting both `uv` and `pip`).
+Before running the generator, ensure you have `make` installed on your system.
+You don't even need to worry about having the correct version of Python installed: the `make setup` command will automatically download and configure a fully isolated Python environment (using `uv`) along with all the required dependencies.
 
 ---
 
@@ -92,21 +92,41 @@ Instead, create the **Environment Bridge File** (`prometheus_env.yaml`):
 paths:
   components:
     - "hw_ips"  # Instructs Ollivander to also search here for Isles/Tiles
+
+# You can also register custom Git dependencies for Bender!
+dependencies:
+  aes_ip:
+    git: "https://github.com/my-org/aes_ip.git"
+    version: "1.0.0"
 ```
 
 ---
 
-## 5. Generation and Simulation
+## 5. Validation, Generation and Simulation
 
 Open the `Makefile` you copied in Step 4 and ensure the variables (`SOC_YAML`, `ENV_YAML`) match your actual filenames. 
 
-To build your SoC, simply run:
+### Hardware Generation
+
+To build your SoC for the first time, run:
 ```bash
 make generate
 ```
-Ollivander will create the `generated/` directory containing your complete SoC RTL, the `Bender.yml` manifest in your project root, and a ready-to-use Verilator C++ testbench!
+Ollivander will create the `generated/` directory containing your complete SoC RTL, the `Bender.yml` manifest in your project root, and a ready-to-use SystemVerilog testbench!
 
-To compile the generated hardware into a C++ model using Verilator and run the simulation:
+### Iterative Development (fast-check)
+
+After running make generate at least once (so that the initial RTL and dependencies are fully resolved and generated), you can use the fast-check command for quicker development iterations: 
+```bash
+make fast-check
+```
+This command re-runs the generation process but skips the slow dependency fetching step.
+> ⚠️ Warning: The `fast-check` mode is intended primarily for the development of Ollivander itself. It performs "dirty" in-place operations on the source files of external libraries to resolve dependencies.
+> * It requires that the RTL code has already been generated at least once.
+> * If you change the pointers to external libraries or add new components, this mode might fail or produce incorrect results.
+
+For a clean and definitive build, always rely on the full `make generate` command.
+To compile the generated hardware and run the simulation using QuestaSim:
 ```bash
 make build-sim
 make run-sim

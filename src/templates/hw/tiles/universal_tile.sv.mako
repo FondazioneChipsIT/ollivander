@@ -2,8 +2,9 @@
   # ============================================================================
   # MAKO TEMPLATE FOR THE UNIVERSAL WRAPPER (ISLE / TILE)
   # ============================================================================
-  # This template takes a generic 'Isle' and wraps it with the appropriate 
-  # interconnect logic for the FlooNoC 'Tile' generation.
+  # This template takes a generic 'Isle' (a standard SoC component) and wraps 
+  # it with the appropriate interconnect logic (Router + Chimney) to generate 
+  # a 'Tile' suitable for a FlooNoC 2D Mesh topology.
 
   import re
   from soc_schema import get_isle_info
@@ -13,7 +14,11 @@
   p_name = config.project.name
   is_host = (comp.name == config.host.name)
   
-  # Extract NoC networks this tile connects to
+  # ============================================================================
+  # 1. NOC NETWORK RESOLUTION
+  # ============================================================================
+  # Extract the specific NoC networks (e.g., narrow, wide) this tile connects to,
+  # and determine if it acts as an AXI Master, Slave, or both.
   noc_nets_raw = comp.interfaces.get('noc_networks', {}) if comp.interfaces else {}
   mst_nets = noc_nets_raw.get('master', []) if isinstance(noc_nets_raw, dict) else noc_nets_raw
   slv_nets = noc_nets_raw.get('slave', []) if isinstance(noc_nets_raw, dict) else noc_nets_raw
@@ -46,7 +51,12 @@
   _orig_type = context.get('original_type', c_type.replace('_tile', '_isle'))
   isle_name = f"{p_name}_{_orig_type}"
 
-  # Auto-inspect the underlying Isle to expose its native parameters and I/O
+  # ============================================================================
+  # 2. ISLE AUTO-INSPECTION (SSoT)
+  # ============================================================================
+  # Auto-inspect the underlying Isle using the Verible AST parser to extract its 
+  # native parameters and physical I/O ports. This ensures the wrapper perfectly 
+  # matches the underlying hardware (Single Source of Truth).
   isle_info = get_isle_info(isle_name, search_paths)
   isle_ports = []
   terminated_ports = []
@@ -100,6 +110,9 @@
   valid_user_params = {k: v for k, v in (comp.parameters or {}).items() if k in isle_params}
   all_params = {**isle_params, **valid_user_params}
           
+  # ============================================================================
+  # 3. AXI TYPE OVERRIDES
+  # ============================================================================
   # Separate AXI type overrides so they don't appear in the Tile's module parameter list
   # (since NoC types like axi_nw_join_req_t are defined inside the module body).
   isle_type_overrides = {}
@@ -111,7 +124,7 @@
           if 'axi_resp_t' in all_params: isle_type_overrides['axi_resp_t'] = rsp_type
           if 'axi_rsp_t' in all_params: isle_type_overrides['axi_rsp_t'] = rsp_type
           
-          # Auto-inject physical NoC parameters for Master-only (like DMA)
+          # Auto-inject physical NoC parameters for Master-only components (e.g., DMA)
           cfg_pfx = "AxiCfgN" if has_master_narrow else "AxiCfgW"
           if 'AxiDataWidth' in all_params: isle_type_overrides['AxiDataWidth'] = f"{cfg_pfx}.DataWidth"
           if 'AxiAddrWidth' in all_params: isle_type_overrides['AxiAddrWidth'] = f"{cfg_pfx}.AddrWidth"
@@ -203,6 +216,7 @@ module ${p_name}_${c_type}
   // =======================================================================
   // ROUTER PORTS (Always 4 Cardinal Directions)
   // =======================================================================
+  // These ports connect this tile to its 4 adjacent neighbors in the 2D mesh.
   output floo_req_t  [West:North] floo_req_o,
   input  floo_rsp_t  [West:North] floo_rsp_i,
   output floo_wide_t [West:North] floo_wide_o,
@@ -226,6 +240,8 @@ module ${p_name}_${c_type}
   // =======================================================================
   // CLOCK GATING & RESET CONTROL
   // =======================================================================
+  // Dynamic clock gating and reset bypass logic, controlled by the System 
+  // Controller via the Auto Control Groups mechanism.
   input  logic tile_clk_en_i,
   input  logic tile_rst_ni,
   input  logic clk_rst_bypass_i
@@ -268,6 +284,8 @@ module ${p_name}_${c_type}
   // =======================================================================
   // 0. NOC CLOCK DOMAIN ASSIGNMENT
   // =======================================================================
+  // Determines which clock domain drives the NoC Router and Chimney.
+  // Usually it's the system clock, but it can fallback to the local clock.
   logic noc_clk;
   logic noc_rst_n;
 % if 'sys_clk_i' in known_ports:
@@ -346,7 +364,8 @@ module ${p_name}_${c_type}
   // =======================================================================
   // 2. FLOONOC CHIMNEY & AXI WIRING
   // =======================================================================
-  // The chimney converts standard AXI transactions from the IP into NoC packets.
+  // The Chimney acts as the bridge between the standard AXI protocol used by 
+  // the IP (Isle) and the packet-based protocol used by the FlooNoC Router.
   
   axi_narrow_in_req_t  narrow_in_req;
   axi_narrow_in_rsp_t  narrow_in_rsp;
@@ -428,6 +447,8 @@ module ${p_name}_${c_type}
   // =======================================================================
   // AXI ERROR SLAVES FOR TERMINATED PORTS
   // =======================================================================
+  // Instantiates dummy AXI slaves that respond with DECERR for ports that 
+  // are explicitly marked as 'terminated' in the YAML configuration.
  % for p in error_slave_ports:
   ${p['type']} ${p['name']}${p.get('unpacked', '')};
   % if p['name'].endswith('_isolate_i'):
@@ -498,7 +519,12 @@ module ${p_name}_${c_type}
  % endfor
 % endif
 
-  // Optional Join for Slaves connected to both narrow and wide networks
+  // =======================================================================
+  // 2b. FLOONOC JOIN (OPTIONAL)
+  // =======================================================================
+  // Instantiates a Join module if the IP acts as an AXI Slave connected to 
+  // both the Narrow and Wide networks simultaneously. It merges the two 
+  // traffic streams into a single AXI interface for the IP.
 % if use_join:
   localparam axi_cfg_t AxiCfgJoin = floo_pkg::axi_join_cfg(AxiCfgN, AxiCfgW);
 
@@ -538,8 +564,11 @@ module ${p_name}_${c_type}
 
 % if is_host and config.system_controller:
   // =======================================================================
-  // HOST REGBUS FLATTENING & SYSTEM CONTROLLER
+  // 2c. HOST REGBUS FLATTENING & SYSTEM CONTROLLER
   // =======================================================================
+  // Only generated for the Host Tile. It flattens the multi-dimensional RegBus 
+  // array and converts the internal slice to TL-UL to drive the OpenTitan-based 
+  // System Controller registers.
   <%
     reg_rsp_type = next((p['type'] for p in isle_ports if p['name'] == 'reg_rsp_i'), 'soc_reg_rsp_t')
     reg_req_type = next((p['type'] for p in isle_ports if p['name'] == 'reg_req_o'), 'soc_reg_req_t')
@@ -557,17 +586,33 @@ module ${p_name}_${c_type}
     tile_reg_rsp[$low(tile_reg_rsp)] = pcrs_rsp;
   end
 
-  ${p_name}_reg_top #(
+  ${require_file("reg_to_tlul.sv")}
+  tlul_pkg::tl_h2d_t sys_ctrl_tl_req;
+  tlul_pkg::tl_d2h_t sys_ctrl_tl_rsp;
+
+  reg_to_tlul #(
     .reg_req_t ( ${base_req_type} ),
-    .reg_rsp_t ( ${base_rsp_type} )
-  ) i_sys_ctrl_regs (
+    .reg_rsp_t ( ${base_rsp_type} ),
+    .tl_h2d_t  ( tlul_pkg::tl_h2d_t ),
+    .tl_d2h_t  ( tlul_pkg::tl_d2h_t )
+  ) i_sys_ctrl_reg_to_tlul (
     .clk_i     ( clk_i ),
     .rst_ni    ( rst_ni ),
     .reg_req_i ( tile_reg_req[$low(tile_reg_req)] ),
     .reg_rsp_o ( pcrs_rsp ),
-    .reg2hw    ( sys_regs_reg2hw_o ),
-    .hw2reg    ( sys_regs_hw2reg_i ),
-    .devmode_i ( 1'b1 )
+    .tl_o      ( sys_ctrl_tl_req ),
+    .tl_i      ( sys_ctrl_tl_rsp )
+  );
+
+  ${p_name}_reg_top i_sys_ctrl_regs (
+    .clk_i      ( clk_i ),
+    .rst_ni     ( rst_ni ),
+    .tl_i       ( sys_ctrl_tl_req ),
+    .tl_o       ( sys_ctrl_tl_rsp ),
+    .reg2hw     ( sys_regs_reg2hw_o ),
+    .hw2reg     ( sys_regs_hw2reg_i ),
+    .intg_err_o ( /* unused */ ),
+    .devmode_i  ( 1'b1 )
   );
 % endif
 
@@ -644,6 +689,8 @@ module ${p_name}_${c_type}
   // =======================================================================
   // 3. ISLE INSTANTIATION (${isle_name})
   // =======================================================================
+  // Instantiates the actual hardware IP, wiring its AXI ports to the Chimney 
+  // and passing through any exported native I/O or interrupts.
   
 % if not has_slave_narrow:
   assign narrow_out_rsp = '0;

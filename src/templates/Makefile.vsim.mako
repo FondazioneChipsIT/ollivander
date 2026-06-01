@@ -39,6 +39,8 @@ Bender.lock: $(BENDER_PREREQ)
 prep-sim: update-hw $(BENDER_PREREQ)
 	@echo "\n[MAKE] Fetching dependencies and generating IPs..."
 	@$(BENDER) checkout --force || true
+	@echo "\n[MAKE] Applying patch to OpenTitan manifest..."
+	@sed -i 's/prim_flop_macros.svh/prim_flop_macros.sv/g' bender_work/opentitan/Bender.yml || true
 	@mkdir -p bender_work/idma/target/rtl/include
 	@mkdir -p bender_work/cheshire/target/sim/models
 	@touch bender_work/cheshire/target/sim/models/s25fs512s.v

@@ -1,18 +1,18 @@
 # Copyright 2026 Fondazione Chips-IT.
 # Solderpad Hardware License, Version 0.51, see LICENSE for details.
 # SPDX-License-Identifier: SHL-0.51
-#
-# ==============================================================================
-# CONNECTION MATRIX GENERATOR FOR OLLIVANDER SoC
-# ==============================================================================
-# This module is responsible for analyzing the SoC configuration and building a 
-# comprehensive "Connection Matrix". It translates the high-level YAML topology 
-# into low-level SystemVerilog port connections.
-#
-# It also handles "implicit" connections, like inferring the existence of an 
-# interrupt output on a source component just because a target component 
-# declared it as its input.
-# ==============================================================================
+"""
+==============================================================================
+CONNECTION MATRIX GENERATOR FOR OLLIVANDER SoC
+==============================================================================
+This module is responsible for analyzing the SoC configuration and building a
+comprehensive "Connection Matrix". It translates the high-level YAML topology
+into low-level SystemVerilog port connections.
+
+It also handles "implicit" connections, like inferring the existence of an
+interrupt output on a source component just because a target component
+declared it as its input.
+"""
 import re
 
 def camel_case(name):
@@ -34,13 +34,20 @@ def is_external(comp):
     return any(slv.get('external', False) for slv in slaves)
 
 def is_array_port(comp_name, port_name, comp_info, is_input=True):
+    """
+    Checks if a given port on a component is an array (packed or unpacked).
+    This is used to determine if replication syntax `'{default: ...}` is needed
+    when connecting a scalar signal to a vector input.
+    """
     ports = comp_info.get(comp_name, {}).get("ports", {})
     p_info = ports.get(port_name)
     if not p_info:
+        # Fallback for ports ending in _i or _o
         base_port = port_name[:-2] if (is_input and port_name.endswith('_i')) or (not is_input and port_name.endswith('_o')) else port_name
         p_info = ports.get(base_port)
         
     if p_info:
+        # A port is an array if its type or unpacked dimension contains brackets.
         return '[' in p_info["type_dim"] or '[' in p_info["unpacked"]
     return False
 
@@ -57,7 +64,7 @@ def infer_interrupts(soc_config, comp_info):
     """
     all_comps = {c.name: c for c in [soc_config.host] + (soc_config.components if soc_config.components else [])}
     
-    # Include APB sub-components in the lookup dictionary
+    # Include APB sub-components in the lookup dictionary for source resolution.
     for c in list(all_comps.values()):
         if c.components:
             for sub_c in c.components:
@@ -69,14 +76,17 @@ def infer_interrupts(soc_config, comp_info):
                 source = irq_cfg.get('source')
                 sources_to_check = list(source.values()) if isinstance(source, dict) else [str(source)]
                 for s in sources_to_check:
+                    # Find all 'component.port' references in the source string.
                     matches = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b', str(s))
                     for src_comp, src_port in matches:
                         if src_comp in all_comps:
                             src_c = all_comps[src_comp]
                             if src_c.interrupts is None: 
                                 src_c.interrupts = {}
+                            # If the source port is not explicitly defined as an interrupt on the source component, infer it.
                             if src_port not in src_c.interrupts:
                                 dim_str = ""
+                                # Parse the SV header of the source component to get the port's dimensions.
                                 src_ports = comp_info.get(src_comp, {}).get("ports", {})
                                 p_info = src_ports.get(src_port) or src_ports.get(f"{src_port}_o")
                                 
@@ -85,6 +95,7 @@ def infer_interrupts(soc_config, comp_info):
                                     if dims:
                                         dim_str = "".join(dims)
                                 
+                                # Create a new interrupt definition for the source component.
                                 irq_data = {"type": "level"}
                                 if dim_str:
                                     irq_data["sv_dimensions"] = dim_str
@@ -149,7 +160,7 @@ def build_connection_matrix(soc_config, comp_info):
             ports.append(".axi_req_o ( xbar_sync_slv_req )")
             ports.append(".axi_resp_i ( xbar_sync_slv_rsp )")
 
-            # Host LLC Connection (Dedicated Point-to-Point)
+            # Host LLC Connection (Dedicated Point-to-Point).
             has_llc = any('llc_port' in c.interfaces for c in all_comps if c.interfaces)
             if has_llc:
                 for sig, d in mst_ports.items():
@@ -157,6 +168,7 @@ def build_connection_matrix(soc_config, comp_info):
                 ports.append(".async_axi_llc_isolate_i ( 1'b0 )")
                 ports.append(".async_axi_llc_isolated_o ( )")
             else:
+                # If no LLC is present, tie off the LLC ports on the Host.
                 for sig, d in mst_ports.items():
                     if d == 'i': # Master input
                         ports.append(f".async_axi_llc_{sig}_i ( '0 )")
@@ -192,7 +204,7 @@ def build_connection_matrix(soc_config, comp_info):
                     
                     is_sync = slvs[0].get('sync_domain', False)
                     
-                    # If a component exposes multiple AXI ports (e.g., Dual-Port L2),
+                    # If a component exposes multiple AXI ports (e.g., a Dual-Port L2),
                     # we concatenate the corresponding slices from the Host array.
                     if is_sync:
                         if num_ports > 1:
@@ -206,7 +218,7 @@ def build_connection_matrix(soc_config, comp_info):
                     else:
                         for sig, d in slv_ports.items():
                             if num_ports > 1:
-                                # Map multiple ports slicing the array (e.g. L2 Dual Port Memory)
+                                # Map multiple ports by slicing the crossbar array.
                                 concat = ", ".join([f"xbar_slv_{sig}[{base_idx}{p}]" for p in reversed(range(num_ports))])
                                 ports.append(f".async_axi_in_{sig}_{d} ( {{ {concat} }} )")
                             else:
@@ -316,6 +328,7 @@ def build_connection_matrix(soc_config, comp_info):
                             for src_comp_name in src_comp_names:
                                 src_comp = next((c for c in all_comps if c.name == src_comp_name), None)
                                 if not src_comp:
+                                    # Check inside sub-components (e.g., APB subsystem)
                                     for c in all_comps:
                                         if c.components:
                                             src_comp = next((sub for sub in c.components if sub.name == src_comp_name), None)
@@ -341,24 +354,28 @@ def build_connection_matrix(soc_config, comp_info):
                                 ports.append(f".{port_name} ( '0 /* missing {missing_comp} */ )")
                             continue
                                 
-                        # Respect explicit user overrides to disable CDC
+                        # Respect explicit user overrides to disable CDC.
                         if irq_cfg.get('cdc') is False:
                             needs_sync = False
                                     
                         if is_mapped_block or isinstance(source, dict):
+                            # For complex mapped interrupts, a dedicated wire is always generated.
                             if needs_sync:
                                 ports.append(f".{port_name} ( intr_{comp.name}_{irq_name}_sync )")
                             else:
                                 ports.append(f".{port_name} ( intr_{comp.name}_{irq_name} )")
                         else:
+                            # For simple 1-to-1 connections, generate the wire name directly.
                             processed_str = re.sub(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b', r'intr_\1_\2', source_str)
                             
+                            # Check if the destination port is an array and the source is a scalar.
                             is_arr = is_array_port(comp.name, port_name, comp_info)
                             src_is_arr = False
                             src_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)$', source_str.strip())
                             if src_match:
                                 src_is_arr = is_array_port(src_match.group(1), src_match.group(2), comp_info, False)
                                 
+                            # Use replication syntax if connecting scalar to vector.
                             out_str = f"'{{default: {processed_str}}}" if (is_arr and not src_is_arr) else processed_str
                             out_str_sync = f"'{{default: intr_{comp.name}_{irq_name}_sync}}" if (is_arr and not src_is_arr) else f"intr_{comp.name}_{irq_name}_sync"
                             

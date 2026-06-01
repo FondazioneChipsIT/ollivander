@@ -6,7 +6,12 @@
   npkg   = f"floo_{p_name}_noc_pkg"
   host_clk = config.host.clock_domain or "system_clk"
   
-  # Costruzione della griglia bidimensionale per il piazzamento delle Tile
+  # ============================================================================
+  # 1. 2D MESH GRID CONSTRUCTION
+  # ============================================================================
+  # This block parses the 'placement' constraints from the YAML configuration
+  # and builds a 2D mathematical model (grid) of the Network-on-Chip.
+  # It maps each physical (X,Y) coordinate to a specific component instance.
   comps = [config.host] + config.components
   max_x, max_y = 0, 0
   grid = {}
@@ -34,6 +39,8 @@
               max_x = max(max_x, x)
               max_y = max(max_y, y)
               
+  # Fill unassigned coordinates with 'None' to indicate where a Dummy Tile 
+  # (a pure router with no attached IP) should be instantiated.
   for x in range(max_x + 1):
       for y in range(max_y + 1):
           if (x,y) not in grid:
@@ -94,6 +101,9 @@ module ${p_name}
   output logic jtag_tdo_o,
   output logic jtag_tdo_oe_o\
 <%
+  # ============================================================================
+  # 2. DYNAMIC PORT EXPORT RESOLUTION
+  # ============================================================================
   all_extra_ports = []
   # Key: (comp.name, inst_idx), Value: list of connection strings
   comp_extra_conns = {}
@@ -109,7 +119,7 @@ module ${p_name}
       if not exported_interfaces:
           continue
           
-      # Find number of instances for this component
+      # Determine the number of instances for this component to properly suffix port names.
       num_instances = 0
       inst_coords = {}
       for (gx, gy), (c_grid, idx) in grid.items():
@@ -140,7 +150,7 @@ module ${p_name}
               decl = p_info["decl"]
               p_dir = p_info["dir"]
               
-              # Evaluate parameters in the port declaration
+              # Evaluate parameters in the port declaration to resolve array sizes (e.g., [NumPorts-1:0])
               for param_name, param_val in known_params.items():
                   decl = re.sub(rf'\b{param_name}\b', param_val, decl)
               
@@ -165,7 +175,7 @@ module ${p_name}
                       comp_extra_conns[key] = []
                   comp_extra_conns[key].append(f".{port_name:<17} ( {top_port_name} )")
 
-  # Add RegBus ports for external registers
+  # Add explicit RegBus ports for external registers (e.g., located in the padframe)
   if config.system_controller and config.system_controller.external_registers:
       for ext_reg in config.system_controller.external_registers:
           all_extra_ports.append(f"output {pkg}::soc_reg_req_t {ext_reg.name}_reg_req_o")
@@ -195,6 +205,8 @@ ${"," if all_extra_ports else ""}
   soc_reg_req_t [${num_reg_slvs-1}:0] host_reg_req;
   soc_reg_rsp_t [${num_reg_slvs-1}:0] host_reg_rsp;
   
+  // Connect external register slaves to the Host's RegBus array.
+  // Index 0 is reserved for the internal System Controller PCRs.
  % for i, ext_reg in enumerate(ext_regs):
   assign ${ext_reg.name}_reg_req_o = host_reg_req[${i+1}];
   assign host_reg_rsp[${i+1}]      = ${ext_reg.name}_reg_rsp_i;
@@ -211,12 +223,15 @@ ${clock_and_reset_tree(config, p_name)}
   // =========================================================================
   // 3. FLOONOC 2D MESH ARRAYS
   // =========================================================================
+  // These multi-dimensional arrays represent the physical links between routers.
   floo_req_t  [${max_x}:0][${max_y}:0][West:North] tile_req_o, tile_req_i;
   floo_rsp_t  [${max_x}:0][${max_y}:0][West:North] tile_rsp_o, tile_rsp_i;
   floo_wide_t [${max_x}:0][${max_y}:0][West:North] tile_wide_o, tile_wide_i;
 
-  // Mesh wiring generation
-  // Horizontal connections (East-West)
+  // MESH WIRING GENERATION
+  // Generates the bidirectional links connecting adjacent routers.
+  
+  // 3.1 Horizontal connections (East <-> West)
   for (genvar y = 0; y <= ${max_y}; y++) begin : gen_x_links
     for (genvar x = 0; x < ${max_x}; x++) begin : gen_x_inner
       assign tile_req_i[x+1][y][West] = tile_req_o[x][y][East];
@@ -227,7 +242,7 @@ ${clock_and_reset_tree(config, p_name)}
       assign tile_rsp_i[x+1][y][West] = tile_rsp_o[x][y][East];
       assign tile_wide_i[x][y][East]  = tile_wide_o[x+1][y][West];
     end
-    // Boundaries
+    // East/West Boundaries Tie-Offs
     assign tile_req_i[0][y][West] = '0;
     assign tile_rsp_i[0][y][West] = '0;
     assign tile_wide_i[0][y][West] = '0;
@@ -237,7 +252,7 @@ ${clock_and_reset_tree(config, p_name)}
     assign tile_wide_i[${max_x}][y][East] = '0;
   end
 
-  // Vertical connections (North-South)
+  // 3.2 Vertical connections (North <-> South)
   for (genvar x = 0; x <= ${max_x}; x++) begin : gen_y_links
     for (genvar y = 0; y < ${max_y}; y++) begin : gen_y_inner
       assign tile_req_i[x][y+1][South] = tile_req_o[x][y][North];
@@ -248,7 +263,7 @@ ${clock_and_reset_tree(config, p_name)}
       assign tile_rsp_i[x][y+1][South] = tile_rsp_o[x][y][North];
       assign tile_wide_i[x][y][North]  = tile_wide_o[x][y+1][South];
     end
-    // Boundaries
+    // North/South Boundaries Tie-Offs
     assign tile_req_i[x][0][South] = '0;
     assign tile_rsp_i[x][0][South] = '0;
     assign tile_wide_i[x][0][South] = '0;
@@ -261,6 +276,8 @@ ${clock_and_reset_tree(config, p_name)}
   // =========================================================================
   // 4. TILE INSTANTIATIONS
   // =========================================================================
+  // Iterates over every coordinate in the 2D mesh, instantiating either a 
+  // Functional Tile (wrapper containing the IP) or a Dummy Tile (pure router).
 % for y in range(max_y + 1):
  % for x in range(max_x + 1):
   <% 
@@ -287,7 +304,7 @@ ${clock_and_reset_tree(config, p_name)}
     is_host = (c.name == config.host.name)
     module_type = f"{p_name}_{c.type}"
     
-    # Determine number of instances for this component to properly suffix generated wire names
+    # Discover the total number of instances for this IP to properly suffix its specific wires.
     num_instances = 0
     for (gx, gy), (c_grid, c_idx) in grid.items():
         if c_grid and c_grid.name == c.name:
@@ -301,7 +318,7 @@ ${clock_and_reset_tree(config, p_name)}
     else:
         c_rst_wire = f'rsts_n[DomainIdx_{fmt_rst(c_rst)}]'
     
-    # Determine Auto Control Group bindings
+    # Connect dynamic clock gating and resets if this tile belongs to an Auto Control Group.
     ctrl_group = None
     if config.system_controller and config.system_controller.auto_control_groups:
         for g in config.system_controller.auto_control_groups:
@@ -410,7 +427,7 @@ ${clock_and_reset_tree(config, p_name)}
         if (c.name, inst_idx) in comp_extra_conns:
             conns.extend(comp_extra_conns[(c.name, inst_idx)])
             
-    # Auto-tie-off remaining unconnected ports to prevent TFMPC warnings
+    # Auto-tie-off remaining unconnected ports to prevent TFMPC / Linter warnings.
     connected_ports = []
     for p in conns:
         m = re.match(r'^\s*\.\s*([a-zA-Z0-9_]+)\s*\(', p)
@@ -424,6 +441,9 @@ ${clock_and_reset_tree(config, p_name)}
                 
     param_dict = {}
     
+    # ==========================================================================
+    # TILE PARAMETER RESOLUTION
+    # ==========================================================================
     # 1. Standard AXI/System parameters
     supported = c_info.get("supported_params", [])
     for p in supported:
@@ -502,7 +522,7 @@ ${clock_and_reset_tree(config, p_name)}
         elif p == 'RouteCfg':
             param_dict[p] = f"{npkg}::RouteCfg"
             
-    # 2. Custom parameters from YAML (override standard ones if specified)
+    # 2. Apply Custom parameters from the YAML (overrides standard ones if specified)
     if c.parameters:
         for p_k, p_v in c.parameters.items():
             if isinstance(p_v, bool):

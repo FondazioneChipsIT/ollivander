@@ -32,64 +32,53 @@ dependencies:
     version: "1.0.4"
   axi:
     git: "https://github.com/pulp-platform/axi.git"
-    version: "0.39.8"
+    version: "0.39.9"
   can_bus:
     git: "https://github.com/AlSaqr-platform/can_bus.git"
     rev: "0ec0bf8b7dab6d5e4b3f7ec58338a8efee066379"
   cheshire:
-    git: "https://github.com/FondazioneChipsIT/cheshire.git"
-    rev: "54672da4ec7d001bf1c1a104eb70ef25a7e1f4db"
+    git: "https://github.com/pulp-platform/cheshire.git"
+    version: "0.3.1"
   common_cells:
     git: "https://github.com/pulp-platform/common_cells.git"
-    version: "1.38.0"
+    version: "1.39.0"
   datamover:
     git: "https://github.com/pulp-platform/datamover.git"
-    rev: "5df9c9bd9e10ad020763c4291c571adf35ef4ae2"
+    rev: "f14d4db2a72c08b43b3511013e821a4600f6ef56"
   dyn_mem:
     git: "https://github.com/pulp-platform/dyn_spm.git"
-    rev: "480590062742230dc9bd4050358a15b4747bdf34"
+    rev: "78d4b4248b3c7b02a0e61d683f658e5094ac8c44"
   floo_noc:
     git: "https://github.com/pulp-platform/floonoc.git"
-    version: "0.8.0"
+    version: "0.8.1"
   hci:
-    git: "https://github.com/FondazioneChipsIT/hci.git"
-    rev: "3e63936991569d0b1e315d6914478937b37bb338"
-  hwpe-ctrl:
-    git: "https://github.com/LuigiGhionda/hwpe-ctrl.git"
-    rev: "3156cabafff3b4fb90c1c78fb02b912a931a037c"
-  hwpe-stream:
-    git: "https://github.com/LuigiGhionda/hwpe-stream.git"
-    rev: "4c676e44ccf70a0d8dc67a84c6e02372bfd22557"
+    git: "https://github.com/pulp-platform/hci.git"
+    version: "2.4.1"
   hyperbus:
-    git: "https://github.com/FondazioneChipsIt/hyperbus.git"
-    rev: "e51bca81ea908b695808e32cdabbb4d9cd0b5d2d"
-  idma:
-    git: "https://github.com/FondazioneChipsIt/idma.git"
-    rev: "2e637216e0455d77706a50d0639b86891e2a83aa"
+    git: "https://github.com/pulp-platform/hyperbus.git"
+    version: "0.0.9"
   mailbox_unit:
     git: "https://github.com/pulp-platform/mailbox_unit.git"
     version: "1.1.0"
   obi:
     git: "https://github.com/pulp-platform/obi.git"
-    rev: "acfcd0f80c7539aa8da7821a66d9acf2074a5b4e"
+    rev: "6a724da5c8d6412b88b6948746e04c1adf39d017"
   opentitan:
     git: "https://github.com/AlSaqr-platform/opentitan.git"
-    rev: "1753078bf733aeda1da4e2a5252e21dd938aa410"
+    rev: "chips-it"
   pulp-ethernet:
     git: "https://github.com/pulp-platform/pulp-ethernet.git"
-    rev: "db9a90dd27fa85ddbe9b7cd22e03bf43b2c14838"
+    rev: "fdaff021a36e5fcaf0b4945c9aef6bc9d4487ca9"
   pulp_cluster:
     git: "https://github.com/FondazioneChipsIT/pulp_cluster.git"
-    rev: "b2dd982cb829b5b280a651d3312a69e5b4e3c3f3"
+    rev: "chips-it"
   redmule:
     git: "https://github.com/pulp-platform/redmule.git"
+    # rev: "devel"
     version: "2.0.4"
   register_interface:
     git: "https://github.com/pulp-platform/register_interface.git"
     version: "0.4.7"
-  riscv-dbg:
-    git: "https://github.com/pulp-platform/riscv-dbg.git"
-    version: "0.8.1"
   safety_island:
     git: "https://github.com/pulp-platform/safety_island.git"
     rev: "584eb697195c44ef1b1cbd1f4b7accdf5192200a"
@@ -98,7 +87,7 @@ dependencies:
     rev: "main"
   spatz:
     git: "https://github.com/pulp-platform/spatz.git"
-    rev: "98de97f24fe42675c9b4a8cc08354a03af57400a"
+    rev: "main"
   timer_unit:
     git: "https://github.com/pulp-platform/timer_unit.git"
     version: "1.0.3"

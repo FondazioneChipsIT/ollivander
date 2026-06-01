@@ -1,4 +1,11 @@
 <%
+  # ============================================================================
+  # MAKO TEMPLATE FOR THE DUMMY TILE (ROUTER ONLY)
+  # ============================================================================
+  # A "Dummy Tile" is instantiated in the Network-on-Chip (NoC) grid at coordinates 
+  # where no functional IP (Component) is placed. It serves purely as a routing 
+  # node to maintain the integrity and connectivity of the 2D mesh, allowing packets 
+  # to pass through to their actual destinations.
   p_name = config.project.name
 %><%namespace file="/license_header.mako" import="license"/>\
 ${license()}\
@@ -33,6 +40,11 @@ module ${p_name}_dummy_tile
   floo_rsp_t  [Eject:North] router_floo_rsp_out, router_floo_rsp_in;
   floo_wide_t [Eject:North] router_floo_wide_in, router_floo_wide_out;
 
+  // =======================================================================
+  // 1. FLOONOC ROUTER INSTANTIATION
+  // =======================================================================
+  // Instantiates a standard 5-port router (4 Cardinal directions + 1 Eject).
+  // Multicast is safely disabled for dummy tiles as they don't host an endpoint.
   floo_nw_router #(
     .AxiCfgN       (AxiCfgN),
     .AxiCfgW       (AxiCfgW),
@@ -65,6 +77,10 @@ module ${p_name}_dummy_tile
     .offload_narrow_rsp_i('0)
   );
 
+  // =======================================================================
+  // 2. MESH WIRING
+  // =======================================================================
+  // Map the 4 cardinal directions to the external module ports.
   assign floo_req_o                      = router_floo_req_out[West:North];
   assign router_floo_req_in[West:North]  = floo_req_i;
   assign floo_rsp_o                      = router_floo_rsp_out[West:North];
@@ -72,7 +88,12 @@ module ${p_name}_dummy_tile
   assign router_floo_wide_in[West:North] = floo_wide_i;
   assign floo_wide_o[West:North]         = router_floo_wide_out[West:North];
 
-  // Tie off Eject port
+  // =======================================================================
+  // 3. EJECT PORT TIE-OFF
+  // =======================================================================
+  // Since this is a dummy tile without any attached IP (no Chimney), the 
+  // Eject port (which would normally deliver packets to the local node) 
+  // must be permanently tied off to avoid floating inputs or invalid transactions.
   assign router_floo_req_in[Eject]       = '0;
   assign router_floo_rsp_in[Eject]       = '0;
   assign router_floo_wide_in[Eject]      = '0;

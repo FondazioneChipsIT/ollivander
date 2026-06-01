@@ -1,5 +1,13 @@
 <%def name="clock_and_reset_tree(config, p_name)">
 <%
+  # ============================================================================
+  # MAKO TEMPLATE FOR THE CLOCK AND RESET TREE
+  # ============================================================================
+  # This template generates the entire clock and reset infrastructure for the SoC.
+  # It instantiates Glitch-Free Muxes, Clock Dividers, Reset Synchronizers,
+  # and the necessary Clock Domain Crossing (CDC) logic to safely control them
+  # from the system controller's configuration registers.
+
   host_clk = config.host.clock_domain or "system_clk"
   managed_domains = [d for d in config.clock_tree.domains if not d.is_real_time and d.name != host_clk]
   num_managed_domains = len(managed_domains)
@@ -9,23 +17,32 @@
   localparam int unsigned DomainClkDivValueWidth = 24;
   localparam int unsigned NumDomains = ${num_managed_domains if num_managed_domains > 0 else 1};
 
+  // =========================================================================
+  // 0. DOMAIN INDICES
+  // =========================================================================
+  // Enumeration of managed clock domains used to index the reset arrays.
 % for i, dom in enumerate(managed_domains):
   localparam int unsigned DomainIdx_${fmt_dom(dom.name)} = ${i};
 % endfor
 
+  // =========================================================================
+  // 1. CLOCK GENERATION (MUXES & DIVIDERS)
+  // =========================================================================
 % for dom in config.clock_tree.domains:
   // --- Domain: ${dom.name} ---
  % if dom.is_real_time:
+  // Real-Time domains bypass SW control (always-on, fixed source)
   logic ${dom.name};
   assign ${dom.name} = ${f"domain_clk_i[{dom.source_fll}]" if config.clock_tree.flls > 0 and dom.source_fll is not None else "rtc_i"};
  % else:
   logic ${dom.name}_muxed;
   logic ${dom.name}; // Final gated/divided clock
   
-  // Multiplexer
+  // 1a. Glitch-Free Multiplexer
+  // Safely switches between multiple asynchronous FLL clock sources.
   % if dom.has_mux:
-  ${require_file("clk_mux_glitch_free.sv")}
-  clk_mux_glitch_free #(
+  ${require_file("olli_clk_mux_glitch_free.sv")}
+  olli_clk_mux_glitch_free #(
     .NUM_INPUTS(${config.clock_tree.flls if config.clock_tree.flls > 0 else 1})
   ) i_${dom.name}_mux (
     .clks_i       ( ${"domain_clk_i" if config.clock_tree.flls > 0 else "clk_i"} ),
@@ -36,16 +53,18 @@
     .clk_o        ( ${dom.name}_muxed )
   );
   % else:
+  // No mux required, hardwired to FLL ${dom.source_fll if dom.source_fll is not None else "default"}
   assign ${dom.name}_muxed = ${f"domain_clk_i[{dom.source_fll}]" if config.clock_tree.flls > 0 and dom.source_fll is not None else "clk_i"};
   % endif
 
-  // Divider
+  // 1b. Configurable Integer Divider & Clock Gating
   % if dom.has_divider:
   logic [DomainClkDivValueWidth-1:0] ${dom.name}_div_value, ${dom.name}_div_synced;
   logic ${dom.name}_div_valid, ${dom.name}_div_ready, ${dom.name}_div_valid_synced, ${dom.name}_div_ready_synced;
   
-  ${require_file("lossy_valid_to_stream.sv")}
-  lossy_valid_to_stream #(
+  // Decouples the static CSR register output into a valid/ready stream.
+  ${require_file("olli_lossy_valid_to_stream.sv")}
+  olli_lossy_valid_to_stream #(
     .DATA_WIDTH(DomainClkDivValueWidth),
     .T(logic [DomainClkDivValueWidth-1:0])
   ) i_${dom.name}_decouple (
@@ -59,8 +78,9 @@
     .busy_o  ( )
   );
 
-  ${require_file("cdc_4phase.sv")}
-  cdc_4phase #(
+  // Safely crosses the division ratio configuration to the target clock domain.
+  ${require_file("olli_cdc_4phase.sv")}
+  olli_cdc_4phase #(
     .T(logic [DomainClkDivValueWidth-1:0])
   ) i_${dom.name}_cdc (
     .src_rst_ni  ( host_pwr_on_rst_n ),
@@ -75,8 +95,9 @@
     .dst_ready_i ( ${dom.name}_div_ready_synced )
   );
 
-  ${require_file("clk_int_div.sv")}
-  clk_int_div #(
+  // The actual integer divider block
+  ${require_file("olli_clk_int_div.sv")}
+  olli_clk_int_div #(
     .DIV_VALUE_WIDTH(DomainClkDivValueWidth),
     .DEFAULT_DIV_VALUE(${dom.default_div}),
     .ENABLE_CLOCK_IN_RESET(1)
@@ -92,15 +113,17 @@
     .cycl_count_o   ( )
   );
   % else:
+  // No divider required
   assign ${dom.name} = ${dom.name}_muxed;
   % endif
  % endif
  
-  // Debug Divider
+  // 1c. Debug Divider
+  // Generates a parallel, slower clock for JTAG and Debug Module Interfaces.
  % if dom.has_debug_divider:
   logic ${dom.name}_debug;
-  ${require_file("clk_int_div.sv")}
-  clk_int_div #(
+  ${require_file("olli_clk_int_div.sv")}
+  olli_clk_int_div #(
     .DIV_VALUE_WIDTH(DomainClkDivValueWidth),
     .DEFAULT_DIV_VALUE(10),
     .ENABLE_CLOCK_IN_RESET(1)
@@ -120,9 +143,13 @@
 % endfor
 
   // =========================================================================
-  // SYSTEM RESETS
+  // 2. SYSTEM RESETS
   // =========================================================================
-  rstgen i_host_rstgen (
+  
+  // Host Reset Generator
+  // Synchronizes the external Power-On Reset to the main host clock.
+  ${require_file("olli_rstgen.sv")}
+  olli_rstgen i_host_rstgen (
     .clk_i  ( ${host_clk} ),
     .rst_ni ( ${"pwr_on_rst_ni" if config.clock_tree.flls > 0 else "rst_ni"} ),
     .test_mode_i ( test_mode_i ),
@@ -131,6 +158,9 @@
   );
 
 % if num_managed_domains > 0:
+  // Global Reset Tree
+  // Generates synchronized resets for all other clock domains, combining the 
+  // Power-On Reset with the software-triggered resets from the CSRs.
   logic [NumDomains-1:0] sw_rsts_vector;
   
  % for i, dom in enumerate(managed_domains):
@@ -151,8 +181,10 @@
 % endif
 
   // =========================================================================
-  // DEDICATED CLOCK DIVIDERS
+  // 3. DEDICATED CLOCK DIVIDERS
   // =========================================================================
+  // Independent clock dividers dedicated to specific interfaces that require 
+  // highly constrained frequencies (like RGMII for Ethernet or HyperBus PHYs).
 <%
   dedicated_divs = []
   for c in [config.host] + (config.components if config.components else []):
@@ -171,7 +203,9 @@
   logic [DomainClkDivValueWidth-1:0] ${div_clk}_div_value, ${div_clk}_div_synced;
   logic ${div_clk}_div_valid, ${div_clk}_div_ready, ${div_clk}_div_valid_synced, ${div_clk}_div_ready_synced;
   
-  lossy_valid_to_stream #(
+  // Decouples the static CSR register output
+  ${require_file("olli_lossy_valid_to_stream.sv")}
+  olli_lossy_valid_to_stream #(
     .DATA_WIDTH(DomainClkDivValueWidth),
     .T(logic [DomainClkDivValueWidth-1:0])
   ) i_${div_clk}_decouple (
@@ -185,7 +219,9 @@
     .busy_o  ( )
   );
 
-  cdc_4phase #(
+  // CDC for the divider configuration
+  ${require_file("olli_cdc_4phase.sv")}
+  olli_cdc_4phase #(
     .T(logic [DomainClkDivValueWidth-1:0])
   ) i_${div_clk}_cdc (
     .src_rst_ni  ( host_pwr_on_rst_n ),
@@ -200,7 +236,9 @@
     .dst_ready_i ( ${div_clk}_div_ready_synced )
   );
 
-  clk_int_div #(
+  // Integer divider instance
+  ${require_file("olli_clk_int_div.sv")}
+  olli_clk_int_div #(
     .DIV_VALUE_WIDTH(DomainClkDivValueWidth),
     .DEFAULT_DIV_VALUE(${div_cfg.get('default_div', 1)}),
     .ENABLE_CLOCK_IN_RESET(1)

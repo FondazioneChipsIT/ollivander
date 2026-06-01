@@ -15,8 +15,16 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field, model_validator
 
 def get_verible_ast(filepath: Path) -> Optional[Dict[str, Any]]:
+    """
+    Invokes Google's Verible parser to extract the Abstract Syntax Tree (AST)
+    from a SystemVerilog file. This allows Ollivander to reliably parse complex
+    module headers, parameters, and ports without relying solely on Regex.
+    """
+    # Try to find the Verible executable in the system PATH.
     verible_exe = shutil.which("verible-verilog-syntax")
     if not verible_exe:
+        # Fallback: check if it's installed locally in the current Python
+        # virtual environment (e.g., via `pip install verible`).
         venv_verible = Path(sys.executable).parent / "verible-verilog-syntax"
         if venv_verible.is_file() and os.access(venv_verible, os.X_OK):
             verible_exe = str(venv_verible)
@@ -27,7 +35,8 @@ def get_verible_ast(filepath: Path) -> Optional[Dict[str, Any]]:
     try:
         result = subprocess.run([verible_exe, "--export_json", str(filepath)], capture_output=True, text=True, check=True)
         json_data = json.loads(result.stdout)
-        # Verible outputs {"/absolute/path": {AST} or null}
+        # Verible outputs a dictionary mapping the absolute file path to its AST.
+        # Example: {"/absolute/path.sv": {"tag": "kCompilationUnit", ...}}
         return json_data.get(str(filepath))
     except Exception as e:
         return None
@@ -61,12 +70,17 @@ def extract_tokens(node, tag=None):
                 yield from extract_tokens(item, tag)
 
 def _clean_param_val(val: Any) -> str:
-    """Converts a parameter value from YAML or SV into a canonical string form (base-10 integer if possible)."""
+    """
+    Converts a parameter value from the YAML configuration or the SystemVerilog
+    source into a canonical string form (preferably a base-10 integer).
+    This is crucial for comparing values like `32'hFF` (SV) with `255` (YAML)
+    to ensure they represent the same hardware configuration.
+    """
     if isinstance(val, bool):
         return "1" if val else "0"
     
     val_str = str(val).strip()
-    # Handle Verilog-style literals like 1'b1, 32'hFF
+    # Handle Verilog-style literals like 1'b1, 32'hFF, 8'd10
     m = re.search(r'\'([dDbBhH]?)([0-9a-fA-F_]+)', val_str)
     if m:
         base_char = m.group(1).lower()
@@ -97,6 +111,10 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     Returns a dictionary containing:
     - 'supported_params': A list of parameters the user can configure in YAML.
     - 'fixed_params': A dictionary of localparams with hardcoded values (constraints).
+    - 'dependencies': External IP dependencies (BENDER pragmas).
+    - 'required_files': Local file dependencies (OLLIVANDER pragmas).
+    - 'ports': A dictionary detailing every physical port of the module.
+    - 'imports': A list of SystemVerilog packages imported by the module.
     - Boolean flags indicating supported interfaces (e.g., 'has_sync_axi_slave', 'has_test_mode').
     """
     if not search_paths:
@@ -104,10 +122,12 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     
     filepath = None
     for sp in search_paths:
+        # Check if the search path is directly a file.
         if sp.is_file() and sp.name == f"{component_type}.sv":
             filepath = sp
             break
         elif sp.is_dir():
+            # Recursively search directories for the target SV wrapper.
             for p in sp.rglob(f"{component_type}.sv"):
                 if exclude_dir and sp.name != exclude_dir and exclude_dir in p.parts:
                     continue
@@ -134,7 +154,8 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
         "required_files": []
     }
     
-    # Unify header extraction since both methods need it (AST needs it for ports)
+    # Unify header extraction: isolate the module declaration to prevent
+    # matching parameters or ports defined inside the module body.
     module_decl_match = re.search(r'module\s+\w+\s*(?:import\s+[^;]+;\s*)*(?:#\s*\(([\s\S]*?)\))?\s*(\([\s\S]*?\))\s*;', content, re.MULTILINE)
     if module_decl_match:
         param_content = module_decl_match.group(1) or ""
@@ -175,6 +196,7 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
                             break
                             
                     if param_name:
+                        # Reconstruct the value from the remaining tokens.
                         val_tokens = [t.get("text", "") for t in tokens[eq_index + 1:]]
                         if val_tokens:
                             param_val = "".join(val_tokens).strip(";")
@@ -199,7 +221,7 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
             elif param_kind == "localparam":
                 info["fixed_params"][param_name] = clean_val
 
-    # Extract Bender dependencies from comments
+    # Extract Bender dependencies from comments (e.g. // BENDER: name="axi")
     dep_pattern = re.compile(r'(?://|##)\s*BENDER:\s*name="([^"]+)"(?:.*?git="([^"]+)")?(?:.*?rev="([^"]+)")?(?:.*?version="([^"]+)")?')
     for match in dep_pattern.finditer(content):
         dep_name = match.group(1)
@@ -208,7 +230,7 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
         if match.group(3): info["dependencies"][dep_name]["rev"] = match.group(3)
         if match.group(4): info["dependencies"][dep_name]["version"] = match.group(4)
     
-    # Extract local file dependencies
+    # Extract local file dependencies (e.g. // OLLIVANDER: require="file.sv")
     req_pattern = re.compile(r'(?://|##)\s*OLLIVANDER:\s*require="([^"]+)"')
     for match in req_pattern.finditer(content):
         info["required_files"].append(match.group(1))
@@ -226,7 +248,8 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
         for port_decl in walk_ast(ast, {"kPortDeclaration", "kPort"}):
             tokens = list(extract_tokens(port_decl))
             
-            # Dividiamo i token usando le virgole per gestire dichiarazioni multiple (es: input a, b;)
+            # Split tokens using commas to properly handle multiple declarations
+            # on the same line (e.g., `input logic clk_i, rst_ni;`).
             sub_decls_tokens = []
             current_decl = []
             bracket_level = 0
@@ -244,7 +267,8 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
                 sub_decls_tokens.append(current_decl)
 
             for decl_tokens in sub_decls_tokens:
-                # Il nome della porta è l'ultimo SymbolIdentifier prima degli array di dimensione (Unpacked)
+                # The port name is typically the last SymbolIdentifier before
+                # any unpacked array dimensions.
                 unpacked_level = 0
                 port_name = ""
                 for t in reversed(decl_tokens):
@@ -257,7 +281,8 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
                 if port_name:
                     port_names.add(port_name)
 
-    # Fallback Regex per recuperare le porte nascoste all'interno di chiamate a Macro (kMacroCall)
+    # Fallback Regex: Useful for retrieving ports hidden inside Macro calls
+    # (e.g., `AXI_TYPEDEF_ALL`) which Verible AST might classify as kMacroCall.
     port_matches = re.finditer(r'\b(input|output|inout)\b([\s\S]*?)(?=\b(?:input|output|inout)\b|\)\s*(?:;|$))', header_clean)
     for m in port_matches:
         p_dir = m.group(1)
@@ -274,7 +299,8 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
                 "unpacked": name_match.group(2).strip()
             }
             
-    # Aggiungiamo eventuali porte rilevate solo dall'AST (es. multi-porte o macro opache)
+    # Add any ports detected exclusively by the AST (e.g., multi-ports or opaque
+    # macros) that the Regex might have missed, assigning default properties.
     for p_name in port_names:
         if p_name not in info["ports"]:
             info["ports"][p_name] = {
@@ -432,7 +458,7 @@ class ClockDomain(BaseModel):
     name: str
     description: Optional[str] = None
     is_real_time: Optional[bool] = False       # Bypasses SW config registers (always-on, fixed freq)
-    source_fll: Optional[int] = None           # Hardwired FLL source index (avoids deadlocks)
+    source_fll: Optional[int] = None           # Hardwired FLL source index (useful to avoid boot deadlocks)
     static_div: Optional[int] = None           # Hardwired clock division factor (for static clocks)
     has_mux: bool                              # True = generates a glitch-free mux + selection register
     has_divider: bool                          # True = generates a SW-programmable clock divider
@@ -514,7 +540,7 @@ class Component(BaseModel):
     defines: Optional[List[str]] = None            # Compilation macros (+define+) required by the IP
     interrupts: Optional[Dict[str, Any]] = None    # IRQ routing mapping
     dedicated_clock_div: Optional[Dict[str, Any]] = None # Specific clock divider (e.g., Ethernet)
-    components: Optional[List['Component']] = None # For APB Subsystems
+    components: Optional[List['Component']] = None # Nested sub-components (e.g., for APB Subsystems)
     placement: Optional[Dict[str, Any]] = None     # For NoC Tiles
     logical_placement: Optional[Any] = None        # For NoC Tiles
     noc_connections: Optional[List[str]] = None    # For NoC Tiles
@@ -638,7 +664,7 @@ def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] =
                         )
                         
         # 3. SYNCHRONICITY & NOC MODE CHECK: Verify that the physical ports defined in the wrapper
-        #    support the sync/async connection style and NoC mode requested in the YAML. (Skip Host)
+        #    support the sync/async connection style and NoC mode requested in the YAML.
         if comp.name != config.host.name and comp.interfaces:
             host_clk = config.host.clock_domain
             c_clk = comp.clock_domain or host_clk
@@ -695,7 +721,7 @@ def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] =
                     raise ValueError(f"\n[{comp.name}] Component '{comp.type}' uses noc_mode: 'dual' but does not expose any 'AxiNarrow...' or 'AxiWide...' parameters in its SV header.")
                             
         # 4. INTERRUPT PIN CHECK: Verify that any referenced interrupt port physically exists 
-        #    on the SystemVerilog module's header.
+        #    on the SystemVerilog module's header to avoid top-level wiring errors.
         if comp.interrupts:
             for irq_name, irq_cfg in comp.interrupts.items():
                 source = irq_cfg.get('source')

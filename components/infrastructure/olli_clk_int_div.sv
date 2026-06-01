@@ -8,11 +8,13 @@
 // The user is required to implement the logic to divide the input clock
 // by a configurable integer value, supporting dynamic updates and glitch-free
 // enable/disable.
+//
+// BENDER: name="common_cells"
 
-module clk_int_div #(
-  parameter int DIV_VALUE_WIDTH = 24,
-  parameter int DEFAULT_DIV_VALUE = 1,
-  parameter int ENABLE_CLOCK_IN_RESET = 1
+module olli_clk_int_div #(
+  parameter int unsigned DIV_VALUE_WIDTH = 4,
+  parameter int unsigned DEFAULT_DIV_VALUE = 0,
+  parameter bit          ENABLE_CLOCK_IN_RESET = 1'b0
 ) (
   input  logic                         clk_i,
   input  logic                         rst_ni,
@@ -25,6 +27,25 @@ module clk_int_div #(
   output logic [DIV_VALUE_WIDTH-1:0]   cycl_count_o
 );
 
-  // TODO: Implement integer clock divider logic.
+`ifndef TARGET_SYNTHESIS
+  // Simulation: use common_cells behavioral model
+  clk_int_div #(
+    .DIV_VALUE_WIDTH       ( DIV_VALUE_WIDTH ),
+    .DEFAULT_DIV_VALUE     ( DEFAULT_DIV_VALUE ),
+    .ENABLE_CLOCK_IN_RESET ( ENABLE_CLOCK_IN_RESET )
+  ) i_sim_clk_int_div (
+    .clk_i          ( clk_i ),
+    .rst_ni         ( rst_ni ),
+    .en_i           ( en_i ),
+    .test_mode_en_i ( test_mode_en_i ),
+    .div_i          ( div_i ),
+    .div_valid_i    ( div_valid_i ),
+    .div_ready_o    ( div_ready_o ),
+    .clk_o          ( clk_o ),
+    .cycl_count_o   ( cycl_count_o )
+  );
+`else
+  // Synthesis: instantiate foundry-specific clock divider here
+`endif
 
 endmodule

@@ -7,10 +7,12 @@
 // This is a placeholder for the Multi-Stage Bit Synchronizer.
 // The user is required to implement a chain of flip-flops to safely
 // transfer a 1-bit signal between asynchronous clock domains.
+//
+// BENDER: name="common_cells"
 
-module sync #(
-  parameter int STAGES = 3,
-  parameter logic ResetValue = 1'b0
+module olli_sync #(
+  parameter int unsigned STAGES = 2,
+  parameter bit ResetValue = 1'b0
 ) (
   input  logic clk_i,
   input  logic rst_ni,
@@ -18,6 +20,19 @@ module sync #(
   output logic serial_o
 );
 
-  // TODO: Implement multi-stage synchronizer logic.
+`ifndef TARGET_SYNTHESIS
+  // Simulation: use common_cells behavioral model
+  sync #(
+    .STAGES     ( STAGES ),
+    .ResetValue ( ResetValue )
+  ) i_sim_sync (
+    .clk_i    ( clk_i ),
+    .rst_ni   ( rst_ni ),
+    .serial_i ( serial_i ),
+    .serial_o ( serial_o )
+  );
+`else
+  // Synthesis: instantiate foundry-specific standard cell here
+`endif
 
 endmodule
