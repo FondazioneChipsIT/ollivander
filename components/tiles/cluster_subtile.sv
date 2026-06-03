@@ -81,7 +81,7 @@ module cluster_subtile
   cluster_narrow_out_dw_conv_req_t cluster_narrow_out_dw_conv_req, cluster_narrow_out_cut_req;
   cluster_narrow_out_dw_conv_resp_t cluster_narrow_out_dw_conv_rsp, cluster_narrow_out_cut_rsp;
 
-  `TCDM_TYPEDEF_ALL(hwpectrl, addr_hwpe_ctrl_t, data_hwpe_ctrl_t, strb_hwpe_ctrl_t, logic)
+  `TCDM_TYPEDEF_ALL(hwpectrl, HWPECtrlAddrWidth, HWPECtrlDataWidth, 1)
 
   hwpectrl_req_t               hwpectrl_req;
   hwpectrl_rsp_t               hwpectrl_rsp;
@@ -190,7 +190,9 @@ module cluster_subtile
     .cluster_base_offset_i,
     .mxip_i            (mxip),
     .clk_d2_bypass_i   ('0),
-    .sram_cfgs_i       ('0),
+    .sram_cfg_tcdm_i        ('0),
+    .sram_cfg_icache_tag_i  ('0),
+    .sram_cfg_icache_data_i ('0),
     .narrow_in_req_i   (axi_narrow_req_i),
     .narrow_in_resp_o  (axi_narrow_resp_o),
     .narrow_out_req_o  (axi_narrow_req_o),

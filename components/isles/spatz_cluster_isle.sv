@@ -128,7 +128,8 @@ module spatz_cluster_isle
 
   localparam int unsigned ICacheLineWidth = 128;
   localparam int unsigned ICacheLineCount = 128;
-  localparam int unsigned ICacheSets = 2;
+  // localparam int unsigned ICacheSets = 2;
+  localparam int unsigned ICacheWays = 2;
 
   function automatic snitch_pma_pkg::rule_t [snitch_pma_pkg::NrMaxRules-1:0] get_cached_regions();
     automatic snitch_pma_pkg::rule_t [snitch_pma_pkg::NrMaxRules-1:0] cached_regions;
@@ -349,7 +350,8 @@ module spatz_cluster_isle
     .NrBanks                  ( 16                       ),
     .ICacheLineWidth          ( ICacheLineWidth          ),
     .ICacheLineCount          ( ICacheLineCount          ),
-    .ICacheSets               ( ICacheSets               ),
+    // .ICacheSets               ( ICacheSets               ),
+    .ICacheWays               ( ICacheWays               ),
     .FPUImplementation        ( FPUImplementation        ),
     .SnitchPMACfg             ( SnitchPMACfg             ),
     .NumIntOutstandingLoads   ( NumIntOutstandingLoads   ),

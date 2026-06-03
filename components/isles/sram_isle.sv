@@ -6,6 +6,7 @@
 // Extracted and generalized from Gwaihir's mem_tile.sv
 //
 // BENDER: name="axi"
+// BENDER: name="axi_obi"
 // BENDER: name="common_cells"
 // BENDER: name="obi"
 

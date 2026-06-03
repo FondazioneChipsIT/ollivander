@@ -116,11 +116,11 @@ Ollivander will create the `generated/` directory containing your complete SoC R
 
 ### Iterative Development (fast-check)
 
-After running make generate at least once (so that the initial RTL and dependencies are fully resolved and generated), you can use the fast-check command for quicker development iterations: 
+For rapid structural validation during iterative development, you can use the fast-check command: 
 ```bash
 make fast-check
 ```
-This command re-runs the generation process but skips the slow dependency fetching step.
+This command stubs all the external modules, in order to avoid their complete compilation.
 > ⚠️ Warning: The `fast-check` mode is intended primarily for the development of Ollivander itself. It performs "dirty" in-place operations on the source files of external libraries to resolve dependencies.
 > * It requires that the RTL code has already been generated at least once.
 > * If you change the pointers to external libraries or add new components, this mode might fail or produce incorrect results.

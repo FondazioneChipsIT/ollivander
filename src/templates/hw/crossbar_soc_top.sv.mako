@@ -138,6 +138,7 @@ ${license()}\
 //
 // BENDER: name="axi"
 // BENDER: name="register_interface"
+// BENDER: name="opentitan"
 
 `include "axi/typedef.svh"
 `include "axi/assign.svh"
@@ -147,7 +148,7 @@ module ${p_name}
   import ${pkg}::*;
   import ${rpkg}::*;
   import axi_pkg::*;
-  import tlul_pkg::*;
+  import tlul_ot_pkg::*;
 <%
   # Auto-inject imports from component headers to resolve exported constants and types
   all_imports = set()

@@ -28,7 +28,7 @@ module reg_to_tlul #(
   input  tl_d2h_t  tl_i
 );
 
-  import tlul_pkg::*;
+  import tlul_ot_pkg::*;
 
   // ---------------------------------------------------------------------------
   // FSM State Definition

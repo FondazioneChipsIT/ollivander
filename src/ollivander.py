@@ -93,6 +93,263 @@ def write_if_changed(file_path: Path, content: str):
     with open(file_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(content)
 
+def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Path):
+    """
+    Generates 'faithful' black-box stubs for external IPs for fast compilation.
+    It extracts the exact module signature (parameters and ports) to validate
+    the connectivity without compiling the full implementation.
+    """
+    project_name = soc_config.project.name
+    hw_dir = outdir_path / "hw"
+    stubs_dir = outdir_path / ".stubs"
+    stubs_dir.mkdir(exist_ok=True)
+
+    # 1. Discover target boundary modules from our generated files
+    our_files = list(hw_dir.glob("*.sv"))
+    
+    infra_dir = base_dir / "components" / "infrastructure"
+    if infra_dir.exists():
+        our_files.extend(list(infra_dir.glob("*.sv")))
+        
+    defined_modules = set()
+    inst_modules = set()
+
+    for f in our_files:
+        if 'stubs.sv' in f.name: continue
+        try:
+            content = f.read_text(encoding='utf-8', errors='ignore')
+            clean = re.sub(r'("[^"\\]*(?:\\.[^"\\]*)*")|(//[^\n]*)|(/\*.*?\*/)', lambda m: m.group(1) if m.group(1) else '', content, flags=re.DOTALL)
+            
+            for m in re.finditer(r'\bmodule\s+([a-zA-Z_][a-zA-Z0-9_]*)\b', clean):
+                defined_modules.add(m.group(1))
+            
+            for m in re.finditer(r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:#\s*\([^;]*?\)\s*)?[a-zA-Z_][a-zA-Z0-9_]*\s*(?:\[[^;]*?\]\s*)?\(', clean, flags=re.MULTILINE):
+                inst_modules.add(m.group(1))
+        except Exception:
+            pass
+
+    keywords = {'if', 'case', 'for', 'while', 'always', 'always_comb', 'always_ff', 'always_latch', 'assign', 'logic', 'wire', 'reg', 'bit', 'int', 'struct', 'typedef', 'enum', 'return', 'else', 'begin', 'end'}
+    targets = (inst_modules - defined_modules) - keywords
+
+    # Handle excludes and predefined stubs from the environment config
+    excludes = set()
+    fast_check_stubs = []
+    for dep_info in env_dependencies.values():
+        if "fast_check_exclude" in dep_info:
+            excludes.update(dep_info["fast_check_exclude"])
+        if "fast_check_stubs" in dep_info:
+            fast_check_stubs.extend(dep_info["fast_check_stubs"])
+            
+    targets -= excludes
+
+    # 2. Extract paths from the Bender-generated compile script
+    tcl_path = outdir_path / "compile_vsim.tcl"
+    if not tcl_path.exists():
+        print(f"[ERROR] {tcl_path} not found. Ensure 'make prep-sim' ran successfully.")
+        sys.exit(1)
+
+    tcl_code = tcl_path.read_text(encoding='utf-8')
+    tcl_code_clean = re.sub(r'\\\s*\n', ' ', tcl_code)
+    
+    sv_files = []
+    global_options = []
+    seen_defines = set()
+    for line in tcl_code_clean.split('\n'):
+        if 'vlog ' in line:
+            for p in line.split():
+                p_raw = p.strip('\"\'')
+                if p_raw.startswith('+incdir+'):
+                    if p not in global_options:
+                        global_options.append(p)
+                elif p_raw.startswith('+define+'):
+                    def_name = p_raw.split('+')[2].split('=')[0]
+                    if def_name not in seen_defines:
+                        seen_defines.add(def_name)
+                        global_options.append(p)
+                p_clean = p_raw.replace('$ROOT', '.')
+                if (p_clean.endswith('.sv') or p_clean.endswith('.v')) and Path(p_clean).exists():
+                    sv_files.append(p_clean)
+                elif p_clean.endswith('.bld') or p_clean.endswith('.f') or p_clean.endswith('.F'):
+                    try:
+                        bld_path = Path(p_clean.replace('$ROOT', '.'))
+                        bld_content = bld_path.read_text(encoding='utf-8')
+                        for bp in bld_content.split():
+                            bp_clean = bp.strip('\"\'')
+                            if (bp_clean.endswith('.sv') or bp_clean.endswith('.v')) and not bp_clean.startswith('+'):
+                                if bp_clean.startswith('$ROOT'):
+                                    bp_path = Path(bp_clean.replace('$ROOT', '.'))
+                                else:
+                                    bp_path = Path(bp_clean)
+                                    if not bp_path.exists() and (bld_path.parent / bp_path).exists():
+                                        bp_path = bld_path.parent / bp_path
+                                if bp_path.exists():
+                                    sv_files.append(str(bp_path))
+                    except Exception:
+                        pass
+
+    # 3. Extract exact signatures
+    stubs_out = []
+    
+    def extract_from_path(path):
+        try:
+            content = Path(path).read_text(encoding='utf-8', errors='ignore')
+            clean_content = re.sub(r'("[^"\\]*(?:\\.[^"\\]*)*")|(//[^\n]*)|(/\*.*?\*/)', lambda m: m.group(1) if m.group(1) else '', content, flags=re.DOTALL)
+            # Mask semicolons in import statements to prevent premature signature termination
+            masked_content = re.sub(r'\bimport\s+[^;]+;', lambda m: m.group(0).replace(';', ' '), clean_content)
+        except Exception:
+            return
+
+        for t in list(targets):
+            pattern = r'\bmodule\s+' + re.escape(t) + r'\b'
+            match = re.search(pattern, clean_content)
+            if match:
+                start_idx = match.start()
+                paren_count = 0
+                idx = start_idx
+                in_string = False
+                while idx < len(masked_content):
+                    c = masked_content[idx]
+                    if c == '"':
+                        in_string = not in_string
+                    elif not in_string:
+                        if c == '(': paren_count += 1
+                        elif c == ')': paren_count -= 1
+                        elif c == ';' and paren_count == 0:
+                            sig = clean_content[start_idx:idx+1]
+                            # Preserve type definitions by importing wildcards from preceding packages
+                            head = clean_content[:start_idx]
+                            imports = re.findall(r'\bimport\s+[^;]+;', head)
+                            # Also grab imports inside the module signature
+                            imports.extend(re.findall(r'\bimport\s+[^;]+;', sig))
+                            wild_imports = {re.sub(r'::\s*[a-zA-Z_0-9]+', '::*', imp) for imp in imports}
+                            
+                            raw_includes = re.findall(r'`include\s+"[^"]+"', head)
+                            raw_includes.extend(re.findall(r'`include\s+"[^"]+"', sig))
+                            unique_includes = []
+                            for inc in sorted(list(set(raw_includes))):
+                                if 'assert' not in inc.lower():
+                                    unique_includes.append(inc)
+                            
+                            stub = "\n".join(unique_includes) + "\n" + "\n".join(sorted(list(wild_imports))) + "\n" + sig + "\nendmodule"
+                            stubs_out.append(stub)
+                            targets.remove(t)
+                            break
+                    idx += 1
+
+    for path in sv_files:
+        if not targets: break
+        extract_from_path(path)
+        
+    if targets:
+        print(f"  [INFO] Fallback search in bender_work for missing stubs: {', '.join(targets)}")
+        for path in Path('bender_work').rglob("*.sv"):
+            if not targets: break
+            if str(path) in sv_files: continue
+            extract_from_path(path)
+
+    with open(stubs_dir / f"{project_name}_stubs.sv", "w") as f:
+        f.write("// AUTO-GENERATED STUBS FOR FAST-CHECK\n\n")
+        f.write("\n\n".join(stubs_out))
+
+    for stub in fast_check_stubs:
+        with open(stubs_dir / stub["name"], "w") as f:
+            f.write(stub["content"])
+
+    def is_fast_compile_target(p_clean, outdir_path, bld_dir=None):
+        if outdir_path.name in p_clean or p_clean.endswith('.svh'):
+            return True
+            
+        # Compile infrastructure primitives completely to avoid stubbing issues
+        if 'infrastructure' in p_clean:
+            return True
+            
+        # External testbench files are not required for structural SoC elaboration.
+        if 'bender_work' in p_clean and re.search(r'/(?:test|tests|tb)/', p_clean, re.IGNORECASE):
+            return False
+            
+        if p_clean.startswith('$ROOT'):
+            p_path = Path(p_clean.replace('$ROOT', '.'))
+        else:
+            p_path = Path(p_clean)
+            if not p_path.exists() and bld_dir and (bld_dir / p_path).exists():
+                p_path = bld_dir / p_path
+
+        try:
+            c = p_path.read_text(encoding='utf-8', errors='ignore')
+            c_clean = re.sub(r'("[^"\\]*(?:\\.[^"\\]*)*")|(//[^\n]*)|(/\*.*?\*/)', lambda m: m.group(1) if m.group(1) else '', c, flags=re.DOTALL)
+            c_clean = re.sub(r'"[^"]*"', '', c_clean) # Ignore string literals
+            
+            # Always keep files defining a package or an interface, even if they also contain a module
+            if re.search(r'\b(?:package|interface)\s+[a-zA-Z_0-9]+', c_clean):
+                return True
+                
+            if not re.search(r'\b(?:module|macromodule|program|class)\b', c_clean):
+                return True
+        except Exception:
+            pass
+        return False
+
+    # 4. Create compile_vsim_fast.tcl
+    fast_tcl = ['onerror {quit -code 1}', 'if {[file exists work]} { file delete -force work }', 'vlib work']
+    tcl_code_clean = tcl_code_clean.replace('return 1', 'quit -code 1')
+    
+    for line in tcl_code_clean.split('\n'):
+        if 'vlog ' in line:
+            new_tokens = []
+            for p in line.split():
+                p_clean = p.strip('\"\'')
+                if (p_clean.endswith('.sv') or p_clean.endswith('.v')) and not p.startswith('+'):
+                    if is_fast_compile_target(p_clean, outdir_path):
+                        new_tokens.append(p)
+                elif p_clean.endswith('.bld') or p_clean.endswith('.f') or p_clean.endswith('.F'):
+                    try:
+                        bld_path = Path(p_clean.replace('$ROOT', '.'))
+                        bld_content = bld_path.read_text(encoding='utf-8')
+                        bld_tokens = []
+                        for bp in bld_content.split():
+                            bp_clean = bp.strip('\"\'')
+                            if (bp_clean.endswith('.sv') or bp_clean.endswith('.v')) and not bp.startswith('+'):
+                                if is_fast_compile_target(bp_clean, outdir_path, bld_path.parent):
+                                    bld_tokens.append(bp)
+                            else:
+                                bld_tokens.append(bp)
+                                
+                        if bld_tokens:
+                            fast_bld_path = bld_path.with_name(bld_path.name + ".fast")
+                            fast_bld_path.write_text("\n".join(bld_tokens), encoding='utf-8')
+                            new_tokens.append(p.replace(bld_path.name, fast_bld_path.name))
+                    except Exception:
+                        new_tokens.append(p)
+                else:
+                    new_tokens.append(p)
+            
+            has_sources = False
+            for t in new_tokens:
+                tc = t.strip('\"\'')
+                if (tc.endswith('.sv') or tc.endswith('.v') or tc.endswith('.bld') or tc.endswith('.f') or tc.endswith('.F')) and not tc.startswith('+'):
+                    has_sources = True
+                    
+            if has_sources:
+                noc_idx, soc_idx = -1, -1
+                for i, t in enumerate(new_tokens):
+                    if '_noc_pkg.sv' in t: noc_idx = i
+                    elif '_soc_pkg.sv' in t: soc_idx = i
+                if noc_idx != -1 and soc_idx != -1 and soc_idx < noc_idx:
+                    new_tokens[soc_idx], new_tokens[noc_idx] = new_tokens[noc_idx], new_tokens[soc_idx]
+                    
+                fast_line = ' '.join(new_tokens).replace('vlog ', 'vlog -suppress 13314 ')
+                fast_tcl.append(fast_line)
+        else:
+            fast_tcl.append(line)
+
+    opts_str = " ".join(global_options)
+    fast_tcl.append(f'vlog -suppress 13314 {opts_str} -sv {outdir_path}/.stubs/{project_name}_stubs.sv')
+    for stub in fast_check_stubs:
+        fast_tcl.append(f'vlog -suppress 13314 {opts_str} -sv {outdir_path}/.stubs/{stub["name"]}')
+        
+    with open(outdir_path / "compile_vsim_fast.tcl", "w") as f:
+        f.write('\n'.join(fast_tcl))
+
 def main():
     # =========================================================================
     # 1. ARGUMENT PARSING
@@ -128,6 +385,11 @@ def main():
         type=str, 
         default=None, 
         help="Path to an additional environment config YAML to merge with the base configuration."
+    )
+    parser.add_argument(
+        "--generate-stubs", 
+        action="store_true", 
+        help="Generate faithful RTL stubs for fast-check and exit."
     )
     
     args = parser.parse_args()
@@ -302,6 +564,12 @@ def main():
         
     # If we get here, the basic configuration is valid.
     print("\n[SUCCESS] Basic Configuration validated successfully!")
+
+    if args.generate_stubs:
+        print("\n[*] Starting Fast-Check Stub Generation...")
+        generate_stubs(outdir_path, soc_config, registry_dependencies, base_dir)
+        print("  [SUCCESS] Faithful stubs and fast-compile scripts generated.")
+        sys.exit(0)
 
     # =========================================================================
     # 4. ARCHITECTURAL OPTIMIZATION (GARBAGE COLLECTION)

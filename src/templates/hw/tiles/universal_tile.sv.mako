@@ -174,6 +174,7 @@ ${license()}\
 //
 // BENDER: name="axi"
 // BENDER: name="floo_noc"
+// BENDER: name="opentitan"
 % if is_host and config.system_controller:
 ${require_bender("register_interface")}
 % endif
@@ -587,14 +588,14 @@ module ${p_name}_${c_type}
   end
 
   ${require_file("reg_to_tlul.sv")}
-  tlul_pkg::tl_h2d_t sys_ctrl_tl_req;
-  tlul_pkg::tl_d2h_t sys_ctrl_tl_rsp;
+  tlul_ot_pkg::tl_h2d_t sys_ctrl_tl_req;
+  tlul_ot_pkg::tl_d2h_t sys_ctrl_tl_rsp;
 
   reg_to_tlul #(
     .reg_req_t ( ${base_req_type} ),
     .reg_rsp_t ( ${base_rsp_type} ),
-    .tl_h2d_t  ( tlul_pkg::tl_h2d_t ),
-    .tl_d2h_t  ( tlul_pkg::tl_d2h_t )
+    .tl_h2d_t  ( tlul_ot_pkg::tl_h2d_t ),
+    .tl_d2h_t  ( tlul_ot_pkg::tl_d2h_t )
   ) i_sys_ctrl_reg_to_tlul (
     .clk_i     ( clk_i ),
     .rst_ni    ( rst_ni ),

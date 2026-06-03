@@ -612,16 +612,13 @@ module ${p_name}_${c_type}
   tlul_ot_pkg::tl_d2h_t tl_wdt_rsp;
 
   reg_to_tlul #(
-    .req_t             ( aon_reg_req_t                   ),
-    .rsp_t             ( aon_reg_rsp_t                   ),
+    .reg_req_t         ( aon_reg_req_t                   ),
+    .reg_rsp_t         ( aon_reg_rsp_t                   ),
     .tl_h2d_t          ( tlul_ot_pkg::tl_h2d_t           ),
-    .tl_d2h_t          ( tlul_ot_pkg::tl_d2h_t           ),
-    .tl_a_user_t       ( tlul_ot_pkg::tl_a_user_t        ),
-    .tl_a_op_e         ( tlul_ot_pkg::tl_a_op_e          ),
-    .TL_A_USER_DEFAULT ( tlul_ot_pkg::TL_A_USER_DEFAULT  ),
-    .PutFullData       ( tlul_ot_pkg::PutFullData        ),
-    .Get               ( tlul_ot_pkg::Get                )
+    .tl_d2h_t          ( tlul_ot_pkg::tl_d2h_t           )
   ) i_reg_to_tlul_${p['name']} (
+    .clk_i     ( clk_i       ),
+    .rst_ni    ( rst_ni      ),
     .tl_o      ( tl_wdt_req  ),
     .tl_i      ( tl_wdt_rsp  ),
     .reg_req_i ( reg_wdt_req ),
