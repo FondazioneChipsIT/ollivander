@@ -7,7 +7,7 @@
   # a 'Tile' suitable for a FlooNoC 2D Mesh topology.
 
   import re
-  from soc_schema import get_isle_info
+  from core.soc_schema import get_isle_info
 
   c_name = comp.name
   c_type = comp.type

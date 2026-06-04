@@ -19,6 +19,8 @@ def get_verible_ast(filepath: Path) -> Optional[Dict[str, Any]]:
     Invokes Google's Verible parser to extract the Abstract Syntax Tree (AST)
     from a SystemVerilog file. This allows Ollivander to reliably parse complex
     module headers, parameters, and ports without relying solely on Regex.
+    The AST is exported as JSON, providing a structured, hierarchical view of
+    the RTL which is immune to formatting variations or multi-line declarations.
     """
     # Try to find the Verible executable in the system PATH.
     verible_exe = shutil.which("verible-verilog-syntax")
@@ -42,7 +44,10 @@ def get_verible_ast(filepath: Path) -> Optional[Dict[str, Any]]:
         return None
 
 def walk_ast(node, tags):
-    """Recursively yields nodes that match any of the given tags."""
+    """
+    Recursively yields nodes that match any of the given tags.
+    Used to navigate the heavily nested JSON representation of the Verible AST.
+    """
     if isinstance(node, dict):
         if node.get("tag") in tags:
             yield node
@@ -74,7 +79,8 @@ def _clean_param_val(val: Any) -> str:
     Converts a parameter value from the YAML configuration or the SystemVerilog
     source into a canonical string form (preferably a base-10 integer).
     This is crucial for comparing values like `32'hFF` (SV) with `255` (YAML)
-    to ensure they represent the same hardware configuration.
+    to ensure they represent the same hardware configuration, avoiding false
+    positive validation errors due to syntax differences.
     """
     if isinstance(val, bool):
         return "1" if val else "0"
@@ -118,7 +124,7 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     - Boolean flags indicating supported interfaces (e.g., 'has_sync_axi_slave', 'has_test_mode').
     """
     if not search_paths:
-        search_paths = [Path(__file__).parent.parent]
+        search_paths = [Path(__file__).parent.parent.parent]
     
     filepath = None
     for sp in search_paths:
@@ -190,7 +196,10 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
                     param_name = ""
                     for i in range(eq_index - 1, -1, -1):
                         text = tokens[i].get("text", "")
-                        # The first token before '=' that is a valid C identifier
+                        # Traverse backwards from the '=' token to find the parameter name.
+                        # This safely skips over type definitions (e.g., 'logic', 'int') or 
+                        # signedness keywords that might precede the identifier.
+                        # We stop at the first valid C identifier.
                         if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', text):
                             param_name = text
                             break
@@ -249,7 +258,9 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
             tokens = list(extract_tokens(port_decl))
             
             # Split tokens using commas to properly handle multiple declarations
-            # on the same line (e.g., `input logic clk_i, rst_ni;`).
+            # on the same line (e.g., `input logic clk_i, rst_ni;`), which is 
+            # common in SystemVerilog but extremely tricky to parse via Regex.
+            # We track bracket levels to ignore commas inside packed dimensions.
             sub_decls_tokens = []
             current_decl = []
             bracket_level = 0
@@ -598,6 +609,8 @@ def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] =
     global_bus = config.topology.global_bus
     
     for comp in all_comps:
+        # If the component was wrapped in a NoC Tile during Phase 1, we must validate
+        # the underlying original user IP (the Isle), not the auto-generated Tile wrapper.
         c_type = original_types.get(comp.name, comp.type) if original_types else comp.type
         
         # TOPOLOGY ENFORCEMENT: Crossbar cannot use NoC-specific components
@@ -618,6 +631,8 @@ def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] =
         if comp.parameters is not None:
             for param, user_val in comp.parameters.items():
                 # First, check if the user is trying to override a fixed 'localparam'.
+                # Localparams represent hard architectural limits of the IP (e.g. FIFO depth)
+                # or structural choices that cannot be altered from the top-level instantiation.
                 if param in info["fixed_params"]:
                     fixed_val_clean = info["fixed_params"][param]
                     user_val_clean = _clean_param_val(user_val)

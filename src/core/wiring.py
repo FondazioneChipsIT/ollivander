@@ -15,25 +15,9 @@ declared it as its input.
 """
 import re
 
-def camel_case(name):
-    """Converts a snake_case string to CamelCase (e.g., 'pulp_cluster' -> 'PulpCluster')."""
-    return ''.join(word.title() for word in name.split('_'))
+from core.utils import camel_case, is_external
 
-def is_external(comp):
-    """
-    Determines if a component is 'external' by checking if any of its RegBus 
-    interfaces are explicitly marked with `external: true` in the YAML.
-    External components are not instantiated in the top-level; instead, their 
-    RegBus ports are exported to the SoC top-level boundaries.
-    """
-    if not comp.interfaces: 
-        return False
-    slaves = comp.interfaces.get('regbus_slave', [])
-    if isinstance(slaves, dict): 
-        slaves = [slaves]
-    return any(slv.get('external', False) for slv in slaves)
-
-def is_array_port(comp_name, port_name, comp_info, is_input=True):
+def _is_array_port(comp_name, port_name, comp_info, is_input=True):
     """
     Checks if a given port on a component is an array (packed or unpacked).
     This is used to determine if replication syntax `'{default: ...}` is needed
@@ -42,7 +26,8 @@ def is_array_port(comp_name, port_name, comp_info, is_input=True):
     ports = comp_info.get(comp_name, {}).get("ports", {})
     p_info = ports.get(port_name)
     if not p_info:
-        # Fallback for ports ending in _i or _o
+        # Fallback: Some SV modules explicitly use '_i' or '_o' suffixes, but the YAML 
+        # topology references might omit them. Try to find the base name.
         base_port = port_name[:-2] if (is_input and port_name.endswith('_i')) or (not is_input and port_name.endswith('_o')) else port_name
         p_info = ports.get(base_port)
         
@@ -51,7 +36,7 @@ def is_array_port(comp_name, port_name, comp_info, is_input=True):
         return '[' in p_info["type_dim"] or '[' in p_info["unpacked"]
     return False
 
-def infer_interrupts(soc_config, comp_info):
+def _infer_interrupts(soc_config, comp_info):
     """
     Scans all components looking for input interrupts that reference an output 
     from another component (e.g., 'source: safety_island.debug_req_o'). 
@@ -62,9 +47,11 @@ def infer_interrupts(soc_config, comp_info):
     This allows the user to define connections "one-way" in the YAML, keeping 
     the configuration concise.
     """
+    # Create a flattened, unified lookup table of all components (Host + Peripherals)
     all_comps = {c.name: c for c in [soc_config.host] + (soc_config.components if soc_config.components else [])}
     
-    # Include APB sub-components in the lookup dictionary for source resolution.
+    # Also include APB sub-components in the lookup dictionary to allow direct
+    # cross-references like 'apb_subsystem.timer.irq_o'.
     for c in list(all_comps.values()):
         if c.components:
             for sub_c in c.components:
@@ -83,10 +70,12 @@ def infer_interrupts(soc_config, comp_info):
                             src_c = all_comps[src_comp]
                             if src_c.interrupts is None: 
                                 src_c.interrupts = {}
-                            # If the source port is not explicitly defined as an interrupt on the source component, infer it.
+                                
+                            # If the source component didn't explicitly declare this output, infer it.
                             if src_port not in src_c.interrupts:
                                 dim_str = ""
-                                # Parse the SV header of the source component to get the port's dimensions.
+                                # Parse the SV header of the source component to extract the exact port dimensions.
+                                # This ensures the generated wire will have the correct bit-width.
                                 src_ports = comp_info.get(src_comp, {}).get("ports", {})
                                 p_info = src_ports.get(src_port) or src_ports.get(f"{src_port}_o")
                                 
@@ -95,7 +84,7 @@ def infer_interrupts(soc_config, comp_info):
                                     if dims:
                                         dim_str = "".join(dims)
                                 
-                                # Create a new interrupt definition for the source component.
+                                # Inject the newly discovered output interrupt into the source component's metadata.
                                 irq_data = {"type": "level"}
                                 if dim_str:
                                     irq_data["sv_dimensions"] = dim_str
@@ -108,15 +97,23 @@ def build_connection_matrix(soc_config, comp_info):
     Parses the SoC configuration and generates the physical SystemVerilog 
     connection strings for every instantiated component.
     
+    It internally orchestrates the inference of implicit interrupts before
+    computing the actual physical wire names.
+    
     Returns a dictionary mapping component names to lists of port bindings:
     {
       "l2_shared_memory": [ ".clk_i ( l2_clk )", ".axi_req_i ( ... )", ... ],
       "pulp_cluster": [ ... ]
     }
     """
+    # 0. INFER IMPLICIT CONNECTIONS
+    # Pre-process the metadata to resolve "one-way" interrupt declarations.
+    _infer_interrupts(soc_config, comp_info)
+
     matrix = {}
     
-    # Standard AXI channel directions for a SLAVE port (from the component's perspective)
+    # Dictionary mapping standard AXI4 channels to their physical direction on a SLAVE port.
+    # 'i' means input to the component, 'o' means output from the component.
     slv_ports = {
         'aw_data': 'i', 'aw_wptr': 'i', 'aw_rptr': 'o',
         'w_data':  'i', 'w_wptr':  'i', 'w_rptr':  'o',
@@ -125,7 +122,8 @@ def build_connection_matrix(soc_config, comp_info):
         'r_data':  'o', 'r_wptr':  'o', 'r_rptr':  'i'
     }
     
-    # Standard AXI channel directions for a MASTER port (from the component's perspective)
+    # Dictionary mapping standard AXI4 channels to their physical direction on a MASTER port.
+    # Used to automatically generate the hundreds of connections required for the interconnect.
     mst_ports = {
         'aw_data': 'o', 'aw_wptr': 'o', 'aw_rptr': 'i',
         'w_data':  'o', 'w_wptr':  'o', 'w_rptr':  'i',
@@ -147,8 +145,9 @@ def build_connection_matrix(soc_config, comp_info):
         # 1. AXI & REGBUS CROSSBAR CONNECTIONS
         # ----------------------------------------------------------------------
         if comp.name == soc_config.host.name:
-            # HOST COMPONENT: Acts as the central switch. It exposes massive 
-            # multidimensional arrays covering all slaves and masters in the system.
+            # HOST COMPONENT (Crossbar acts as Host):
+            # The host exposes massive packed arrays covering all slaves and masters in the system.
+            # We invert the directions because the Host master connects to the peripheral's slave, and vice versa.
             for sig, d in slv_ports.items():
                 p_dir = 'o' if d == 'i' else 'i'
                 ports.append(f".async_axi_out_{sig}_{p_dir} ( xbar_slv_{sig} )")
@@ -156,11 +155,11 @@ def build_connection_matrix(soc_config, comp_info):
                 p_dir = 'o' if d == 'i' else 'i'
                 ports.append(f".async_axi_in_{sig}_{p_dir} ( xbar_mst_{sig} )")
             
-            # Host Sync AXI Connection
+            # Host synchronous AXI connection (bypass CDC for high-performance peripherals)
             ports.append(".axi_req_o ( xbar_sync_slv_req )")
             ports.append(".axi_resp_i ( xbar_sync_slv_rsp )")
 
-            # Host LLC Connection (Dedicated Point-to-Point).
+            # Host LLC Connection (Dedicated Point-to-Point, separate from main Crossbar).
             has_llc = any('llc_port' in c.interfaces for c in all_comps if c.interfaces)
             if has_llc:
                 for sig, d in mst_ports.items():
@@ -174,7 +173,7 @@ def build_connection_matrix(soc_config, comp_info):
                         ports.append(f".async_axi_llc_{sig}_i ( '0 )")
                 ports.append(".async_axi_llc_isolate_i ( 1'b0 )")
 
-            # Host RegBus Connection
+            # Host RegBus Connection: Aggregates both synchronous and asynchronous register buses.
             pkg = f"{soc_config.project.name}_soc_pkg"
             ports.append(f".reg_req_o ( sys_reg_req[{pkg}::NumSyncRegSlaves-1:0] )")
             ports.append(f".reg_rsp_i ( sys_reg_rsp[{pkg}::NumSyncRegSlaves-1:0] )")
@@ -185,8 +184,9 @@ def build_connection_matrix(soc_config, comp_info):
             ports.append(".reg_async_mst_ack_o ( async_reg_ack_out )")
             ports.append(".reg_async_mst_data_i ( async_reg_data_in )")
         else:
-            # STANDARD COMPONENT: Connects to a specific slice (index) of the 
-            # Host's multidimensional AXI/RegBus arrays.
+            # STANDARD COMPONENT: 
+            # Each peripheral connects to a specific slice (defined by its autogenerated index) 
+            # of the Host's multidimensional AXI/RegBus arrays.
             if 'llc_port' in comp.interfaces:
                 for sig, d in slv_ports.items():
                     p_dir = 'o' if d == 'i' else 'i'
@@ -204,8 +204,8 @@ def build_connection_matrix(soc_config, comp_info):
                     
                     is_sync = slvs[0].get('sync_domain', False)
                     
-                    # If a component exposes multiple AXI ports (e.g., a Dual-Port L2),
-                    # we concatenate the corresponding slices from the Host array.
+                    # Handle AXI Slaves: if a component exposes multiple AXI ports (e.g., a multi-bank L2 memory),
+                    # we construct a concatenation '{...}' of the corresponding slices from the Host array.
                     if is_sync:
                         if num_ports > 1:
                             concat_req = ", ".join([f"xbar_sync_slv_req[({base_idx}{p} - ollivander_soc_pkg::NumAxiSlavesAsync)]" for p in reversed(range(num_ports))])
@@ -218,7 +218,7 @@ def build_connection_matrix(soc_config, comp_info):
                     else:
                         for sig, d in slv_ports.items():
                             if num_ports > 1:
-                                # Map multiple ports by slicing the crossbar array.
+                                # Map multiple asynchronous ports by slicing the crossbar array.
                                 concat = ", ".join([f"xbar_slv_{sig}[{base_idx}{p}]" for p in reversed(range(num_ports))])
                                 ports.append(f".async_axi_in_{sig}_{d} ( {{ {concat} }} )")
                             else:
@@ -243,9 +243,11 @@ def build_connection_matrix(soc_config, comp_info):
             idx = f"RegBusSlvIdx_{camel_case(comp.name)}"
             
             if is_sync:
+                # Synchronous RegBus directly accesses the Host's sys_reg_req/rsp arrays.
                 ports.append(f".reg_req_i ( sys_reg_req[{idx}] )")
                 ports.append(f".reg_rsp_o ( sys_reg_rsp[{idx}] )")
             else:
+                # Asynchronous RegBus needs an index offset (NumSyncRegSlaves) since the array is split.
                 async_idx = f"({idx} - ollivander_soc_pkg::NumSyncRegSlaves)"
                 if not is_external(comp):
                     ports.append(f".reg_async_slv_req_i ( async_reg_req_out[{async_idx}] )")
@@ -258,6 +260,8 @@ def build_connection_matrix(soc_config, comp_info):
         # ----------------------------------------------------------------------
         # 3. SYSTEM CONTROLLER CONNECTIONS (PCRs)
         # ----------------------------------------------------------------------
+        # Automatically route Power & Control Registers (Isolation, Fetch Enable, Boot Addr)
+        # from the OpenTitan-generated System Controller to the IP ports.
         if comp.system_config:
             reg_prefix = f"sys_regs_reg2hw.{comp.name.lower()}"
             hw2reg_prefix = f"sys_regs_hw2reg.{comp.name.lower()}"
@@ -273,7 +277,8 @@ def build_connection_matrix(soc_config, comp_info):
                 ports.append(f".en_sa_boot_i ( {reg_prefix}_boot_enable.q )")
                 
             if comp.system_config.get('debug_req'):
-                if is_array_port(comp.name, 'debug_req_i', comp_info):
+                if _is_array_port(comp.name, 'debug_req_i', comp_info):
+                    # Broadcast a scalar debug request to all bits of a vector port using '{default: ...}
                     ports.append(f".debug_req_i ( '{{default: {reg_prefix}_debug_req.q}} )")
                 else:
                     ports.append(f".debug_req_i ( {reg_prefix}_debug_req.q )")
@@ -309,9 +314,10 @@ def build_connection_matrix(soc_config, comp_info):
                 if irq_cfg.get('source'):
                     port_name = irq_name if irq_name.endswith('_i') else f"{irq_name}_i"
                     # --- INPUT INTERRUPT ---
-                    # This pin must be driven by another component's output.
+                    # This pin acts as a sink. It must be driven by another component's output wire.
                     source = irq_cfg.get('source')
                     if source == "none":
+                        # Tie off unconnected interrupts to ground.
                         ports.append(f".{port_name} ( '0 )")
                     else:
                         # Parse the source string to detect the target component and 
@@ -368,14 +374,14 @@ def build_connection_matrix(soc_config, comp_info):
                             # For simple 1-to-1 connections, generate the wire name directly.
                             processed_str = re.sub(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b', r'intr_\1_\2', source_str)
                             
-                            # Check if the destination port is an array and the source is a scalar.
-                            is_arr = is_array_port(comp.name, port_name, comp_info)
+                            # Evaluate if the destination port is a vector (array) and the source is a scalar.
+                            is_arr = _is_array_port(comp.name, port_name, comp_info)
                             src_is_arr = False
                             src_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)$', source_str.strip())
                             if src_match:
-                                src_is_arr = is_array_port(src_match.group(1), src_match.group(2), comp_info, False)
+                                src_is_arr = _is_array_port(src_match.group(1), src_match.group(2), comp_info, False)
                                 
-                            # Use replication syntax if connecting scalar to vector.
+                            # Use SystemVerilog replication syntax '{default: ...} to safely broadcast the scalar to the whole vector.
                             out_str = f"'{{default: {processed_str}}}" if (is_arr and not src_is_arr) else processed_str
                             out_str_sync = f"'{{default: intr_{comp.name}_{irq_name}_sync}}" if (is_arr and not src_is_arr) else f"intr_{comp.name}_{irq_name}_sync"
                             
@@ -385,7 +391,7 @@ def build_connection_matrix(soc_config, comp_info):
                                 ports.append(f".{port_name} ( {out_str} )")
                 else:
                     # --- OUTPUT INTERRUPT ---
-                    # This pin drives a wire that other components can listen to.
+                    # This pin acts as a source. It drives a global wire that other components can listen to.
                     port_name = irq_cfg.get('port', irq_name)
                     p_name = port_name if not port_name.endswith('_o') else port_name[:-2]
                     if port_name not in output_ports_wired:
@@ -395,7 +401,8 @@ def build_connection_matrix(soc_config, comp_info):
         # ----------------------------------------------------------------------
         # 6. PHYSICAL PERIPHERAL PORTS EXPORT
         # ----------------------------------------------------------------------
-        # Routes native I/O interfaces directly to the Top-Level boundaries.
+        # Checks if the component implements standard physical interfaces (UART, I2C, SPI)
+        # and automatically wires them directly to the Top-Level I/O boundaries.
         pfx = "" if comp.name == soc_config.host.name else f"{comp.name}_"
         
         if (comp.interfaces and comp.interfaces.get('uart')) or (comp.parameters and comp.parameters.get('Uart')):
@@ -440,6 +447,8 @@ def build_connection_matrix(soc_config, comp_info):
         # ----------------------------------------------------------------------
         # 7. SUB-COMPONENT INTERRUPT ROUTING (e.g., inside APB Subsystems)
         # ----------------------------------------------------------------------
+        # APB subsystems hide multiple peripherals inside a single Isle wrapper.
+        # We need to explicitly route their interrupts out to the Top-Level.
         if comp.components:
             for sub_c in comp.components:
                 if sub_c.interrupts:
