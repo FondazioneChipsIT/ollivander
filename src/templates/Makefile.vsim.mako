@@ -8,7 +8,22 @@ VSIM     ?= vsim
 BENDER   ?= bender
 PYTHON   ?= python3
 MAKE     ?= make
-BENDER_TARGETS ?= -t rtl -t simulation -t sim -t test -t cva6 -t cv32e40p_use_ff_regfile -t scm_use_fpga_scm -t cv64a6splus_imafdc_sv39_hpdcache_wb -t cv64a6_imafdc_sv39 -t idma -t use_idma -t snitch_cluster -t deprecated -t carfield_secure_periph -t spatz -t cheshire
+<%
+  # Base standard targets for simulation
+  b_targets = ["rtl", "simulation", "sim", "test"]
+  # Extract specific targets required by the dependencies defined in the environment
+  for dep_name, dep_info in env_config.get('dependencies', {}).items():
+      targets = dep_info.get('bender_targets', [])
+      if isinstance(targets, list):
+          b_targets.extend(targets)
+      elif isinstance(targets, str):
+          b_targets.append(targets)
+          
+  # Remove duplicates preserving order
+  b_targets = list(dict.fromkeys(b_targets))
+  bender_targets_str = " ".join([f"-t {t}" for t in b_targets])
+%>\
+BENDER_TARGETS ?= ${bender_targets_str}
 
 BENDER_PREREQ :=
 ifeq (, $(shell command -v $(BENDER) 2> /dev/null))
@@ -43,12 +58,28 @@ bender_work/.fetched: $(BENDER_PREREQ) Bender.yml
 	@echo "\n[MAKE] Fetching dependencies via Bender..."
 	@$(BENDER) checkout --force || true
 % for dep_name, dep_info in env_config.get('dependencies', {}).items():
-% if 'pre_build_cmds' in dep_info:
+% if 'pre_build_cmds' in dep_info or 'pre_build_script' in dep_info:
 	@if [ -d bender_work/${dep_name} ]; then \
-		echo "  -> Running pre-build commands for ${dep_name}..."; \
-% for cmd in dep_info['pre_build_cmds']:
-		${cmd.replace('{bender_work}', 'bender_work')}; \
+		echo "  -> Checking if ${dep_name} needs pre-processing..."; \
+% for cmd in dep_info.get('pre_build_cmds', []):
+		echo "  -> Running: ${cmd.replace('{bender_work}', 'bender_work').replace('{ollivander_dir}', rel_ollivander_dir)}"; \
+		${cmd.replace('{bender_work}', 'bender_work').replace('{ollivander_dir}', rel_ollivander_dir)}; \
 % endfor
+% if 'pre_build_script' in dep_info:
+<%
+        script_path = dep_info['pre_build_script'].replace('{bender_work}', 'bender_work').replace('{ollivander_dir}', rel_ollivander_dir)
+        if script_path.endswith('.py'):
+            exec_cmd = f"$(PYTHON) {script_path}"
+        elif script_path.endswith('.sh'):
+            exec_cmd = f"bash {script_path}"
+        elif script_path.endswith('.tcl'):
+            exec_cmd = f"if ! command -v tclsh >/dev/null 2>&1; then echo \"[ERROR] 'tclsh' is required to run {script_path} but was not found in PATH.\"; echo \"[HINT] Please install TCL (e.g., 'sudo apt-get install tcl').\"; exit 1; fi; tclsh {script_path}"
+        else:
+            exec_cmd = f"chmod +x {script_path} ; ./{script_path}"
+%>\
+		echo "  -> Executing script: ${script_path}"; \
+		${exec_cmd}; \
+% endif
 	fi
 % endif
 % endfor

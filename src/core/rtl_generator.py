@@ -355,7 +355,8 @@ class RTLGenerator:
             "rel_hw_dir": os.path.relpath(hw_dir, self.env.bender_dir).replace('\\', '/'),
             "rel_manifest_path": os.path.relpath(self.env.bender_manifest_path, Path.cwd()).replace('\\', '/'),
             "rel_outdir_path": os.path.relpath(self.env.outdir_path, Path.cwd()).replace('\\', '/'),
-            "rel_tb_dir": os.path.relpath(tb_dir, self.env.bender_dir).replace('\\', '/')
+            "rel_tb_dir": os.path.relpath(tb_dir, self.env.bender_dir).replace('\\', '/'),
+            "rel_ollivander_dir": os.path.relpath(self.env.base_dir, Path.cwd()).replace('\\', '/')
         }
 
         if self.soc_config.topology.type == "crossbar":

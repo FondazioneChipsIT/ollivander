@@ -28,6 +28,7 @@ class OllivanderEnv:
         self.regtool_paths = []
         self.search_paths = []
         self.exclude_dir = ""
+        self.base_dir = None
 
 def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     """
@@ -37,6 +38,7 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     """
     env = OllivanderEnv()
     
+    env.base_dir = base_dir
     # 1. Load the base environment configuration (usually ollivander_config.yaml).
     # This provides the default paths and the base dependency registry.
     env_config_path = Path(args.env_config) if args.env_config else base_dir / "ollivander_config.yaml"

@@ -42,6 +42,12 @@ dependencies:
   cheshire:
     git: "https://github.com/pulp-platform/cheshire.git"
     version: "0.3.1"
+    bender_targets:
+      - "cheshire"
+      - "cva6"
+      - "cv64a6_imafdc_sv39"
+      - "cv64a6splus_imafdc_sv39_hpdcache_wb"
+      - "deprecated"
     pre_build_cmds:
       - "mkdir -p {bender_work}/cheshire/target/sim/models"
       - "touch {bender_work}/cheshire/target/sim/models/s25fs512s.v"
@@ -67,7 +73,12 @@ dependencies:
   idma:
     git: "https://github.com/pulp-platform/idma.git"
     version: "0.6.5"
-    # Commands executed by Ollivander's generated Makefile.hw BEFORE resolving Bender
+    bender_targets:
+      - "idma"
+      - "use_idma"
+    # Commands executed by Ollivander's generated Makefile.hw BEFORE compiling.
+    # Alternatively, use 'pre_build_script' to run an external python, bash or tcl script.
+    # Paths can use {bender_work} (IP dir) or {ollivander_dir} (generator root) placeholders.
     pre_build_cmds:
       - "$(PYTHON) -m pip install -q flatdict mako"
       - "$(MAKE) -C {bender_work}/idma idma_hw_all BENDER=\"$(BENDER)\""
@@ -85,6 +96,10 @@ dependencies:
       - file: "{bender_work}/opentitan/Bender.yml"
         search: "prim_flop_macros.svh"
         replace: "prim_flop_macros.sv"
+  # example_custom_ip:
+  #   git: "https://github.com/example/custom_ip.git"
+  #   version: "1.0.0"
+  #   pre_build_script: "{ollivander_dir}/scripts/setup.py" # Or relative to project root
   pulp-ethernet:
     # branch: 'handshake'
     git: "https://github.com/pulp-platform/pulp-ethernet.git"
@@ -92,6 +107,8 @@ dependencies:
   pulp_cluster:
     git: "https://github.com/FondazioneChipsIT/pulp_cluster.git"
     rev: "chips-it"
+    bender_targets:
+      - "cv32e40p_use_ff_regfile"
   redmule:
     git: "https://github.com/pulp-platform/redmule.git"
     # rev: "devel"
@@ -105,6 +122,9 @@ dependencies:
   snitch_cluster:
     git: "https://github.com/pulp-platform/snitch_cluster.git"
     rev: "main"
+    bender_targets:
+      - "snitch_cluster"
+      - "scm_use_fpga_scm"
     pre_build_cmds:
       - "$(PYTHON) -m pip install -q json5 jsonref jsonschema peakrdl peakrdl-rawheader"
       - "mkdir -p .tmp_llvm_bin && ln -sfn /opt/riscv/snitch-llvm-15.0.0-snitch-0.2.0/bin/* .tmp_llvm_bin/ && ln -sfn /opt/riscv/snitch-llvm-15.0.0-snitch-0.2.0/bin/clang .tmp_llvm_bin/riscv32-unknown-elf-clang"
@@ -112,6 +132,8 @@ dependencies:
   spatz:
     git: "https://github.com/pulp-platform/spatz.git"
     rev: "main"
+    bender_targets:
+      - "spatz"
   timer_unit:
     git: "https://github.com/pulp-platform/timer_unit.git"
     version: "1.0.3"
