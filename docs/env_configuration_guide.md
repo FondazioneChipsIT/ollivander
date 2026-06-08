@@ -52,7 +52,6 @@ These define where Ollivander looks when you declare a component `type` or a `re
 |              |                 |                               | wrappers (`*_isle.sv` or `*_tile.sv`). To    |
 |              |                 |                               | inject your custom IPs, add your project's   |
 |              |                 |                               | hardware folder here.                        |
-| `regtool`    | List of Strings | `["tools/reggen/regtool.py"]` | Path to the OpenTitan regtool Python script. |
 
 **Example of appending custom paths:**
 ```yaml
@@ -90,13 +89,13 @@ Some IPs contain multiple implementations (e.g., FPGA vs ASIC) or optional sub-m
 *Note: If you define `bender_targets` for an existing IP in your custom project environment file, it will **completely replace** the default targets defined in the base `ollivander_config.yaml`. If you want to add a target while keeping the default ones, you must list both the default targets and your new target in your custom file.*
 
 ### 3.3 Pre-Build Tooling and Scripts
-Sometimes an IP needs to generate some files, download models, or install python libraries *before* the RTL can be compiled or simulated. Ollivander handles this automatically via the generated `Makefile.hw` and `Makefile.vsim`.
+Sometimes an IP needs to generate some files, download models, or install python libraries *before* the RTL can be compiled or simulated. Ollivander handles this automatically in Python immediately after fetching the IPs via Bender.
 
 | Field             | Type            | Description                                                             |
 | :---------------- | :-------------- | :---------------------------------------------------------------------- |
 | `pre_build_cmds`  | List of Strings | Inline shell commands to execute. You can use `{bender_work}`           |
 |                   |                 | (downloaded IP directory) and `{ollivander_dir}` (Ollivander root       |
-|                   |                 | directory) as placeholders.                                             |
+|                   |                 | directory) as placeholders. Macros like `$(PYTHON)` are supported.      |
 | `pre_build_script`| String          | Path to an external script (`.sh`, `.py`, `.tcl`) to execute.           |
 |                   |                 | Supports {bender_work}` and `{ollivander_dir}` placeholders.            |
 |                   |                 | Ollivander automatically detects the extension and runs it with the     |
@@ -112,7 +111,7 @@ dependencies:
       - "idma"
     pre_build_cmds:
       - "$(PYTHON) -m pip install -q flatdict mako"
-      - "$(MAKE) -C {bender_work}/idma idma_hw_all"
+      - "$(MAKE) -C {bender_work}/idma idma_hw_all BENDER=\"$(BENDER)\""
   
   my_custom_ip:
     git: "https://github.com/my-org/custom_ip.git"

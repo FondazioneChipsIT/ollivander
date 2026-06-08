@@ -17,31 +17,42 @@ paths:
     - "src/templates"
   components:
     - "components"
-  regtool:
-    - "tools/reggen/regtool.py"
 
-# Centralized Dependency Registry
-# Hardware IP files and templates can declare dependencies by name (e.g. // BENDER: name="axi").
-# Ollivander will resolve them using this registry to ensure version homogeneity.
+# ==============================================================================
+# CENTRALIZED DEPENDENCY REGISTRY
+# ==============================================================================
+# Hardware IP wrappers and templates declare dependencies by name (e.g., // BENDER: name="axi").
+# Ollivander resolves them using this registry to ensure version homogeneity across the SoC.
+#
+# Supported configuration properties per dependency:
+# - git/rev/version: Source repository and specific commit/tag/branch.
+# - bender_targets: Specific compilation targets passed to Bender during simulation/synthesis.
+# - pre_build_cmds: Shell commands executed by Python after fetching (supports {bender_work} placeholder).
+# - pre_build_script: Path to a custom .py/.sh script to run after fetching the IP.
+# - patches: On-the-fly text replacements applied to the fetched IP's source code.
+# - rdl_include_dirs: Search paths for SystemRDL files, automatically passed to PeakRDL.
 dependencies:
   apb:
     git: "https://github.com/pulp-platform/apb.git"
-    version: "0.2.4"
+    rev: "master"
   apb_adv_timer:
     git: "https://github.com/pulp-platform/apb_adv_timer.git"
-    version: "1.0.4"
+    rev: "master"
   axi:
     git: "https://github.com/pulp-platform/axi.git"
-    version: "0.39.9"
+    rev: "master"
   axi_obi:
     git: "https://github.com/pulp-platform/axi_obi.git"
     version: "0.1.0"
   can_bus:
     git: "https://github.com/AlSaqr-platform/can_bus.git"
-    rev: "0ec0bf8b7dab6d5e4b3f7ec58338a8efee066379"
+    rev: "pulp"
   cheshire:
     git: "https://github.com/pulp-platform/cheshire.git"
-    version: "0.3.1"
+    rev: "main"
+    rdl_include_dirs:
+      - "hw"
+      - "hw/regs"
     bender_targets:
       - "cheshire"
       - "cva6"
@@ -54,37 +65,37 @@ dependencies:
       - "touch {bender_work}/cheshire/target/sim/models/24FC1025.v"
   common_cells:
     git: "https://github.com/pulp-platform/common_cells.git"
-    version: "1.39.0"
+    rev: "master"
   datamover:
     git: "https://github.com/pulp-platform/datamover.git"
-    rev: "f14d4db2a72c08b43b3511013e821a4600f6ef56"
+    rev: "main"
   dyn_mem:
     git: "https://github.com/pulp-platform/dyn_spm.git"
-    rev: "78d4b4248b3c7b02a0e61d683f658e5094ac8c44"
+    rev: "main"
   floo_noc:
     git: "https://github.com/pulp-platform/floonoc.git"
-    version: "0.8.1"
+    rev: "main"
   hci:
     git: "https://github.com/pulp-platform/hci.git"
-    version: "2.4.1"
+    rev: "master"
   hyperbus:
     git: "https://github.com/pulp-platform/hyperbus.git"
-    version: "0.0.9"
+    rev: "main"
   idma:
     git: "https://github.com/pulp-platform/idma.git"
     version: "0.6.5"
     bender_targets:
       - "idma"
       - "use_idma"
-    # Commands executed by Ollivander's generated Makefile.hw BEFORE compiling.
-    # Alternatively, use 'pre_build_script' to run an external python, bash or tcl script.
-    # Paths can use {bender_work} (IP dir) or {ollivander_dir} (generator root) placeholders.
+    # Pre-build commands are executed directly by Ollivander (Python) immediately after fetching.
+    # The $(PYTHON), $(MAKE), and $(BENDER) macros are safely substituted at runtime.
+    # Paths can use {bender_work} (download dir) or {ollivander_dir} (generator root) placeholders.
     pre_build_cmds:
       - "$(PYTHON) -m pip install -q flatdict mako"
       - "$(MAKE) -C {bender_work}/idma idma_hw_all BENDER=\"$(BENDER)\""
   mailbox_unit:
     git: "https://github.com/pulp-platform/mailbox_unit.git"
-    version: "1.1.0"
+    rev: "master"
   obi:
     git: "https://github.com/pulp-platform/obi.git"
     rev: "6a724da5c8d6412b88b6948746e04c1adf39d017"
@@ -101,24 +112,26 @@ dependencies:
   #   version: "1.0.0"
   #   pre_build_script: "{ollivander_dir}/scripts/setup.py" # Or relative to project root
   pulp-ethernet:
-    # branch: 'handshake'
     git: "https://github.com/pulp-platform/pulp-ethernet.git"
-    rev: "db9a90dd27fa85ddbe9b7cd22e03bf43b2c14838"
+    rev: "handshake"
   pulp_cluster:
     git: "https://github.com/FondazioneChipsIT/pulp_cluster.git"
     rev: "chips-it"
     bender_targets:
       - "cv32e40p_use_ff_regfile"
+    patches:
+      - file: "{bender_work}/pulp_cluster/Bender.yml"
+        search: "dependencies:"
+        replace: "dependencies:\\n  safety_island: { path: ../safety_island }"
   redmule:
     git: "https://github.com/pulp-platform/redmule.git"
-    # rev: "devel"
-    version: "2.0.4"
+    rev: "main"
   register_interface:
     git: "https://github.com/pulp-platform/register_interface.git"
-    version: "0.4.7"
+    rev: "master"
   safety_island:
     git: "https://github.com/pulp-platform/safety_island.git"
-    rev: "584eb697195c44ef1b1cbd1f4b7accdf5192200a"
+    rev: "carfield"
   snitch_cluster:
     git: "https://github.com/pulp-platform/snitch_cluster.git"
     rev: "main"
@@ -126,9 +139,9 @@ dependencies:
       - "snitch_cluster"
       - "scm_use_fpga_scm"
     pre_build_cmds:
-      - "$(PYTHON) -m pip install -q json5 jsonref jsonschema peakrdl peakrdl-rawheader"
+      - "$(PYTHON) -m pip install -q json5 jsonref jsonschema"
       - "mkdir -p .tmp_llvm_bin && ln -sfn /opt/riscv/snitch-llvm-15.0.0-snitch-0.2.0/bin/* .tmp_llvm_bin/ && ln -sfn /opt/riscv/snitch-llvm-15.0.0-snitch-0.2.0/bin/clang .tmp_llvm_bin/riscv32-unknown-elf-clang"
-      - "PATH=$$(pwd)/.tmp_llvm_bin:$$PATH $(MAKE) -C {bender_work}/snitch_cluster rtl"
+      - "PATH=$(pwd)/.tmp_llvm_bin:$PATH $(MAKE) -C {bender_work}/snitch_cluster rtl"
   spatz:
     git: "https://github.com/pulp-platform/spatz.git"
     rev: "main"
@@ -136,4 +149,4 @@ dependencies:
       - "spatz"
   timer_unit:
     git: "https://github.com/pulp-platform/timer_unit.git"
-    version: "1.0.3"
+    rev: "master"

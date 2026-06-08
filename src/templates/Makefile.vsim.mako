@@ -1,3 +1,13 @@
+<%
+  # ============================================================================
+  # MAKO TEMPLATE FOR THE QUESTASIM MAKEFILE
+  # ============================================================================
+  # This template generates the main simulation Makefile for QuestaSim.
+  # It dynamically aggregates compilation targets from the central environment
+  # registry (BENDER_TARGETS), automates the extraction of the SystemVerilog 
+  # compilation script via Bender, handles C firmware compilation, and provides
+  # advanced features like macro injection and rapid RTL stubbing (fast-check).
+%>
 # ==============================================================================
 # Auto-generated QuestaSim Makefile for ${config.project.name}
 # ==============================================================================
@@ -55,34 +65,6 @@ Bender.lock: $(BENDER_PREREQ)
 
 # Create a state file to ensure Bender fetches dependencies only when needed
 bender_work/.fetched: $(BENDER_PREREQ) Bender.yml
-	@echo "\n[MAKE] Fetching dependencies via Bender..."
-	@$(BENDER) checkout --force || true
-% for dep_name, dep_info in env_config.get('dependencies', {}).items():
-% if 'pre_build_cmds' in dep_info or 'pre_build_script' in dep_info:
-	@if [ -d bender_work/${dep_name} ]; then \
-		echo "  -> Checking if ${dep_name} needs pre-processing..."; \
-% for cmd in dep_info.get('pre_build_cmds', []):
-		echo "  -> Running: ${cmd.replace('{bender_work}', 'bender_work').replace('{ollivander_dir}', rel_ollivander_dir)}"; \
-		${cmd.replace('{bender_work}', 'bender_work').replace('{ollivander_dir}', rel_ollivander_dir)}; \
-% endfor
-% if 'pre_build_script' in dep_info:
-<%
-        script_path = dep_info['pre_build_script'].replace('{bender_work}', 'bender_work').replace('{ollivander_dir}', rel_ollivander_dir)
-        if script_path.endswith('.py'):
-            exec_cmd = f"$(PYTHON) {script_path}"
-        elif script_path.endswith('.sh'):
-            exec_cmd = f"bash {script_path}"
-        elif script_path.endswith('.tcl'):
-            exec_cmd = f"if ! command -v tclsh >/dev/null 2>&1; then echo \"[ERROR] 'tclsh' is required to run {script_path} but was not found in PATH.\"; echo \"[HINT] Please install TCL (e.g., 'sudo apt-get install tcl').\"; exit 1; fi; tclsh {script_path}"
-        else:
-            exec_cmd = f"chmod +x {script_path} ; ./{script_path}"
-%>\
-		echo "  -> Executing script: ${script_path}"; \
-		${exec_cmd}; \
-% endif
-	fi
-% endif
-% endfor
 	@mkdir -p bender_work
 	@touch bender_work/.fetched
 

@@ -203,7 +203,7 @@ logic [NumPhys-1:0] hyper_reset_no;
 hyperbus           #(
   .NumChips         ( NumChips         ),
   .NumPhys          ( NumPhys          ),
-  .IsClockODelayed  ( UsePhyClkDivider ),
+  // .IsClockODelayed  ( UsePhyClkDivider ),
   .AxiAddrWidth     ( AxiAddrWidth     ),
   .AxiDataWidth     ( AxiDataWidth     ),
   .AxiIdWidth       ( AxiInIdWidth     ),

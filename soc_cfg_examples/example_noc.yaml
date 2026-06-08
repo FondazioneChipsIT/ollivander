@@ -73,7 +73,7 @@ clock_tree:
 # ------------------------------------------------------------------------------
 # 4. GLOBAL SYSTEM CONTROLLER & REGISTERS
 # ------------------------------------------------------------------------------
-# Ollivander will generate `gw_soc_regs.hjson` from this section.
+# Ollivander will generate the SystemRDL specification from this section via PeakRDL.
 system_controller:
   description: "Main system control and status registers (PCRs)"
   name: "gw_soc_regs"

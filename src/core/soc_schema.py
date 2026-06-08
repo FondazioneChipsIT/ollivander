@@ -60,7 +60,10 @@ def walk_ast(node, tags):
                 yield from walk_ast(item, tags)
 
 def extract_tokens(node, tag=None):
-    """Extracts tokens (leaves) from an AST node."""
+    """
+    Extracts tokens (leaves) from an AST node.
+    Optionally filters tokens by a specific Verible syntax tag.
+    """
     if isinstance(node, dict):
         if "children" not in node:
             if not tag or node.get("tag") == tag:
@@ -121,6 +124,7 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     - 'required_files': Local file dependencies (OLLIVANDER pragmas).
     - 'ports': A dictionary detailing every physical port of the module.
     - 'imports': A list of SystemVerilog packages imported by the module.
+    - 'rdl_file' / 'rdl_map': PeakRDL configurations extracted from pragmas.
     - Boolean flags indicating supported interfaces (e.g., 'has_sync_axi_slave', 'has_test_mode').
     """
     if not search_paths:
@@ -243,6 +247,15 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     req_pattern = re.compile(r'(?://|##)\s*OLLIVANDER:\s*require="([^"]+)"')
     for match in req_pattern.finditer(content):
         info["required_files"].append(match.group(1))
+
+    # Extract PeakRDL mapping information (e.g. // PEAKRDL: source="my_ip.rdl" map="my_map")
+    # This encapsulates register definitions within the specific IP wrapper, handling cases 
+    # where a single repository provides multiple distinct IPs.
+    peakrdl_match = re.search(r'(?://|##)\s*PEAKRDL:\s*source="([^"]+)"(?:.*?map="([^"]+)")?', content)
+    if peakrdl_match:
+        info["rdl_file"] = Path(peakrdl_match.group(1)).name
+        if peakrdl_match.group(2):
+            info["rdl_map"] = peakrdl_match.group(2)
 
     # Clean comments from header_content for safe regex matching
     header_clean = re.sub(r'//.*', '', header_content)
@@ -373,7 +386,10 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
 # ==============================================================================
 
 class Project(BaseModel):
-    """Basic project metadata."""
+    """
+    Basic project metadata.
+    Used for naming the top-level module and global SV packages.
+    """
     name: str
     description: str
     author: str
@@ -452,7 +468,11 @@ class RegBusMicroarch(BaseModel):
     amo_post_cut: bool
 
 class SystemSettings(BaseModel):
-    """Container for all low-level system configuration tuning."""
+    """
+    Container for all low-level system configuration tuning.
+    These parameters affect the generation of hardware adapters and 
+    ensure compliance with the requested AXI/RegBus protocols.
+    """
     user_mapping: UserMapping
     llc: LlcMicroarch
     reg_bus: RegBusMicroarch
@@ -501,7 +521,10 @@ class ExternalRegister(BaseModel):
     size: Optional[Union[str, int]] = None
 
 class AutoControlGroup(BaseModel):
-    """Rules for auto-generating distributed control registers (used mainly in NoC topologies)."""
+    """
+    Rules for auto-generating distributed control registers (used mainly in NoC topologies).
+    Aggregates control signals of multiple identical tiles into a single packed CSR.
+    """
     name: str
     type: str
     target_component_type: Optional[str] = None
@@ -511,7 +534,8 @@ class SystemController(BaseModel):
     """
     Unified System Controller definition. Used to generate the main control 
     register file (PCRs) managing resets, AXI isolation, clock gating, and boot addresses.
-    It feeds into `carfield_regs.hjson` to generate the SystemRDL block.
+    It is used to automatically generate the SystemRDL specification, which is then
+    compiled by PeakRDL into SystemVerilog RTL and C headers.
     """
     model_config = {"populate_by_name": True}
 
@@ -535,6 +559,7 @@ class Component(BaseModel):
     A generic hardware block (Isle/Tile) instantiated in the SoC.
     This is the core building block of Ollivander. It captures functional properties, 
     clock/reset assignments, memory mappings, and interrupt routing.
+    The 'type' field must strictly match the name of the underlying SystemVerilog module.
     """
     name: str                                      # Unique instance name in the SoC
     type: str                                      # Must match the *_isle.sv or *_tile.sv wrapper filename
@@ -575,7 +600,8 @@ class Component(BaseModel):
 class OllivanderConfig(BaseModel):
     """
     Root Pydantic Model mapping the entire YAML configuration.
-    Contains the top-level sections defining the SoC.
+    Contains the top-level sections defining the SoC and acts as the 
+    in-memory database for the entire generation process.
     """
     model_config = {"populate_by_name": True}
 
@@ -600,7 +626,8 @@ def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] =
     implementations, enforcing strict Hardware-First correctness.
     
     This prevents generating structurally flawed RTL by verifying parameter existence,
-    matching fixed localparams against global settings, and validating sync/async ports.
+    matching fixed localparams against global settings, and validating sync/async ports
+    before any templating occurs.
     """
     all_comps = [config.host]
     if config.components:

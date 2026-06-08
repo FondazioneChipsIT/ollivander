@@ -2,16 +2,25 @@
   import re
   p_name = config.project.name
   pkg    = f"{p_name}_soc_pkg"
-  rpkg   = f"{p_name}_reg_pkg"
+  rpkg   = f"{p_name}_sys_regs_pkg"
   npkg   = f"floo_{p_name}_noc_pkg"
   host_clk = config.host.clock_domain or "system_clk"
   
   # ============================================================================
-  # 1. 2D MESH GRID CONSTRUCTION
+  # MAKO TEMPLATE FOR THE SOC TOP-LEVEL (NOC TOPOLOGY)
   # ============================================================================
-  # This block parses the 'placement' constraints from the YAML configuration
-  # and builds a 2D mathematical model (grid) of the Network-on-Chip.
-  # It maps each physical (X,Y) coordinate to a specific component instance.
+  # This template generates the absolute Top-Level SystemVerilog module for a 
+  # Network-on-Chip (FlooNoC) architecture. It is responsible for:
+  # 1. Mapping logical component placements into a strict 2D physical grid.
+  # 2. Generating the multidimensional FlooNoC routing matrices.
+  # 3. Instantiating all the Tiles and bridging their exported ports to the top.
+
+  # ============================================================================
+  # 1. 2D MESH GRID CONSTRUCTION (LOGICAL TO PHYSICAL MAPPING)
+  # ============================================================================
+  # FlooNoC requires a perfectly rectangular grid: the bounding box is calculated,
+  # and empty coordinates are flagged to be filled with 'Dummy Tiles' (pure routers)
+  # to maintain physical network continuity.
   comps = [config.host] + config.components
   max_x, max_y = 0, 0
   grid = {}
@@ -39,8 +48,8 @@
               max_x = max(max_x, x)
               max_y = max(max_y, y)
               
-  # Fill unassigned coordinates with 'None' to indicate where a Dummy Tile 
-  # (a pure router with no attached IP) should be instantiated.
+  # Fill unassigned physical coordinates with 'None' to indicate where a Dummy 
+  # Tile (a pure FlooNoC router with no attached IP) should be instantiated.
   for x in range(max_x + 1):
       for y in range(max_y + 1):
           if (x,y) not in grid:
@@ -102,8 +111,11 @@ module ${p_name}
   output logic jtag_tdo_oe_o\
 <%
   # ============================================================================
-  # 2. DYNAMIC PORT EXPORT RESOLUTION
+  # 2. DYNAMIC PORT EXPORT RESOLUTION & PARAMETER SUBSTITUTION
   # ============================================================================
+  # Automatically exposes physical peripheral interfaces (UART, SPI) and external 
+  # RegBuses to the Top-Level. It dynamically resolves array boundaries by parsing 
+  # the underlying IP's Verible AST parameters to avoid compilation errors.
   all_extra_ports = []
   # Key: (comp.name, inst_idx), Value: list of connection strings
   comp_extra_conns = {}
@@ -194,8 +206,20 @@ ${"," if all_extra_ports else ""}
   // =========================================================================
   // 1. SYSTEM REGISTERS
   // =========================================================================
-  ${p_name}_reg2hw_t sys_regs_reg2hw;
-  ${p_name}_hw2reg_t sys_regs_hw2reg;
+  ${p_name}_sys_regs_pkg::${p_name}_sys_regs__out_t sys_regs_hwif_out;
+  ${p_name}_sys_regs_pkg::${p_name}_sys_regs__in_t  sys_regs_hwif_in;
+
+% if config.system_controller and config.system_controller.fll_status_regs:
+  assign sys_regs_hwif_in.fll_lock.fll_lock.next  = fll_lock_i;
+% endif
+
+% for c in config.components:
+ % if c.system_config and c.system_config.get('has_eoc_status'):
+  % if c.interrupts and 'eoc_o' in c.interrupts and not c.interrupts['eoc_o'].get('source'):
+  assign sys_regs_hwif_in.eoc_status.${c.name}_eoc.next = intr_${c.name}_eoc_o;
+  % endif
+ % endif
+% endfor
 
 <%
   ext_regs = config.system_controller.external_registers if config.system_controller else []
@@ -223,13 +247,15 @@ ${clock_and_reset_tree(config, p_name)}
   // =========================================================================
   // 3. FLOONOC 2D MESH ARRAYS
   // =========================================================================
-  // These multi-dimensional arrays represent the physical links between routers.
+  // These multi-dimensional arrays represent the physical packet-switched links 
+  // between adjacent routers in the grid.
   floo_req_t  [${max_x}:0][${max_y}:0][West:North] tile_req_o, tile_req_i;
   floo_rsp_t  [${max_x}:0][${max_y}:0][West:North] tile_rsp_o, tile_rsp_i;
   floo_wide_t [${max_x}:0][${max_y}:0][West:North] tile_wide_o, tile_wide_i;
 
   // MESH WIRING GENERATION
-  // Generates the bidirectional links connecting adjacent routers.
+  // Generates the bidirectional links connecting adjacent routers. Edge ports 
+  // at the chip boundaries are safely tied off to zero to prevent floating inputs.
   
   // 3.1 Horizontal connections (East <-> West)
   for (genvar y = 0; y <= ${max_y}; y++) begin : gen_x_links
@@ -276,8 +302,10 @@ ${clock_and_reset_tree(config, p_name)}
   // =========================================================================
   // 4. TILE INSTANTIATIONS
   // =========================================================================
-  // Iterates over every coordinate in the 2D mesh, instantiating either a 
-  // Functional Tile (wrapper containing the IP) or a Dummy Tile (pure router).
+  // Iterates over every coordinate in the calculated 2D mesh. 
+  // It instantiates either a Functional Tile (wrapper containing the IP and a 
+  // Chimney adapter) or a Dummy Tile (a pure router node for traffic forwarding 
+  // without an attached local IP).
 % for y in range(max_y + 1):
  % for x in range(max_x + 1):
   <% 
@@ -351,8 +379,8 @@ ${clock_and_reset_tree(config, p_name)}
     
     if is_host:
         host_conns_dict = {
-            "sys_regs_reg2hw_o": "sys_regs_reg2hw",
-            "sys_regs_hw2reg_i": "sys_regs_hw2reg",
+                "sys_regs_hwif_out_o": "sys_regs_hwif_out",
+                "sys_regs_hwif_in_i": "sys_regs_hwif_in",
             "boot_mode_i": "boot_mode_i",
             "rtc_i": "rtc_i",
             "jtag_tck_i": "jtag_tck_i",
@@ -373,12 +401,13 @@ ${clock_and_reset_tree(config, p_name)}
     else:
         if ctrl_group:
             conns.extend([
-                f".tile_clk_en_i    ( sys_regs_reg2hw.{ctrl_group.name.lower()}_clk_en.q[{inst_idx}] )",
-                f".tile_rst_ni      ( ~sys_regs_reg2hw.{ctrl_group.name.lower()}_rst.q[{inst_idx}] )",
+                f".tile_clk_en_i    ( sys_regs_hwif_out.{ctrl_group.name.lower()}_clk_en.{ctrl_group.name.lower()}_clk_en.value[{inst_idx}] )",
+                f".tile_rst_ni      ( ~sys_regs_hwif_out.{ctrl_group.name.lower()}_rst.{ctrl_group.name.lower()}_rst.value[{inst_idx}] )",
                 f".clk_rst_bypass_i ( clk_rst_bypass_i )"
             ])
             
-        # Generic integration based on SystemVerilog header parsing
+        # Generic integration based on SystemVerilog header parsing.
+        # Automatically wires standard cluster/core identifier signals based on the index.
         c_header = comp_info.get(c.name, {}).get("header_content", "")
         if "hart_base_id_i" in c_header:
             nr_cores = c.parameters.get('NrCores', 'snitch_cluster_pkg::NrCores') if c.parameters else 'snitch_cluster_pkg::NrCores'

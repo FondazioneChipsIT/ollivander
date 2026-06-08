@@ -15,7 +15,8 @@ from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_
 class RTLGenerator:
     """
     Orchestrates the generation of SystemVerilog modules and the final Top-Level architecture
-    using the Mako templating engine. Tracks file dependencies and Bender configurations.
+    using the Mako templating engine. Tracks file dependencies, Bender configurations,
+    and extracts PeakRDL specifications from the generated hardware.
     """
     def __init__(self, env, soc_config, template_lookup):
         self.env = env
@@ -23,6 +24,7 @@ class RTLGenerator:
         self.template_lookup = template_lookup
         
         # Keeps track of the original Isle types before they are wrapped into NoC Tiles.
+        # This allows subsequent phases to inspect the original parameters and ports.
         self.original_isle_types = {}
         # Tracks all generated module paths to inject them into the Bender manifest.
         self.generated_module_files = []
@@ -91,7 +93,8 @@ class RTLGenerator:
                     if c.components:
                         for idx, p in enumerate(c.components):
                             # Auto-inject known interrupts for standard APB peripherals
-                            # so the user doesn't have to explicitly define them in the YAML.
+                            # so the user doesn't have to explicitly define them in the YAML,
+                            # drastically reducing boilerplate for well-known IP blocks.
                             if not p.interrupts:
                                 if p.type == 'apb_timer_unit':
                                     p.interrupts = {'irq_hi': {}, 'irq_lo': {}}
@@ -215,7 +218,9 @@ class RTLGenerator:
                         
                 elif c.type.endswith('_isle') or c.type.endswith('_subtile'):
                     # If the component is an Isle, it must be wrapped inside a Universal Tile
-                    # to be able to connect to the NoC routers.
+                    # to be able to connect to the NoC routers. This auto-conversion provides
+                    # topology abstraction: the same Isle can be used in a Crossbar or a NoC 
+                    # without any modifications to the IP wrapper itself.
                     existing_isle = None
                     for cp in self.env.component_paths:
                         if cp.is_dir():
@@ -306,8 +311,31 @@ class RTLGenerator:
             info = get_isle_info(f"{self.soc_config.project.name}_{c.type}", self.env.search_paths, None)
             if not info:
                 info = get_isle_info(c.type, self.env.search_paths, self.env.exclude_dir)
-            comp_info[c.name] = info if info else {}
-            if info and "dependencies" in info:
+            if not info:
+                info = {}
+            comp_info[c.name] = info
+
+            # Check for PEAKRDL pragma in the SystemVerilog source.
+            # Example: // PEAKRDL: source="my_ip.rdl" map="my_map"
+            # This encapsulates register definitions within the specific IP wrapper,
+            # handling cases where a single Bender repository provides multiple distinct IPs.
+            sv_name = f"{self.soc_config.project.name}_{c.type}.sv"
+            sv_path = self.find_file_in_paths(sv_name, [self.env.outdir_path / self.env.hw_sub])
+            if not sv_path:
+                sv_path = self.find_file_in_paths(f"{c.type}.sv", self.env.component_paths)
+                
+            if sv_path:
+                try:
+                    content = sv_path.read_text(encoding='utf-8', errors='ignore')
+                    peakrdl_match = re.search(r'(?://|##)\s*PEAKRDL:\s*source="([^"]+)"(?:.*?map="([^"]+)")?', content)
+                    if peakrdl_match:
+                        info["rdl_file"] = Path(peakrdl_match.group(1)).name
+                        if peakrdl_match.group(2):
+                            info["rdl_map"] = peakrdl_match.group(2)
+                except Exception:
+                    pass
+
+            if "dependencies" in info:
                 for dep_name, dep_dict in info["dependencies"].items():
                     self.project_dependencies.setdefault(dep_name, {})
                     self.project_dependencies[dep_name].update(dep_dict)
@@ -323,8 +351,8 @@ class RTLGenerator:
 
     def render_top_level(self, comp_info, wiring_matrix, global_defines):
         """
-        Phase 3 (cont'd): The main generation loop where all final source files 
-        and the Bender.yml manifest are rendered.
+        Phase 3 (cont'd): The main generation loop where all Top-Level components,
+        packages, memory maps, and the final Bender.yml manifest are rendered.
         """
         hw_dir = self.env.outdir_path / self.env.hw_sub
         sw_dir = self.env.outdir_path / self.env.sw_sub
@@ -356,18 +384,19 @@ class RTLGenerator:
             "rel_manifest_path": os.path.relpath(self.env.bender_manifest_path, Path.cwd()).replace('\\', '/'),
             "rel_outdir_path": os.path.relpath(self.env.outdir_path, Path.cwd()).replace('\\', '/'),
             "rel_tb_dir": os.path.relpath(tb_dir, self.env.bender_dir).replace('\\', '/'),
+            "rel_hw_from_tb": os.path.relpath(hw_dir, tb_dir).replace('\\', '/'),
             "rel_ollivander_dir": os.path.relpath(self.env.base_dir, Path.cwd()).replace('\\', '/')
         }
 
         if self.soc_config.topology.type == "crossbar":
             templates_to_render = {
-                "reg/soc_regs_regtool.hjson.mako": reg_dir / f"{self.soc_config.project.name}_regs.hjson",
+                "reg/soc_regs.rdl.mako": reg_dir / f"{self.soc_config.project.name}_regs.rdl",
+                "reg/soc_memory_map.rdl.mako": reg_dir / f"{self.soc_config.project.name}_memory_map.rdl",
                 "hw/crossbar_soc_pkg.sv.mako": hw_dir / f"{self.soc_config.project.name}_soc_pkg.sv",
                 "hw/crossbar_soc_top.sv.mako": hw_dir / f"{self.soc_config.project.name}.sv",
                 "hw/infrastructure/soc_rstgen.sv.mako": hw_dir / f"{self.soc_config.project.name}_rstgen.sv",
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
                 "doc/crossbar_map.csv.mako": doc_dir / f"{self.soc_config.project.name}_map.csv",
-                "Makefile.hw.mako": self.env.outdir_path / "Makefile.hw",
                 "Makefile.vsim.mako": self.env.outdir_path / "Makefile.vsim",
                 "tb/tb_soc.sv.mako": tb_dir / f"tb_{self.soc_config.project.name}.sv"
             }
@@ -377,11 +406,11 @@ class RTLGenerator:
                 "hw/noc_soc_top.sv.mako": hw_dir / f"{self.soc_config.project.name}.sv",
                 "hw/tiles/dummy_tile.sv.mako": hw_dir / f"{self.soc_config.project.name}_dummy_tile.sv",
                 "hw/infrastructure/soc_rstgen.sv.mako": hw_dir / f"{self.soc_config.project.name}_rstgen.sv",
-                "reg/soc_regs_regtool.hjson.mako": reg_dir / f"{self.soc_config.project.name}_regs.hjson",
+                "reg/soc_regs.rdl.mako": reg_dir / f"{self.soc_config.project.name}_regs.rdl",
+                "reg/soc_memory_map.rdl.mako": reg_dir / f"{self.soc_config.project.name}_memory_map.rdl",
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
                 "cfg/floogen_cfg.yml.mako": cfg_dir / f"{self.soc_config.project.name}_floogen.yml",
                 "doc/noc_map.csv.mako": doc_dir / f"{self.soc_config.project.name}_noc_map.csv",
-                "Makefile.hw.mako": self.env.outdir_path / "Makefile.hw",
                 "Makefile.vsim.mako": self.env.outdir_path / "Makefile.vsim",
                 "tb/tb_soc.sv.mako": tb_dir / f"tb_{self.soc_config.project.name}.sv"
             }
@@ -404,19 +433,18 @@ class RTLGenerator:
                 template = Template(filename=str(tpl_path), lookup=self.template_lookup)
                 rendered_code = template.render(**template_kwargs)
                 
-                # Final namespace substitution.
+                # Final namespace substitution: replace placeholder package names with
+                # project-specific ones to prevent collisions in multi-SoC environments.
                 rendered_code = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.name}_soc_pkg', rendered_code)
                 rendered_code = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', rendered_code)
 
                 if out_file.name.endswith('.sv'):
                     rendered_code = auto_import_sv_packages(rendered_code)
                     
-                if "reg2hw_t" in rendered_code and f"import {self.soc_config.project.name}_reg_pkg::*;" not in rendered_code:
+                if "hwif_in" in rendered_code and f"import {self.soc_config.project.name}_sys_regs_pkg::*;" not in rendered_code:
                     rendered_code = re.sub(rf'import {self.soc_config.project.name}_soc_pkg::\*;', 
-                                           rf'import {self.soc_config.project.name}_soc_pkg::*;\n  import {self.soc_config.project.name}_reg_pkg::*;', 
+                                           rf'import {self.soc_config.project.name}_soc_pkg::*;\n  import {self.soc_config.project.name}_sys_regs_pkg::*;', 
                                            rendered_code)
-                rendered_code = re.sub(rf'(?<!::)\b{self.soc_config.project.name}_reg2hw_t\b', f'{self.soc_config.project.name}_reg_pkg::{self.soc_config.project.name}_reg2hw_t', rendered_code)
-                rendered_code = re.sub(rf'(?<!::)\b{self.soc_config.project.name}_hw2reg_t\b', f'{self.soc_config.project.name}_reg_pkg::{self.soc_config.project.name}_hw2reg_t', rendered_code)
 
                 # Extract dynamic pragmas from the fully rendered code.
                 self.required_local_files.update(self.req_pattern.findall(rendered_code))
@@ -433,7 +461,9 @@ class RTLGenerator:
                 print(f"\n[ERROR] Failed to render {tpl_name}:\n{e}")
                 sys.exit(1)
 
-        # Iteratively resolve all local files that need to be copied into the output hierarchy.
+        # Iteratively resolve all local files (e.g., infrastructure primitives) that 
+        # need to be copied into the output hierarchy based on 'OLLIVANDER: require' pragmas.
+        # This recursively scans dependencies until the closure is complete.
         staged_local_files = set()
         external_local_files = []
         pending_files = sorted(list(self.required_local_files))
@@ -481,6 +511,8 @@ class RTLGenerator:
         template_kwargs["external_local_files"] = sorted(external_local_files)
 
         # Resolve all collected Bender dependencies against the environment registry.
+        # If a dependency was declared in a pragma without git/rev/version details,
+        # we look it up in the central registry (e.g., ollivander_config.yaml).
         resolved_dependencies = {}
         for dep_name in sorted(self.project_dependencies.keys()):
             dep_info = self.project_dependencies[dep_name]
@@ -499,7 +531,8 @@ class RTLGenerator:
                 
         template_kwargs["project_dependencies"] = resolved_dependencies
 
-        # Render Bender.yml as the very last step, now that all dependencies are known.
+        # Render Bender.yml as the very last step, now that all dependencies are known
+        # and the exact required files have been fully resolved.
         bender_tpl = "Bender.yml.mako"
         bender_path = self.find_file_in_paths(bender_tpl, self.env.template_paths)
         if bender_path:

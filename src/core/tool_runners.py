@@ -5,7 +5,8 @@
 External Tool Runners for Ollivander.
 
 This module encapsulates the logic to invoke external command-line tools
-(FlooGen, OpenTitan regtool, Verible) as subprocesses during the generation flow.
+(FlooGen, PeakRDL, Verible) as subprocesses during the generation flow.
+It also handles the execution of pre-build scripts and code patches on fetched IPs.
 """
 
 import sys
@@ -14,11 +15,67 @@ import shutil
 import subprocess
 from pathlib import Path
 
+def run_pre_build_steps(env):
+    """
+    Executes patches and pre-build commands defined in the environment registry.
+    This runs after the external IPs have been fetched via Bender, preparing
+    their internal state (e.g., generating simulation models, compiling LLVM)
+    before the final simulation or synthesis steps.
+    """
+    registry = env.registry_dependencies
+    bender_work = env.bender_dir / "bender_work"
+    
+    has_steps = any("patches" in d or "pre_build_cmds" in d for d in registry.values())
+    if not has_steps:
+        return
+        
+    print("=" * 70)
+    print("[*] Starting Phase 0: Preparing External IPs...\n")
+    
+    for dep_name, dep_info in registry.items():
+        dep_dir = bender_work / dep_name
+        if not dep_dir.is_dir():
+            continue
+            
+        if "patches" in dep_info:
+            for patch in dep_info["patches"]:
+                file_path_str = patch.get("file", "").replace("{bender_work}", str(bender_work))
+                file_path = Path(file_path_str)
+                search_str = patch.get("search", "")
+                replace_str = patch.get("replace", "").replace("\\n", "\n")
+                
+                if file_path.is_file():
+                    content = file_path.read_text(encoding='utf-8')
+                    if search_str in content:
+                        print(f"  -> Patching {file_path.name} in {dep_name}")
+                        content = content.replace(search_str, replace_str)
+                        file_path.write_text(content, encoding='utf-8')
+                        
+        if "pre_build_cmds" in dep_info:
+            print(f"  -> Executing pre-build commands for {dep_name}...")
+            for cmd in dep_info["pre_build_cmds"]:
+                cmd = cmd.replace("{bender_work}", str(bender_work)).replace("{ollivander_dir}", str(env.base_dir))
+                cmd = cmd.replace("$(PYTHON)", sys.executable).replace("$(MAKE)", "make").replace("$(BENDER)", "bender")
+                cmd = cmd.replace("$$", "$")
+                print(f"    $ {cmd}")
+                try:
+                    # Ensure the virtual environment's bin/ is at the front of PATH
+                    # so that scripts using #!/usr/bin/env python pick up the venv python.
+                    exec_env = os.environ.copy()
+                    venv_bin = Path(sys.executable).parent
+                    exec_env["PATH"] = f"{venv_bin}:{exec_env.get('PATH', '')}"
+                    
+                    subprocess.run(cmd, shell=True, check=True, executable='/bin/bash', env=exec_env)
+                except subprocess.CalledProcessError:
+                    print(f"\n[ERROR] Pre-build command failed for {dep_name}.")
+                    sys.exit(1)
+    print("  [SUCCESS] All IPs patched and prepared.")
+
 def run_floogen(soc_config, cfg_dir: Path, hw_dir: Path):
     """
     Invokes FlooGen to generate NoC RTL and parameter packages.
-    FlooGen reads a generated YAML configuration to instantiate routers,
-    links, and define network dimensions.
+    FlooGen reads the auto-generated YAML configuration to instantiate routers,
+    links, and define physical network dimensions based on the logical placement.
     """
     if soc_config.topology.type != "noc":
         return
@@ -52,65 +109,98 @@ def run_floogen(soc_config, cfg_dir: Path, hw_dir: Path):
         print("[HINT] Please install dependencies using: pip install -r requirements.txt")
         sys.exit(1)
 
-def run_regtool(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, regtool_paths: list, base_dir: Path):
+def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_dependencies: dict = None, bender_dir: Path = None):
     """
-    Invokes OpenTitan's regtool to generate RTL and C headers from HJSON.
+    Invokes PeakRDL to generate RTL and C headers from SystemRDL specifications.
     This automatically bridges the gap between hardware registers (System Controller)
-    and the software stack (drivers) by compiling the standard HJSON specification.
+    and the software stack (drivers). It intelligently resolves include paths
+    based on the environment registry to support complex third-party IP registers.
     """
     if not soc_config.system_controller:
         return
         
-    hjson_file = reg_dir / f"{soc_config.project.name}_regs.hjson"
-    if not hjson_file.is_file():
+    rdl_file = reg_dir / f"{soc_config.project.name}_regs.rdl"
+    if not rdl_file.is_file():
         return
         
     print("=" * 70)
-    print("[*] Starting Phase 5: Generating Register RTL with regtool...\n")
+    print("[*] Starting Phase 5: Generating Register RTL with PeakRDL...\n")
     
-    # Find the regtool.py script from the configured environment paths.
-    regtool_path = None
-    for p in regtool_paths:
-        if p.is_file():
-            regtool_path = p
-            break
-    if not regtool_path:
-        regtool_path = base_dir / "tools" / "reggen" / "regtool.py"
+    # Try to find PeakRDL in the system PATH first.
+    peakrdl_exe = shutil.which("peakrdl")
+    if not peakrdl_exe:
+        # Fallback: look for it in the local Python virtual environment.
+        venv_peakrdl = Path(sys.executable).parent / "peakrdl"
+        if venv_peakrdl.is_file() and os.access(venv_peakrdl, os.X_OK):
+            peakrdl_exe = str(venv_peakrdl)
 
-    if regtool_path.is_file():
-        cmd = [
-            sys.executable, 
-            str(regtool_path), 
-            "-r", 
-            "-t", str(hw_dir), 
-            str(hjson_file)
-        ]
-        print(f"  -> Running regtool on {hjson_file.name}")
+    include_args = ["-I", str(reg_dir)]
+    if registry_dependencies and bender_dir:
+        explicit_deps = set()
+        for dep_name, dep_info in registry_dependencies.items():
+            has_explicit = False
+            if "rdl_include_dirs" in dep_info:
+                has_explicit = True
+                for inc_dir in dep_info["rdl_include_dirs"]:
+                    rdl_path = bender_dir / "bender_work" / dep_name / inc_dir
+                    if str(rdl_path) not in include_args:
+                        include_args.extend(["-I", str(rdl_path)])
+            if "main_rdl" in dep_info:
+                has_explicit = True
+                rdl_path = bender_dir / "bender_work" / dep_name / Path(dep_info["main_rdl"]).parent
+                if str(rdl_path) not in include_args:
+                    include_args.extend(["-I", str(rdl_path)])
+            if has_explicit:
+                explicit_deps.add(dep_name)
+                        
+        # Fallback: Safe Auto-Discovery for Include Paths
+        # Only auto-discover in bender_work/ subdirectories that were NOT explicitly configured.
+        bender_work = bender_dir / "bender_work"
+        if bender_work.is_dir():
+            for dep_dir in bender_work.iterdir():
+                if dep_dir.is_dir() and dep_dir.name not in explicit_deps:
+                    for ext_rdl in dep_dir.rglob("*.rdl"):
+                        if str(ext_rdl.parent) not in include_args:
+                            include_args.extend(["-I", str(ext_rdl.parent)])
+
+    if peakrdl_exe:
+        print(f"  -> Running PeakRDL on {rdl_file.name}")
         try:
-            # Generate the SystemVerilog RTL implementation of the registers.
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            # Generate the SystemVerilog RTL implementation of the registers
+            cmd_sv = [peakrdl_exe, "regblock", str(rdl_file), "--cpuif", "apb4-flat", "--default-reset", "arst_n", "-o", str(hw_dir)]
+            subprocess.run(cmd_sv, check=True, capture_output=True, text=True)
             print("  [SUCCESS] System Controller register RTL generated.")
 
-            # Generate the C Defines Header for software driver development.
+            memory_map_file = reg_dir / f"{soc_config.project.name}_memory_map.rdl"
+            if memory_map_file.is_file():
+                rdl_source = memory_map_file
+            else:
+                rdl_source = rdl_file
+
+            # Generate the C Defines Header for software driver development
             c_header_file = sw_dir / f"{soc_config.project.name}_regs.h"
-            cmd_c = [
-                sys.executable, 
-                str(regtool_path), 
-                "--cdefines", 
-                "-o", str(c_header_file), 
-                str(hjson_file)
-            ]
-            print("  -> Running regtool to generate C header...")
+            cmd_c = [peakrdl_exe, "c-header", str(rdl_source)] + include_args + ["-o", str(c_header_file), "-i", "-b", "ltoh"]
             subprocess.run(cmd_c, check=True, capture_output=True, text=True)
             print(f"  [SUCCESS] System Controller C header generated ({c_header_file.name}).")
+            
+            # Generate the SV Raw Header for Testbench usage (macros for register addresses)
+            sv_header_file = hw_dir / f"{soc_config.project.name}_regs.svh"
+            cmd_svh = [peakrdl_exe, "raw-header", str(rdl_source)] + include_args + ["-o", str(sv_header_file), "--format", "svh", "--no-prefix"]
+            # We don't enforce check=True here because 'peakrdl-rawheader' is a third-party plugin 
+            # that might not be installed in all environments.
+            subprocess.run(cmd_svh, capture_output=True, text=True)
+
+            # Generate the C Raw Header for alternative firmware usage
+            c_raw_header_file = sw_dir / f"{soc_config.project.name}_raw_regs.h"
+            cmd_c_raw = [peakrdl_exe, "raw-header", str(rdl_source)] + include_args + ["-o", str(c_raw_header_file), "--base_name", f"{soc_config.project.name}_raw_regs", "--format", "c"]
+            subprocess.run(cmd_c_raw, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
-            print(f"\n[ERROR] regtool failed:\n{e.stderr}")
-            if "ModuleNotFoundError" in e.stderr:
-                print("[HINT] A dependency for regtool is missing in your environment.")
-                print("       Run: pip install -r requirements.txt")
+            print(f"\n[ERROR] PeakRDL failed:\n{e.stderr}\n{e.stdout}")
             sys.exit(1)
     else:
-        print(f"[WARNING] regtool.py not found at {regtool_path}. Skipping register RTL generation.")
+        print("\n[ERROR] PeakRDL executable not found in PATH.")
+        print("[HINT] Please install dependencies using: pip install -r requirements.txt")
+        sys.exit(1)
 
 def run_verible(hw_dir: Path, tb_dir: Path):
     """

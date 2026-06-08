@@ -2,12 +2,21 @@
 # Copyright 2026 Fondazione Chips-IT.
 # Solderpad Hardware License, Version 0.51, see LICENSE for details.
 # SPDX-License-Identifier: SHL-0.51
-#
-# Ollivander SoC Generator - Main Entry Point
+"""
+Ollivander SoC Generator - Main Entry Point
+
+This is the core orchestrator of the Ollivander generation flow. It parses
+the SoC configuration, resolves dependencies, validates hardware constraints,
+renders the SystemVerilog Top-Level and infrastructure via Mako, fetches 
+external IPs via Bender, and invokes external tools (PeakRDL, FlooGen, Verible)
+to complete the SoC generation.
+"""
 
 import argparse
 import sys
 import re
+import shutil
+import subprocess
 from pathlib import Path
 import yaml
 from pydantic import ValidationError
@@ -17,7 +26,7 @@ from core.soc_schema import OllivanderConfig, validate_soc_components
 from core.stub_generator import generate_stubs
 from core.env_manager import setup_environment
 from core.arch_optimizer import optimize_clock_tree, autoconfigure_host
-from core.tool_runners import run_floogen, run_regtool, run_verible
+from core.tool_runners import run_floogen, run_peakrdl, run_verible, run_pre_build_steps
 from core.reporter import print_generation_report
 from core.rtl_generator import RTLGenerator
 
@@ -82,7 +91,40 @@ def main():
     # clear precedence order for flexibility.
     
     env = setup_environment(args, base_dir)
+    env.outdir_path.mkdir(parents=True, exist_ok=True)
+    bender_work = env.bender_dir / "bender_work"
+    bender_work.mkdir(parents=True, exist_ok=True)
     
+    # =========================================================================
+    # 3. YAML PARSING & VALIDATION
+    # =========================================================================
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            yaml_data = yaml.safe_load(f)
+    except Exception as e:
+        print(f"[ERROR] Failed to parse YAML file:\n{e}")
+        sys.exit(1)
+        
+    print(f"[*] Validating SoC configuration: {config_path.name}...")
+    try:
+        soc_config = OllivanderConfig(**yaml_data)
+    except ValidationError as e:
+        print("\n[ERROR] SoC Configuration Validation Failed!")
+        print("=" * 70)
+        for err in e.errors():
+            loc = " -> ".join([str(x) for x in err['loc']])
+            msg = err['msg']
+            print(f"Location : {loc}\nError    : {msg}\n" + "-" * 70)
+        sys.exit(1)
+        
+    print("\n[SUCCESS] Basic Configuration validated successfully!")
+
+    if args.generate_stubs:
+        print("\n[*] Starting Fast-Check Stub Generation...")
+        generate_stubs(env.outdir_path, soc_config, env.registry_dependencies, base_dir)
+        print("  [SUCCESS] Faithful stubs and fast-compile scripts generated.")
+        sys.exit(0)
+
     registry_dependencies = env.registry_dependencies
     outdir_path = env.outdir_path
     hw_sub = env.hw_sub
@@ -95,48 +137,11 @@ def main():
     bender_dir = env.bender_dir
     template_paths = env.template_paths
     component_paths = env.component_paths
-    regtool_paths = env.regtool_paths
     search_paths = env.search_paths
     exclude_dir = env.exclude_dir
 
     # Mako template engine setup.
     template_lookup = TemplateLookup(directories=[str(p) for p in template_paths])
-
-    # =========================================================================
-    # 3. YAML PARSING & VALIDATION
-    # =========================================================================
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            yaml_data = yaml.safe_load(f)
-    except Exception as e:
-        print(f"[ERROR] Failed to parse YAML file:\n{e}")
-        sys.exit(1)
-        
-    print(f"[*] Validating SoC configuration: {config_path.name}...")
-    
-    try:
-        # Initialize the Pydantic model. This triggers the entire validation
-        # engine defined in `soc_schema.py`, including the dynamic parsing of
-        # SystemVerilog files for hardware components (Isles/Tiles).
-        soc_config = OllivanderConfig(**yaml_data)
-    except ValidationError as e:
-        # If validation fails, print detailed, user-friendly error messages.
-        print("\n[ERROR] SoC Configuration Validation Failed!")
-        print("=" * 70)
-        for err in e.errors():
-            loc = " -> ".join([str(x) for x in err['loc']])
-            msg = err['msg']
-            print(f"Location : {loc}\nError    : {msg}\n" + "-" * 70)
-        sys.exit(1)
-        
-    # If we get here, the basic configuration is valid.
-    print("\n[SUCCESS] Basic Configuration validated successfully!")
-
-    if args.generate_stubs:
-        print("\n[*] Starting Fast-Check Stub Generation...")
-        generate_stubs(outdir_path, soc_config, registry_dependencies, base_dir)
-        print("  [SUCCESS] Faithful stubs and fast-compile scripts generated.")
-        sys.exit(0)
 
     # =========================================================================
     # 4. ARCHITECTURAL OPTIMIZATION (GARBAGE COLLECTION)
@@ -159,7 +164,7 @@ def main():
     print(f"[*] Using templates from: {[p.name for p in template_paths]}")
 
     # =========================================================================
-    # 4.5. HOST AUTO-CONFIGURATION
+    # 5. HOST AUTO-CONFIGURATION
     # =========================================================================
     # This critical step auto-calculates the required widths for the Host's
     # interrupt vectors and AXI/RegBus interconnect arrays. This is done by
@@ -215,7 +220,7 @@ def main():
         return f'// BENDER: name="{name}"{arg_str}'
 
     # =========================================================================
-    # 5. PHASE 1: DYNAMIC ISLES GENERATION
+    # 6. PHASE 1: DYNAMIC ISLES GENERATION
     # =========================================================================
     # This phase generates intermediate SystemVerilog wrappers for composite
     # blocks (like the APB Subsystem) before validating the main top-level
@@ -229,7 +234,7 @@ def main():
     print("\n[*] Starting Phase 2: Cross-validating Hardware constraints...")
     
     # =========================================================================
-    # 6. PHASE 2: HARDWARE-FIRST VALIDATION
+    # 7. PHASE 2: HARDWARE-FIRST VALIDATION
     # =========================================================================
     # This second validation pass ensures that the configuration defined in YAML
     # still matches the hardware constraints, even after Phase 1 has generated
@@ -246,32 +251,52 @@ def main():
     print("\n[SUCCESS] Hardware semantics validated successfully!")
     
     # =========================================================================
-    # 7. GENERATION REPORTING
+    # 8. GENERATION REPORTING
     # =========================================================================
     print_generation_report(soc_config)
 
     # =========================================================================
-    # 8. PHASE 3: METADATA EXTRACTION & TOP-LEVEL RENDERING
+    # 9. PHASE 3: METADATA EXTRACTION & TOP-LEVEL RENDERING
     # =========================================================================
     # This phase prepares all the data needed for the final Mako rendering pass.
     comp_info, wiring_matrix, global_defines = generator.extract_wiring_metadata()
     generator.render_top_level(comp_info, wiring_matrix, global_defines)
             
     # =========================================================================
+    # 10. PHASE 4: FETCH EXTERNAL IPs & PRE-BUILD
+    # =========================================================================
+    print("=" * 70)
+    print("[*] Starting Phase 4: Fetching External IPs via Bender...\n")
+    bender_exe = shutil.which("bender") or (str(base_dir / "bender") if (base_dir / "bender").is_file() else "bender")
+    lock_file = env.bender_dir / "Bender.lock"
+    try:
+        if lock_file.is_file():
+            subprocess.run([bender_exe, "checkout"], cwd=env.bender_dir, check=True)
+        else:
+            subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True)
+    except subprocess.CalledProcessError:
+        print("\n[ERROR] Failed to fetch dependencies with Bender.")
+        sys.exit(1)
+        
+    # Execute Pre-Build commands and patches on fetched IPs
+    run_pre_build_steps(env)
+
+    # =========================================================================
+    # 11. PHASE 5: NOC GENERATION (FLOOGEN)
     # =========================================================================
     # Automatically invokes FlooGen to generate the NoC configuration, router
     # instances, and the standard FlooNoC package.
     run_floogen(soc_config, cfg_dir, hw_dir)
 
     # =========================================================================
-    # 12. PHASE 5: REGISTER RTL GENERATION (REGTOOL)
+    # 12. PHASE 6: REGISTER RTL GENERATION (PEAKRDL)
     # =========================================================================
-    # Automatically invokes the OpenTitan regtool to generate the physical 
-    # SystemVerilog register block from the rendered HJSON specification.
-    run_regtool(soc_config, reg_dir, hw_dir, sw_dir, regtool_paths, base_dir)
+    # Automatically invokes PeakRDL to generate the physical SystemVerilog 
+    # register block from the rendered SystemRDL specification.
+    run_peakrdl(soc_config, reg_dir, hw_dir, sw_dir, registry_dependencies, bender_dir)
 
     # =========================================================================
-    # 13. PHASE 6: RTL FORMATTING (VERIBLE)
+    # 13. PHASE 7: RTL FORMATTING (VERIBLE)
     # =========================================================================
     # Automatically formats all generated SystemVerilog files to ensure a clean,
     # professional and highly readable output.

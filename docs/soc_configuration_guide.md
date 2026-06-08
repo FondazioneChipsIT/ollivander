@@ -81,7 +81,7 @@ Defines the hardware clock distribution network, generating glitch-free muxes an
 *   `default_div`: Integer. Default division factor applied at power-on reset (default `1`).
 
 ### 2.5 System Controller (`system_controller`)
-Instructs Ollivander to generate a unified Control and Status Register (CSR) block.
+Instructs Ollivander to generate a unified Control and Status Register (CSR) block via PeakRDL.
 
 | Field                 | Type    | Description                                                                            |
 | :-------------------- | :------ | :------------------------------------------------------------------------------------- |
@@ -228,7 +228,7 @@ Defines the parameters for automated bare-metal C firmware generation and compil
 
 **Test App Object**:
 *   `name`: String. The base name used for the output files (`<name>.elf`, `<name>.hex`).
-*   `auto_generate_c`: Boolean. If `true`, Ollivander creates a starter `main.c` file. This file automatically `#include`s the generated hardware headers (e.g., `<project>_soc_regs.h`) so you have immediate access to all peripheral base addresses and CSR macros.
+*   `auto_generate_c`: Boolean. If `true`, Ollivander creates a starter `main.c` file. This file automatically `#include`s the generated hardware headers (e.g., `<project>_map.h` and `<project>_regs.h`) so you have immediate access to all peripheral base addresses, IRQs, and PeakRDL generated CSR macros.
 
 **Example:**
 ```yaml

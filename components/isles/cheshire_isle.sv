@@ -9,6 +9,7 @@
 // BENDER: name="axi"
 // BENDER: name="register_interface"
 // BENDER: name="apb"
+// PEAKRDL: source="cheshire.rdl" map="cheshire"
 
 `include "cheshire/typedef.svh"
 `include "axi/typedef.svh"

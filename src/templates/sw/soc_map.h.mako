@@ -2,6 +2,10 @@
   # ============================================================================
   # MAKO TEMPLATE FOR THE SOC MEMORY MAP (C HEADER)
   # ============================================================================
+  # This template generates the primary C header file for the software stack.
+  # It dynamically extracts the base addresses, memory sizes, and interrupt 
+  # mappings from the SoC configuration, providing the Firmware/OS with the 
+  # exact physical memory layout and IRQ lines of the generated hardware.
   p_name = config.project.name.upper()
   
   def fmt_name(name):
@@ -30,12 +34,14 @@ extern "C" {
 
 % if config.system_controller:
 // System Controller (PCRs)
+// Base address of the Power, Clock, and Reset (PCR) registers.
 #define ${p_name}_${fmt_name(config.system_controller.name)}_BASE_ADDR 0x${parse_hex(config.system_controller.base_addr)}
 #define ${p_name}_${fmt_name(config.system_controller.name)}_SIZE      0x${parse_hex(config.system_controller.size)}
 % endif
 
 % for comp in config.components:
 // --- ${comp.name} ---
+// Exposes base addresses for AXI memory-mapped regions and RegBus control interfaces.
  % if comp.interfaces:
   % if 'axi_slave' in comp.interfaces:
    % for slv in (comp.interfaces['axi_slave'] if isinstance(comp.interfaces['axi_slave'], list) else [comp.interfaces['axi_slave']]):
@@ -64,6 +70,9 @@ extern "C" {
 // ============================================================================
 // INTERRUPT ROUTING MAP (HOST)
 // ============================================================================
+// Parses the Host's external interrupt inputs mapped in the YAML configuration
+// (e.g., `[11] : uart.tx_empty_o`) and generates human-readable C macros 
+// (e.g., `#define PROJECT_IRQ_UART_TX_EMPTY 11`) to be used by the PLIC/CLIC drivers.
 <%
   import re
   irq_map = []
@@ -71,9 +80,13 @@ extern "C" {
       for irq_name, irq_cfg in config.host.interrupts.items():
           if 'intr_ext' in irq_name:
               src = str(irq_cfg.get('source', ''))
-              matches = re.findall(r'\[(\d+)(?::\d+)?\]\s*:\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)', src)
+              matches = re.findall(r'\[(\d+)(?::\d+)?\]\s*:\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+(?:\[\d+\])?)', src)
               for idx, comp_name, port_name in matches:
-                  irq_map.append((int(idx), comp_name, port_name.replace('_o', '').replace('_i', '')))
+                  # Safely remove _i or _o suffixes before an array index or at the end of the string
+                  clean_port = re.sub(r'_[io](?=\[|$)', '', port_name)
+                  # Replace brackets with underscores for valid C macros (e.g. snd_irq[11] -> snd_irq_11)
+                  clean_port = clean_port.replace('[', '_').replace(']', '')
+                  irq_map.append((int(idx), comp_name, clean_port))
   irq_map.sort(key=lambda x: x[0])
 %>
 % for idx, comp_name, port_name in irq_map:

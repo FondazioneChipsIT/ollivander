@@ -61,14 +61,14 @@ The generator cross-checks the user's YAML configuration against the actual phys
 Ollivander builds a massive connection matrix and uses Mako templates to generate:
 *   `<project_name>_soc_pkg.sv`: The SystemVerilog package containing the memory map and routing indices.
 *   `<project_name>.sv`: The complete Top-Level SystemVerilog file, including glitch-free clock muxes, fractional dividers, reset synchronizers, and cross-domain crossing (CDC) logic for all interrupts.
-*   `<project_name>_regs.hjson`: The specification for the central System Controller registers.
+*   `<project_name>_regs.rdl` & `<project_name>_memory_map.rdl`: The SystemRDL specifications for the central System Controller registers and the global SoC memory map.
 *   `Bender.yml`: A complete compilation manifest auto-populated with external IP packages and linked local dependencies.
 
 ### Phase 4: Network-on-Chip Generation (Optional)
 If the NoC topology is selected, Ollivander invokes `floogen` to generate the NoC configuration, router instances, and standard FlooNoC packages based on the physical placement defined in the YAML.
 
 ### Phase 5: Register RTL Generation
-Ollivander invokes external tools (like OpenTitan's `regtool.py` or PeakRDL) to parse the generated HJSON file. This produces the synthesis-ready SystemVerilog for the System Controller (handling software resets, AXI isolation, and clock gating) and the C-header files (`.h`) for bare-metal software drivers.
+Ollivander invokes **PeakRDL** to parse the generated SystemRDL files. This produces the synthesis-ready SystemVerilog for the System Controller (handling software resets, AXI isolation, and clock gating) and the C-header files (`.h`) for bare-metal software drivers.
 
 ### Phase 6: Software Bridging & Testbench Preloading (Optional)
 To close the gap between hardware generation and bare-metal validation, Ollivander can fully automate the software build and simulation setup. If defined in your YAML, it will:
@@ -85,6 +85,7 @@ To close the gap between hardware generation and bare-metal validation, Ollivand
 *   **Automatic CDC for Interrupts**: Analyzes the clock domains of interrupt sources and destinations. If they differ, it automatically injects multi-stage synchronizers or edge-to-level propagators.
 *   **Automated Dependency Management**: Ollivander actively parses your SystemVerilog files and Mako templates to extract `// BENDER:` and `// OLLIVANDER:` dependencies, automatically building a precise `Bender.yml` manifest that links standard IP libraries and local infrastructure files without duplicating code.
 *   **Implicit Interrupt Routing**: You only need to define the interrupt *destination* in the YAML (e.g., `manager` listens to `ethernet.rx_irq`). Ollivander automatically infers the output port on the source component and wires them together.
+*   **Decoupled Register Specifications**: Third-party IP registers are discovered dynamically via the `// PEAKRDL: source="..." map="..."` pragma inside their SystemVerilog wrappers, allowing Ollivander to automatically build a unified global C-header for the software stack.
 *   **AXI Isolation**: Heterogeneous SoCs require IPs to be powered down or reset independently. Ollivander automatically generates AXI isolation fences controlled by the central System Controller to prevent bus deadlocks.
 *   **Hardware-to-Software Synchronization**: Linker scripts and C-headers are dynamically generated directly from the hardware specification, guaranteeing that your bare-metal software always targets the correct memory map and peripheral base addresses.
 
@@ -128,11 +129,10 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 │   ├── link.ld                   # Memory-mapped Linker Script
 │   ├── main.c                    # Starter C firmware skeleton
 │   └── *.elf, *.hex              # Compiled software binaries ready for simulation
-├── <sub_reg>/                    # Register specification files (*.hjson)
+├── <sub_reg>/                    # Register specification files (*.rdl)
 ├── <sub_tb>/                     # Auto-generated SystemVerilog testbench with memory preloading (*.sv)
 ├── <sub_cfg>/                    # Generated configuration files for tools like FlooGen (*.yml)
 ├── <sub_doc>/                    # Output documentation and mapping tables (*.csv)
-├── Makefile.hw                   # Auto-generated targets for hardware dependencies
 └── Makefile.vsim                 # Auto-generated targets for QuestaSim simulation
 
 <bender_manifest>                 # Main compilation manifest linking external IPs and generated RTL
@@ -150,4 +150,3 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 *   `components/tiles/`: Specialized wrappers for Network-on-Chip (NoC) topologies, automatically instantiating routers and network adapters.
 *   `components/infrastructure/`: The Hardware Abstraction Layer (HAL) containing simulation-ready physical primitives (glitch-free clock muxes, integer dividers, reset generators, CDCs, and edge-to-level propagators) intended to be mapped to technology-specific standard cells during ASIC/FPGA synthesis.
 *   `docs/`: Official documentation, tutorials, and configuration guides.
-*   `tools/`: External utilities (e.g., OpenTitan's regtool).

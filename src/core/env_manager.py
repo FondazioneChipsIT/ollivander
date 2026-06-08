@@ -25,7 +25,6 @@ class OllivanderEnv:
         self.bender_dir = None
         self.template_paths = []
         self.component_paths = []
-        self.regtool_paths = []
         self.search_paths = []
         self.exclude_dir = ""
         self.base_dir = None
@@ -145,19 +144,14 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     # Handle legacy path keys for backwards compatibility (e.g., 'templates_dir').
     tpl_cfg = paths_cfg.get('templates', paths_cfg.get('templates_dir', ['src/templates']))
     cmp_cfg = paths_cfg.get('components', paths_cfg.get('components_dir', ['components']))
-    regtool_cfg = paths_cfg.get('regtool', ['tools/reggen/regtool.py'])
     
     env.template_paths = resolve_paths(tpl_cfg, env_base, ['src/templates'])
     env.component_paths = resolve_paths(cmp_cfg, env_base, ['components'])
-    env.regtool_paths = resolve_paths(regtool_cfg, env_base, ['tools/reggen/regtool.py'])
     
     # Extend base search paths with those defined in the appended environment file.
     if append_env_base:
         env.template_paths.extend(resolve_paths(app_paths_cfg.get('templates', app_paths_cfg.get('templates_dir', [])), append_env_base, []))
         env.component_paths.extend(resolve_paths(app_paths_cfg.get('components', app_paths_cfg.get('components_dir', [])), append_env_base, []))
-        app_regtool_cfg = app_paths_cfg.get('regtool', [])
-        if app_regtool_cfg:
-            env.regtool_paths = resolve_paths(app_regtool_cfg, append_env_base, [])
     
     # The complete list of paths where Ollivander will search for SV component wrappers
     # during the AST validation and hardware extraction phases.

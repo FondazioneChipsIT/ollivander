@@ -2,16 +2,15 @@
 # Solderpad Hardware License, Version 0.51, see LICENSE for details.
 # SPDX-License-Identifier: SHL-0.51
 """
-==============================================================================
-CONNECTION MATRIX GENERATOR FOR OLLIVANDER SoC
-==============================================================================
-This module is responsible for analyzing the SoC configuration and building a
-comprehensive "Connection Matrix". It translates the high-level YAML topology
-into low-level SystemVerilog port connections.
+Connection Matrix Generator for the Ollivander SoC Generator.
 
-It also handles "implicit" connections, like inferring the existence of an
-interrupt output on a source component just because a target component
-declared it as its input.
+This module is responsible for analyzing the parsed SoC configuration and building
+a comprehensive "Connection Matrix". It translates the high-level YAML topology
+descriptions into explicit, low-level SystemVerilog port connection strings.
+
+It also resolves "implicit" connections, such as dynamically inferring the existence
+and width of an interrupt output on a source component simply because a target 
+component declared it as an input source.
 """
 import re
 
@@ -20,8 +19,8 @@ from core.utils import camel_case, is_external
 def _is_array_port(comp_name, port_name, comp_info, is_input=True):
     """
     Checks if a given port on a component is an array (packed or unpacked).
-    This is used to determine if replication syntax `'{default: ...}` is needed
-    when connecting a scalar signal to a vector input.
+    This is used to determine if SystemVerilog replication syntax `'{default: ...}` 
+    is needed when connecting a scalar signal to a vector input port.
     """
     ports = comp_info.get(comp_name, {}).get("ports", {})
     p_info = ports.get(port_name)
@@ -41,11 +40,11 @@ def _infer_interrupts(soc_config, comp_info):
     Scans all components looking for input interrupts that reference an output 
     from another component (e.g., 'source: safety_island.debug_req_o'). 
     If the target output ('debug_req_o') is not explicitly defined in the YAML 
-    for 'safety_island', this function automatically infers its existence and 
-    sizes it dynamically by parsing the target's SystemVerilog header.
+    for the source component ('safety_island'), this function automatically infers 
+    its existence and sizes it dynamically by parsing the target's SystemVerilog header.
     
     This allows the user to define connections "one-way" in the YAML, keeping 
-    the configuration concise.
+    the configuration concise and reducing boilerplate.
     """
     # Create a flattened, unified lookup table of all components (Host + Peripherals)
     all_comps = {c.name: c for c in [soc_config.host] + (soc_config.components if soc_config.components else [])}
@@ -97,8 +96,8 @@ def build_connection_matrix(soc_config, comp_info):
     Parses the SoC configuration and generates the physical SystemVerilog 
     connection strings for every instantiated component.
     
-    It internally orchestrates the inference of implicit interrupts before
-    computing the actual physical wire names.
+    It internally orchestrates the resolution of implicit interrupts before
+    computing the actual physical wire mappings.
     
     Returns a dictionary mapping component names to lists of port bindings:
     {
@@ -257,43 +256,21 @@ def build_connection_matrix(soc_config, comp_info):
                     ports.append(f".reg_async_slv_ack_i ( async_reg_ack_out[{async_idx}] )")
                     ports.append(f".reg_async_slv_data_o ( async_reg_data_in[{async_idx}] )")
             
-        # ----------------------------------------------------------------------
-        # 3. SYSTEM CONTROLLER CONNECTIONS (PCRs)
-        # ----------------------------------------------------------------------
-        # Automatically route Power & Control Registers (Isolation, Fetch Enable, Boot Addr)
-        # from the OpenTitan-generated System Controller to the IP ports.
-        if comp.system_config:
-            reg_prefix = f"sys_regs_reg2hw.{comp.name.lower()}"
-            hw2reg_prefix = f"sys_regs_hw2reg.{comp.name.lower()}"
-            
-            if comp.system_config.get('isolate'):
-                ports.append(f".axi_isolate_i ( {reg_prefix}_isolate.q )")
-                ports.append(f".axi_isolated_o ( {hw2reg_prefix}_isolate_status.d )")
-                
-            if comp.system_config.get('fetch_enable'):
-                ports.append(f".fetch_en_i ( {reg_prefix}_fetch_enable.q )")
-                
-            if comp.system_config.get('boot_enable'):
-                ports.append(f".en_sa_boot_i ( {reg_prefix}_boot_enable.q )")
-                
-            if comp.system_config.get('debug_req'):
-                if _is_array_port(comp.name, 'debug_req_i', comp_info):
-                    # Broadcast a scalar debug request to all bits of a vector port using '{default: ...}
-                    ports.append(f".debug_req_i ( '{{default: {reg_prefix}_debug_req.q}} )")
-                else:
-                    ports.append(f".debug_req_i ( {reg_prefix}_debug_req.q )")
-                
-            if 'boot_addr' in comp.system_config and c_info.get("has_boot_addr"):
-                ports.append(f".boot_addr_i ( {reg_prefix}_boot_addr.q )")
-                
-            if comp.system_config.get('has_busy_status'):
-                ports.append(f".busy_o ( {hw2reg_prefix}_busy.d )")
-                
-            if comp.system_config.get('has_eoc_status') and 'eoc' not in (comp.interrupts or {}) and 'eoc_o' not in (comp.interrupts or {}):
-                ports.append(f".eoc_o ( {hw2reg_prefix}_eoc.d )")
+        # Connect the APB interface of the System Controller to the APB Subsystem
+        if soc_config.system_controller and comp.name == soc_config.system_controller.name:
+            idx = f"RegBusSlvIdx_{camel_case(comp.name)}"
+            ports.append(f".paddr_i   ( apb_slv_reqs[{idx}].paddr )")
+            ports.append(f".psel_i    ( apb_slv_reqs[{idx}].psel )")
+            ports.append(f".penable_i ( apb_slv_reqs[{idx}].penable )")
+            ports.append(f".pwrite_i  ( apb_slv_reqs[{idx}].pwrite )")
+            ports.append(f".pwdata_i  ( apb_slv_reqs[{idx}].pwdata )")
+            ports.append(f".pstrb_i   ( apb_slv_reqs[{idx}].pstrb )")
+            ports.append(f".prdata_o  ( apb_slv_rsps[{idx}].prdata )")
+            ports.append(f".pready_o  ( apb_slv_rsps[{idx}].pready )")
+            ports.append(f".pslverr_o ( apb_slv_rsps[{idx}].pslverr )")
 
         # ----------------------------------------------------------------------
-        # 4. JTAG CONNECTIONS
+        # 3. JTAG CONNECTIONS
         # ----------------------------------------------------------------------
         if comp.interfaces and comp.interfaces.get('jtag'):
             jtag_pfx = "jtag_" if comp.name == soc_config.host.name else f"jtag_{comp.name}_"
@@ -306,7 +283,7 @@ def build_connection_matrix(soc_config, comp_info):
                 ports.append(f".jtag_tdo_oe_o ( {jtag_pfx}tdo_oe_o )")
             
         # ----------------------------------------------------------------------
-        # 5. INTERRUPT ROUTING & CDC
+        # 4. INTERRUPT ROUTING & CDC
         # ----------------------------------------------------------------------
         output_ports_wired = set()
         if comp.interrupts:
@@ -399,7 +376,7 @@ def build_connection_matrix(soc_config, comp_info):
                         ports.append(f".{p_name}_o ( intr_{comp.name}_{port_name} )")
                     
         # ----------------------------------------------------------------------
-        # 6. PHYSICAL PERIPHERAL PORTS EXPORT
+        # 5. PHYSICAL PERIPHERAL PORTS EXPORT
         # ----------------------------------------------------------------------
         # Checks if the component implements standard physical interfaces (UART, I2C, SPI)
         # and automatically wires them directly to the Top-Level I/O boundaries.
@@ -445,7 +422,7 @@ def build_connection_matrix(soc_config, comp_info):
                     ports.append(f".{sub_c.name}_tx_o ( {sub_c.name}_tx_o )")
 
         # ----------------------------------------------------------------------
-        # 7. SUB-COMPONENT INTERRUPT ROUTING (e.g., inside APB Subsystems)
+        # 6. SUB-COMPONENT INTERRUPT ROUTING (e.g., inside APB Subsystems)
         # ----------------------------------------------------------------------
         # APB subsystems hide multiple peripherals inside a single Isle wrapper.
         # We need to explicitly route their interrupts out to the Top-Level.

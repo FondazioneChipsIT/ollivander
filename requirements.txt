@@ -6,3 +6,7 @@ hjson
 mistletoe
 setuptools<70.0.0
 floogen
+peakrdl
+peakrdl-regblock
+peakrdl-cheader
+peakrdl-rawheader
