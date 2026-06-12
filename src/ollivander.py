@@ -293,7 +293,8 @@ def main():
     # =========================================================================
     # Automatically invokes PeakRDL to generate the physical SystemVerilog 
     # register block from the rendered SystemRDL specification.
-    run_peakrdl(soc_config, reg_dir, hw_dir, sw_dir, registry_dependencies, bender_dir)
+    custom_rdl_paths = getattr(env, 'rdl_include_paths', getattr(env, 'rdl_includes', []))
+    run_peakrdl(soc_config, reg_dir, hw_dir, sw_dir, registry_dependencies, bender_dir, custom_rdl_paths)
 
     # =========================================================================
     # 13. PHASE 7: RTL FORMATTING (VERIBLE)

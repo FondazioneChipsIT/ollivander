@@ -109,7 +109,7 @@ def run_floogen(soc_config, cfg_dir: Path, hw_dir: Path):
         print("[HINT] Please install dependencies using: pip install -r requirements.txt")
         sys.exit(1)
 
-def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_dependencies: dict = None, bender_dir: Path = None):
+def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_dependencies: dict = None, bender_dir: Path = None, custom_rdl_paths: list = None):
     """
     Invokes PeakRDL to generate RTL and C headers from SystemRDL specifications.
     This automatically bridges the gap between hardware registers (System Controller)
@@ -135,6 +135,19 @@ def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_
             peakrdl_exe = str(venv_peakrdl)
 
     include_args = ["-I", str(reg_dir)]
+    
+    # 1. Custom Environment RDL Paths (Highest Priority)
+    # Any RDL file found here will override files with the same name in external IPs.
+    if custom_rdl_paths:
+        for path in custom_rdl_paths:
+            custom_path = Path(path).resolve()
+            if custom_path.is_dir():
+                if str(custom_path) not in include_args:
+                    include_args.extend(["-I", str(custom_path)])
+            else:
+                print(f"[WARNING] Custom RDL directory not found: {custom_path}")
+
+    # 2. Registry Dependencies Auto-Discovery (Lower Priority)
     if registry_dependencies and bender_dir:
         explicit_deps = set()
         for dep_name, dep_info in registry_dependencies.items():

@@ -52,12 +52,18 @@ These define where Ollivander looks when you declare a component `type` or a `re
 |              |                 |                               | wrappers (`*_isle.sv` or `*_tile.sv`). To    |
 |              |                 |                               | inject your custom IPs, add your project's   |
 |              |                 |                               | hardware folder here.                        |
+| `rdl_includes`| List of Strings| `[]`                          | Directories where PeakRDL should search for  |
+|              |                 |                               | custom `.rdl` files. Files found here have   |
+|              |                 |                               | absolute priority and will override external |
+|              |                 |                               | IP registers with the same name.             |
 
 **Example of appending custom paths:**
 ```yaml
 paths:
   components:
     - "../hw_ips" # Search for custom wrappers in my project's hw_ips folder
+  rdl_includes:
+    - "custom_rdls" # Highest priority for PeakRDL includes
 ```
 
 ---

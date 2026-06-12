@@ -17,6 +17,8 @@ paths:
     - "src/templates"
   components:
     - "components"
+  # Directories to search for custom SystemRDL (*.rdl) files (highest priority)
+  rdl_includes: []
 
 # ==============================================================================
 # CENTRALIZED DEPENDENCY REGISTRY

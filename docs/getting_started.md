@@ -92,6 +92,8 @@ Instead, create the **Environment Bridge File** (`prometheus_env.yaml`):
 paths:
   components:
     - "hw_ips"  # Instructs Ollivander to also search here for Isles/Tiles
+  rdl_includes:
+    - "custom_regs" # Optional: Custom SystemRDL files to override external IPs
 
 # You can also register custom Git dependencies for Bender!
 dependencies:
