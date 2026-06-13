@@ -18,9 +18,23 @@ These modules are instantiated in the generated top-level SystemVerilog file (an
 
 The clock tree relies on glitch-free multiplexers, configurable integer dividers, and proper CDC handling for the configuration registers.
 
-### 1.1 `olli_clk_mux_glitch_free`
+### 1.1 `olli_clk_gen`
+*   **Name**: Analog Clock Generator Wrapper (PLL/FLL)
+*   **Purpose**: Physical wrapper for the SoC's analog clock generators. It takes a slow reference clock (usually from a crystal oscillator pad) and generates multiple high-speed output clocks. It exposes an asynchronous RegBus interface for dynamic configuration and frequency scaling.
+*   **Parameters**:
+    *   `NUM_CLOCKS` (int unsigned): Total number of independent clock outputs to generate.
+    *   `reg_req_t` (type): Type of the RegBus request payload.
+    *   `reg_rsp_t` (type): Type of the RegBus response payload.
+*   **Interfaces**:
+    *   `ref_clk_i` (input logic): Static reference clock from the Padframe.
+    *   `clk_o` (output logic [NUM_CLOCKS-1:0]): Array of generated output clocks.
+    *   `lock_o` (output logic [NUM_CLOCKS-1:0]): Lock status signals indicating the clocks are stable.
+    *   `cfg_req_i`, `cfg_ack_o`, `cfg_data_i` (inputs/outputs): Asynchronous RegBus request channel.
+    *   `cfg_req_o`, `cfg_ack_i`, `cfg_data_o` (outputs/inputs): Asynchronous RegBus response channel.
+
+### 1.2 `olli_clk_mux_glitch_free`
 *   **Name**: Glitch-Free Clock Multiplexer
-*   **Purpose**: Safely switches between multiple asynchronous clock sources (e.g., different FLLs) without producing runt pulses or glitches on the output clock.
+*   **Purpose**: Safely switches between multiple asynchronous clock sources (e.g., different PLLs/FLLs) without producing runt pulses or glitches on the output clock.
 *   **Parameters**:
     *   `NUM_INPUTS` (int unsigned): Number of input clock sources.
     *   `NUM_SYNC_STAGES` (int unsigned): Number of flip-flop stages used for synchronization.
@@ -33,7 +47,7 @@ The clock tree relies on glitch-free multiplexers, configurable integer dividers
     *   `async_sel_i` (input logic [$clog2(NUM_INPUTS)-1:0]): Asynchronous selection signal (driven by CSR).
     *   `clk_o` (output logic): The multiplexed, glitch-free output clock.
 
-### 1.2 `olli_clk_int_div`
+### 1.3 `olli_clk_int_div`
 *   **Name**: Clock Integer Divider
 *   **Purpose**: Divides the input clock by an integer value. It must support dynamic division ratio updates and safe clock gating (enable/disable) without glitching.
 *   **Parameters**:
@@ -51,7 +65,7 @@ The clock tree relies on glitch-free multiplexers, configurable integer dividers
     *   `clk_o` (output logic): The divided and gated output clock.
     *   `cycl_count_o` (output logic [DIV_VALUE_WIDTH-1:0]): Current internal counter value (optional).
 
-### 1.3 `olli_lossy_valid_to_stream`
+### 1.4 `olli_lossy_valid_to_stream`
 *   **Name**: Lossy Valid to Stream Adapter
 *   **Purpose**: Decouples a static CSR register output (which might change unpredictably) into a valid/ready stream protocol. If the downstream logic is busy, it safely drops intermediate values, guaranteeing that only the most recent value is eventually transmitted.
 *   **Parameters**:
@@ -67,7 +81,7 @@ The clock tree relies on glitch-free multiplexers, configurable integer dividers
     *   `data_o` (output type T): Output stream data.
     *   `busy_o` (output logic): Status indicating a pending transfer.
 
-### 1.4 `olli_cdc_4phase`
+### 1.5 `olli_cdc_4phase`
 *   **Name**: 4-Phase Clock Domain Crossing
 *   **Purpose**: Safely transfers multi-bit data (such as clock divider configurations) between two asynchronous clock domains using a robust 4-phase handshake protocol.
 *   **Parameters**:

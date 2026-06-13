@@ -21,7 +21,10 @@ prometheus_soc/
 ├── tools/
 │   └── ollivander/          <-- Git Submodule (Read-Only)
 ├── hw_ips/                  <-- Your custom IPs and wrappers (*_isle.sv)
-│   └── aes_crypto_isle.sv
+│   ├── aes_crypto_isle.sv
+│   └── padframes/           <-- Custom Padframe technology catalogs (Optional)
+│       └── tech/
+│           └── my_custom_io.yml
 ├── prometheus_env.yaml      <-- Environment bridge file
 ├── prometheus.yaml          <-- Your SoC specification (SSoT)
 └── Makefile                 <-- Project automation
@@ -81,7 +84,7 @@ make setup
 
 ## 4. Injecting Custom IPs
 
-If you want to instantiate your own custom hardware block (e.g., an AES accelerator) inside the SoC, you place your `aes_crypto_isle.sv` inside your `hw_ips/` folder.
+If you want to instantiate your own custom hardware block (e.g., an AES accelerator) inside the SoC, or provide custom Padframe technology catalogs to Padrick, you place your files inside your `hw_ips/` folder.
 
 You must never modify the files inside `tools/ollivander/components/`.
 
@@ -91,7 +94,7 @@ Instead, create the **Environment Bridge File** (`prometheus_env.yaml`):
 # prometheus_env.yaml
 paths:
   components:
-    - "hw_ips"  # Instructs Ollivander to also search here for Isles/Tiles
+    - "hw_ips"  # Instructs Ollivander to search here for Isles/Tiles and padframes/tech/
   rdl_includes:
     - "custom_regs" # Optional: Custom SystemRDL files to override external IPs
 

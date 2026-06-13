@@ -34,13 +34,13 @@ module safety_island_isle
   localparam int unsigned AsyncAxiOutRWidth  = (2**LogDepth)*axi_pkg::r_width(AxiDataWidth, AxiOutIdWidth, AxiUserWidth)
 ) (
   input  logic clk_i,
-  input  logic ref_clk_i,
+  input  logic rt_clk_i,
   input  logic rst_ni,
   input  logic pwr_on_rst_ni,
   input  logic test_mode_i,
   
   // Control and Status
-  input  logic [1:0]  bootmode_i,
+  input  logic [1:0]  boot_mode_i,
   input  logic        fetch_en_i,
   input  logic        axi_isolate_i,
   output logic        axi_isolated_o,
@@ -105,11 +105,11 @@ module safety_island_isle
   // Instantiate the immutable external wrapper
   safety_island_synth_wrapper i_safety_island_synth_wrapper (
     .clk_i                       ( clk_i           ),
-    .ref_clk_i                   ( ref_clk_i       ),
+    .ref_clk_i                   ( rt_clk_i        ),
     .rst_ni                      ( rst_ni          ),
     .pwr_on_rst_ni               ( pwr_on_rst_ni   ),
     .test_enable_i               ( test_mode_i     ),
-    .bootmode_i                  ( bootmode_i      ),
+    .bootmode_i                  ( boot_mode_i     ),
     .fetch_en_i                  ( fetch_en_i      ),
     .axi_isolate_i               ( axi_isolate_i   ),
     .axi_isolated_o              ( axi_isolated_o  ),

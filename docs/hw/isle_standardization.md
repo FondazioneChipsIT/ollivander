@@ -48,6 +48,10 @@ To guarantee system-wide coherence without introducing tight coupling to a speci
 ## 3. Supported Interfaces & Port Naming
 Isles abstract away the native interfaces of their underlying IPs. Ollivander automatically maps these interfaces during generation if they are declared in the YAML and match the exact naming conventions below.
 
+> **⚠️ STRICT NAMING ENFORCEMENT**
+> The naming conventions defined below are **strictly enforced**. No deviations, custom prefixes, or alternative spellings (e.g., using `spih_` instead of `spi_`, or `bootmode` instead of `boot_mode`) are permitted. 
+> The primary purpose of the Isle wrapper is to adapt the inner IP's arbitrary port names to match this exact Ollivander standard. Failure to expose these exact names at the Isle boundary will result in unconnected wires and architectural validation errors.
+
 **Dimensionality (Scalars vs. Arrays) & Direction:** 
 *   **Standard Components**: Typically expose flat vectors (a single connection). However, if a component defines multiple interfaces of the same type in the YAML (e.g., `ports: 2` for a dual-port `l2_shared_memory`), its ports MUST be packed into arrays indexed by the port number (e.g., `logic [NumPort-1:0][AsyncAxiInAwWidth-1:0] async_axi_in_aw_data_i`).
 *   **Host Component**: Because the Host Isle contains the central routing crossbar, its AXI and RegBus ports are complementary to standard components and *always* exposed as multi-dimensional arrays (e.g., `[AxiNumMst-1:0][Width-1:0]`) to aggregate all system traffic.
@@ -276,15 +280,15 @@ These signals are mapped automatically if their exact name is found in the modul
     *   **Ollivander Handling**: Hardwired to the main `host_clk` signal.
 *   **`sys_rst_ni`** (`logic`): Global system Power-On Reset (`host_pwr_on_rst_n`, active low).
     *   **Ollivander Handling**: Hardwired to the main `host_pwr_on_rst_n` signal.
-*   **`rt_clk_i` | `rtc_i` | `ref_clk_i`** (`logic`): Alternative names for the global Real-Time Clock domain (usually 32.768 kHz), used for always-on timers and CLINTs.
+*   **`rt_clk_i`** (`logic`): The global Real-Time Clock domain (usually 32.768 kHz), used for always-on timers and CLINTs.
     *   **Ollivander Handling**: Hardwired to the main `rt_clk` signal.
 *   **`test_mode_i`** (`logic`): DFT/Scan-chain bypass enable flag.
     *   **Ollivander Handling**: Hardwired to the top-level `test_mode_i` input pin.
-*   **`boot_mode_i` | `bootmode_i`** (`logic [1:0]`): Alternative names for the system boot mode strapping pins.
+*   **`boot_mode_i`** (`logic [1:0]`): The system boot mode strapping pins.
     *   **Ollivander Handling**: Hardwired to the top-level `boot_mode_i` input pins.
 *   **`boot_addr_i`** (`logic [31:0]` or `[63:0]`): Boot address override provided by the System Controller registers.
     *   **Ollivander Handling**: Intended to be connected to the `sys_regs_reg2hw.<component_name>_boot_addr.q` register output from the System Controller.
-*   **`fetch_en_i` | `en_sa_boot_i`** (`logic`): Alternative names for the core fetch enable signal driven by the System Controller registers (allows the Host to wake up the Isle).
+*   **`fetch_en_i`** (`logic`): The core fetch enable signal driven by the System Controller registers (allows the Host to wake up the Isle).
     *   **Ollivander Handling**: Connected to the `sys_regs_reg2hw.<component_name>_fetch_enable.q` (or `_boot_enable.q`) register output.
 *   **`axi_isolate_i`** (`logic`): AXI isolation request driven by the System Controller, ensuring the Isle's AXI traffic is fenced during its own reset sequences.
     *   **Ollivander Handling**: Connected to the `sys_regs_reg2hw.<component_name>_isolate.q` register output.

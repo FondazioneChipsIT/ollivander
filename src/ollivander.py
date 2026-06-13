@@ -22,11 +22,11 @@ import yaml
 from pydantic import ValidationError
 from mako.lookup import TemplateLookup
 
-from core.soc_schema import OllivanderConfig, validate_soc_components
+from core.soc_schema import OllivanderConfig, validate_soc_components, Component
 from core.stub_generator import generate_stubs
 from core.env_manager import setup_environment
 from core.arch_optimizer import optimize_clock_tree, autoconfigure_host
-from core.tool_runners import run_floogen, run_peakrdl, run_verible, run_pre_build_steps
+from core.tool_runners import run_floogen, run_peakrdl, run_verible, run_pre_build_steps, run_padrick
 from core.reporter import print_generation_report
 from core.rtl_generator import RTLGenerator
 
@@ -118,6 +118,29 @@ def main():
         sys.exit(1)
         
     print("\n[SUCCESS] Basic Configuration validated successfully!")
+
+    # =========================================================================
+    # AUTO-INJECT PADFRAME REGBUS COMPONENT
+    # =========================================================================
+    if soc_config.padframe:
+        if soc_config.components is None:
+            soc_config.components = []
+        # Inject only if the user hasn't already defined it manually
+        if not any(c.name == "padframe_config" for c in soc_config.components):
+            padframe_cfg_comp = Component(
+                name="padframe_config",
+                description="Auto-generated Padframe configuration registers",
+                type="padframe_cfg",
+                interfaces={
+                    "regbus_slave": [{
+                        "external": True,
+                        "base_addr": soc_config.padframe.base_addr,
+                        "size": soc_config.padframe.size,
+                        "sync_domain": soc_config.padframe.sync_domain
+                    }]
+                }
+            )
+            soc_config.components.append(padframe_cfg_comp)
 
     if args.generate_stubs:
         print("\n[*] Starting Fast-Check Stub Generation...")
@@ -297,7 +320,18 @@ def main():
     run_peakrdl(soc_config, reg_dir, hw_dir, sw_dir, registry_dependencies, bender_dir, custom_rdl_paths)
 
     # =========================================================================
-    # 13. PHASE 7: RTL FORMATTING (VERIBLE)
+    # 13. PHASE 7: PADFRAME GENERATION (PADRICK)
+    # =========================================================================
+    run_padrick(env, soc_config, config_path.parent.resolve())
+
+    # =========================================================================
+    # 14. PHASE 8: CHIP WRAPPER ENGINE
+    # =========================================================================
+    if soc_config.padframe:
+        generator.generate_chip_wrapper(comp_info, wiring_matrix, global_defines)
+
+    # =========================================================================
+    # 15. PHASE 9: RTL FORMATTING (VERIBLE)
     # =========================================================================
     # Automatically formats all generated SystemVerilog files to ensure a clean,
     # professional and highly readable output.

@@ -89,9 +89,9 @@ module ${p_name}
 % endfor
 (
   // Global Clock and Reset
-% if config.clock_tree.flls > 0:
-  input  logic [${config.clock_tree.flls - 1}:0] domain_clk_i,
-  input  logic [${config.clock_tree.flls - 1}:0] fll_lock_i,
+% if config.clock_tree.generators > 0:
+  input  logic [${config.clock_tree.generators - 1}:0] domain_clk_i,
+  input  logic [${config.clock_tree.generators - 1}:0] fll_lock_i,
   input  logic pwr_on_rst_ni,
 % else:
   input  logic clk_i,
@@ -209,7 +209,7 @@ ${"," if all_extra_ports else ""}
   ${p_name}_sys_regs_pkg::${p_name}_sys_regs__out_t sys_regs_hwif_out;
   ${p_name}_sys_regs_pkg::${p_name}_sys_regs__in_t  sys_regs_hwif_in;
 
-% if config.system_controller and config.system_controller.fll_status_regs:
+% if config.system_controller and config.system_controller.clk_gen_status_regs:
   assign sys_regs_hwif_in.fll_lock.fll_lock.next  = fll_lock_i;
 % endif
 

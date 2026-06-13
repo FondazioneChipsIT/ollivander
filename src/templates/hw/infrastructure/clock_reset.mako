@@ -35,7 +35,7 @@
   // Real-Time domains bypass SW control (always-on, fixed source).
   // Typically used for RTCs or Always-On Timers.
   logic ${dom.name};
-  assign ${dom.name} = ${f"domain_clk_i[{dom.source_fll}]" if config.clock_tree.flls > 0 and dom.source_fll is not None else "rtc_i"};
+  assign ${dom.name} = ${f"domain_clk_i[{dom.source_gen}]" if config.clock_tree.generators > 0 and dom.source_gen is not None else "rtc_i"};
  % else:
   logic ${dom.name}_muxed;
   logic ${dom.name}; // Final gated/divided clock
@@ -46,9 +46,9 @@
   % if dom.has_mux:
   ${require_file("olli_clk_mux_glitch_free.sv")}
   olli_clk_mux_glitch_free #(
-    .NUM_INPUTS(${config.clock_tree.flls if config.clock_tree.flls > 0 else 1})
+    .NUM_INPUTS(${config.clock_tree.generators if config.clock_tree.generators > 0 else 1})
   ) i_${dom.name}_mux (
-    .clks_i       ( ${"domain_clk_i" if config.clock_tree.flls > 0 else "clk_i"} ),
+    .clks_i       ( ${"domain_clk_i" if config.clock_tree.generators > 0 else "clk_i"} ),
     .test_clk_i   ( 1'b0 ),
     .test_en_i    ( 1'b0 ),
     .async_rstn_i ( host_pwr_on_rst_n ),
@@ -56,8 +56,8 @@
     .clk_o        ( ${dom.name}_muxed )
   );
   % else:
-  // No mux required; hardwired to FLL ${dom.source_fll if dom.source_fll is not None else "default"}.
-  assign ${dom.name}_muxed = ${f"domain_clk_i[{dom.source_fll}]" if config.clock_tree.flls > 0 and dom.source_fll is not None else "clk_i"};
+  // No mux required; hardwired to FLL ${dom.source_gen if dom.source_gen is not None else "default"}.
+  assign ${dom.name}_muxed = ${f"domain_clk_i[{dom.source_gen}]" if config.clock_tree.generators > 0 and dom.source_gen is not None else "clk_i"};
   % endif
 
   // 1b. Configurable Integer Divider & Clock Gating
@@ -158,7 +158,7 @@
   ${require_file("olli_rstgen.sv")}
   olli_rstgen i_host_rstgen (
     .clk_i  ( ${host_clk} ),
-    .rst_ni ( ${"pwr_on_rst_ni" if config.clock_tree.flls > 0 else "rst_ni"} ),
+    .rst_ni ( ${"pwr_on_rst_ni" if config.clock_tree.generators > 0 else "rst_ni"} ),
     .test_mode_i ( test_mode_i ),
     .rst_no ( host_pwr_on_rst_n ),
     .init_no ()
@@ -179,7 +179,7 @@
     .NumRstDomains(NumDomains)
   ) i_sys_rstgen (
     .clks_i         ( { ${", ".join([f"{d.name}_muxed" if d.has_mux else f"{d.name}" for d in managed_domains])} } ),
-    .pwr_on_rst_ni  ( ${"pwr_on_rst_ni" if config.clock_tree.flls > 0 else "rst_ni"} ),
+    .pwr_on_rst_ni  ( ${"pwr_on_rst_ni" if config.clock_tree.generators > 0 else "rst_ni"} ),
     .sw_rsts_ni     ( ~sw_rsts_vector ),
     .test_mode_i    ( test_mode_i ),
     .rsts_no        ( rsts_n ),

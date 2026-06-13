@@ -1,13 +1,13 @@
 # ==============================================================================
-# OLLIVANDER UNIFIED SoC ARCHITECTURE SCHEMA - GWAIHIR CONFIGURATION
+# OLLIVANDER UNIFIED SoC ARCHITECTURE SCHEMA - MESH CONFIGURATION
 # ==============================================================================
-# This YAML file describes the Gwaihir SoC using the Unified Component Model.
+# This YAML file describes the Mesh SoC using the Unified Component Model.
 # Ollivander will parse this, recognize the "noc" topology switch, and map
 # the components' logical placements to physical coordinates for FlooNoC.
 # ==============================================================================
 
 project:
-  name: "gwaihir"
+  name: "mesh"
   description: "AI and Machine Learning acceleration platform (Gwaihir clone)"
   author: "Ollivander Generator"
 
@@ -61,7 +61,7 @@ system_settings:
 # Defines the clock generation and distribution network.
 # Resets are automatically derived from clock domains unless explicitly overridden.
 clock_tree:
-  flls: 0 # flls: 0 means analog FLLs are instantiated outside the top-level (in the padframe)
+  generators: 0 # 0 means no clock generators are instantiated in the chip wrapper (clocks are supplied directly from pads)
   domains:
     - name: "system"
       description: "Main synchronous clock domain for the entire NoC"
@@ -82,7 +82,7 @@ system_controller:
   scratch_registers: 2        # Number of generic GENERIC_SCRATCHx registers
   version_registers: 1        # Number of VERSIONx registers
   jedec_id: 0x00000000        # Value for the JEDEC_IDCODE register
-  fll_status_regs: false      # FLLs are outside the SoC, no internal lock status
+  clk_gen_status_regs: false  # Clock generators are outside the SoC, no internal lock status
   
   # Registers implemented outside the SoC top-level (e.g., in the chip/padframe wrapper).
   # Ollivander maps these in the RDL (conditionally) and exports the RegBus at the top-level.

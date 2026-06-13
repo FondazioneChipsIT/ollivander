@@ -271,17 +271,17 @@ addrmap ${config.project.name}_sys_regs {
     % endif
 
     // ---------------------------------------------------------------------
-    // FLL Lock Status
+    // Clock Generator Lock Status
     // ---------------------------------------------------------------------
-    // Hardware-driven flags indicating that the external Frequency Locked Loops 
+    // Hardware-driven flags indicating that the external Clock Generators 
     // have achieved frequency lock and are stable.
-    % if sys_ctrl.get('fll_status_regs'):
+    % if sys_ctrl.get('clk_gen_status_regs'):
     reg {
         name = "FLL Lock Status";
         desc = "FLL Lock signals";
         default sw = r; default hw = w;
-        field { } fll_lock[${config.clock_tree.flls - 1}:0] = 0;
-    } fll_lock;
+        field { } clk_gen_lock[${config.clock_tree.generators - 1}:0] = 0;
+    } clk_gen_lock;
     % endif
 
     // ---------------------------------------------------------------------

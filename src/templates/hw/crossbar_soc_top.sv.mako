@@ -183,8 +183,8 @@ module ${p_name}
   // ---------------------------------------------------------
   // Global Clocks, Resets and Control
   // ---------------------------------------------------------
-  input  logic [${config.clock_tree.flls - 1}:0] domain_clk_i,
-  input  logic [${config.clock_tree.flls - 1}:0] fll_lock_i,
+  input  logic [${config.clock_tree.generators - 1}:0] domain_clk_i,
+  input  logic [${config.clock_tree.generators - 1}:0] clk_gen_lock_i,
   input  logic pwr_on_rst_ni,
   input  logic test_mode_i,
   input  logic [1:0] boot_mode_i\
@@ -361,8 +361,8 @@ ${clock_and_reset_tree(config, p_name)}
     .hwif_out       ( sys_regs_hwif_out )
   );
   
-% if config.system_controller and config.system_controller.fll_status_regs:
-  assign sys_regs_hwif_in.fll_lock.fll_lock.next  = fll_lock_i;
+% if config.system_controller and config.system_controller.clk_gen_status_regs:
+  assign sys_regs_hwif_in.clk_gen_lock.clk_gen_lock.next  = clk_gen_lock_i;
 % endif
 
 % for c in config.components:

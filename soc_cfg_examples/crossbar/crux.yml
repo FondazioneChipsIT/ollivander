@@ -1,14 +1,14 @@
 # ==============================================================================
-# OLLIVANDER UNIFIED SoC ARCHITECTURE SCHEMA - CARFIELD CONFIGURATION
+# OLLIVANDER UNIFIED SoC ARCHITECTURE SCHEMA - crux CONFIGURATION
 # ==============================================================================
-# This YAML file describes the Carfield SoC using the Unified Component Model.
+# This YAML file describes the crux SoC using the Unified Component Model.
 # Ollivander will parse this, recognize the "crossbar" topology switch, and map
 # the components to a central AXI4 global interconnect (provided by the host).
 # ==============================================================================
 
 project:
-  name: "carfield"
-  description: "Carfield Heterogeneous Multi-Core SoC Specification"
+  name: "crux"
+  description: "crux Heterogeneous Multi-Core SoC Specification"
   author: "Ollivander Generator"
 
 # ------------------------------------------------------------------------------
@@ -60,12 +60,12 @@ system_settings:
 # and the related configuration registers in the System Controller.
 # Reset trees are automatically derived from these clock domains.
 clock_tree:
-  flls: 4                     # Total number of analog Frequency Locked Loops (FLLs) available
+  generators: 4               # Total number of analog Clock Generators (PLLs/FLLs) available
   domains:
     - name: "rt"
       description: "Real-Time Clock for CLINT and AON timers"
       is_real_time: true      # Bypass SW control: always-on, cannot be gated
-      source_fll: 0           # Hardwired to FLL index 0
+      source_gen: 0           # Hardwired to Clock Generator index 0
       static_div: 100         # Static division value (e.g. FLL0 / 100)
       has_mux: false
       has_divider: false
@@ -74,7 +74,7 @@ clock_tree:
       description: "Main Host Clock for Cheshire CPU"
       has_divider: false      # Host usually runs at max speed (no divider)
       has_debug_divider: true # Generates a parallel, slower clock for JTAG/DMI
-      source_fll: 1           # Hardwired to FLL 1 to ensure it ticks at boot (prevents deadlocks)
+      source_gen: 1           # Hardwired to Clock Generator 1 to ensure it ticks at boot (prevents deadlocks)
       has_mux: false
       
     - name: "periph"
@@ -120,7 +120,7 @@ clock_tree:
       default_div: 1
 
 # ------------------------------------------------------------------------------
-# 3. GLOBAL SYSTEM CONTROLLER & REGISTERS
+# 4. GLOBAL SYSTEM CONTROLLER & REGISTERS
 # ------------------------------------------------------------------------------
 # Instructs Ollivander to generate the central System Controller (PCRs).
 # It auto-generates a SystemRDL specification that PeakRDL will convert
@@ -133,10 +133,28 @@ system_controller:
   scratch_registers: 2        # Number of generic GENERIC_SCRATCHx registers
   version_registers: 5        # Number of VERSIONx registers (e.g., for storing Git hashes)
   jedec_id: 0x00000000        # Value for the JEDEC_IDCODE register (Silicon ID)
-  fll_status_regs: true       # Exposes FLL lock signals as read-only registers
+  clk_gen_status_regs: true   # Exposes Clock Generator lock signals as read-only registers
 
 # ------------------------------------------------------------------------------
-# 4. HOST SYSTEM (Manager)
+# 5. PADFRAME & PINMUX (Padrick Integration)
+# ------------------------------------------------------------------------------
+# Delegates the physical pad ring definition to Padrick, while Ollivander
+# automatically handles the top-level RegBus and signal wiring.
+padframe:
+  name: "crux_padframe"
+  description: "Global ASIC Padframe and Pinmux"
+  base_addr: 0x200A0000       # Memory mapped base address for pinmux CSRs
+  sync_domain: false          # Generates an async RegBus CDC adapter for the exported ports
+  domains:
+    - name: "domain_1v8"
+      tech: "behavioral"
+      pad_list: "crux_pad_list_1v8.yml"
+    - name: "domain_3v3"
+      tech: "behavioral"
+      pad_list: "crux_pad_list_3v3.yml"
+
+# ------------------------------------------------------------------------------
+# 6. HOST SYSTEM (Manager)
 # ------------------------------------------------------------------------------
 # The Host is the central orchestrator (e.g., a RISC-V application class CPU like Cheshire).
 # It boots the system, configures the clock tree, and manages the PLIC/CLINT.
@@ -195,7 +213,7 @@ host:
         }
 
 # ------------------------------------------------------------------------------
-# 5. SYSTEM COMPONENTS (Compute, Memories, Peripherals)
+# 7. SYSTEM COMPONENTS (Compute, Memories, Peripherals)
 # ------------------------------------------------------------------------------
 # List of all hardware IPs attached to the SoC interconnect.
 # Each block MUST be encapsulated in an "Isle" SystemVerilog wrapper 
@@ -356,21 +374,12 @@ components:
           size: 0x00001000
           sync_domain: false
 
-  - name: "padframe_config"
-    description: "Padframe configuration registers"
-    type: "padframe_cfg"
-    interfaces:
-      regbus_slave:
-        - external: true
-          base_addr: 0x200A0000
-          size: 0x00001000
-          sync_domain: false
 
   - name: "ethernet"
     description: "Gigabit Ethernet MAC with built-in DMA"
     type: "ethernet_isle"
     clock_domain: "periph"
-    export_interfaces: ["phy"]
+    export_interfaces: ["phy", "eth_clk200"]
     interfaces:
       axi_master: true
       regbus_slave:
@@ -423,7 +432,7 @@ components:
         size: 0x00001000
 
 # ------------------------------------------------------------------------------
-# 6. TESTBENCH CONFIGURATION
+# 8. TESTBENCH CONFIGURATION
 # ------------------------------------------------------------------------------
 # Instructions for the simulation environment.
 testbench:
@@ -432,7 +441,7 @@ testbench:
       file: "generated/sw/hello_world.hex"    # Path to the compiled hex binary
 
 # ------------------------------------------------------------------------------
-# 7. SOFTWARE STACK & FIRMWARE
+# 9. SOFTWARE STACK & FIRMWARE
 # ------------------------------------------------------------------------------
 # Defines the toolchain and target memory for automated bare-metal C compilation.
 software_stack:

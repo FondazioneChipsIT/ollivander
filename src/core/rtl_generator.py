@@ -5,9 +5,11 @@
 import os
 import re
 import sys
+import yaml
 from pathlib import Path
 from mako.template import Template
 
+from core.interfaces import get_interface_ports
 from core.soc_schema import get_isle_info
 from core.wiring import build_connection_matrix
 from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_import_sv_packages, write_if_changed
@@ -349,11 +351,171 @@ class RTLGenerator:
 
         return comp_info, wiring_matrix, global_defines
 
+    def _get_pad_domains(self):
+        if not self.soc_config.padframe: return []
+        domains_config = self.soc_config.padframe.domains or []
+        
+        pad_domains = []
+        for dom in domains_config:
+            pl_file = Path.cwd() / dom.pad_list
+            if pl_file.is_file():
+                raw_list = yaml.safe_load(pl_file.read_text(encoding='utf-8')) or []
+                expanded_list = []
+                for pad in raw_list:
+                    if pad.get("multiple", 1) > 1:
+                        for i in range(pad.get("multiple", 1)):
+                            ep = dict(pad)
+                            ep["name"] = ep["name"].replace("{i}", str(i))
+                            if "default_port" in ep:
+                                ep["default_port"] = ep["default_port"].replace("{i}", str(i))
+                            if "connections" in ep:
+                                ep["connections"] = {k.replace("{i}", str(i)) if isinstance(k, str) else k: v.replace("{i}", str(i)) if isinstance(v, str) else v for k, v in ep["connections"].items()}
+                            expanded_list.append(ep)
+                    else:
+                        expanded_list.append(pad)
+                pad_domains.append({"name": dom.name, "pad_list": expanded_list})
+        return pad_domains
+
+    def generate_port_groups(self, comp_info):
+        """
+        Auto-generates the Padrick port_groups YAML configuration by inspecting
+        the SoC configuration and the export_interfaces of each component.
+        This acts as the 'Port-Group Provider', eliminating name mismatches
+        between the Core and the Padframe.
+        """
+        if not self.soc_config.padframe:
+            return {}, {}
+
+        cfg_dir = self.env.outdir_path / self.env.cfg_sub
+        port_groups_file = cfg_dir / f"{self.soc_config.project.name}_soc_port_groups.yml"
+        
+        lines = []
+        lines.append("port_groups:")
+        lines.append('  - name: "soc_exports"')
+        lines.append('    output_defaults: "1\'b0"')
+        lines.append('    ports:')
+        
+        all_comps = [self.soc_config.host] + (self.soc_config.components if self.soc_config.components else [])
+        
+        def get_base_name(name):
+            if name.endswith("_en_o"): return name[:-5]
+            if name.endswith("_oe_o"): return name[:-5]
+            if name.endswith("_no"): return name[:-1]
+            if name.endswith("_ni"): return name[:-1]
+            if name.endswith("_o"): return name[:-2]
+            if name.endswith("_i"): return name[:-2]
+            return name
+
+        pad_domains = self._get_pad_domains()
+        port_multiples = {}
+        
+        domains_config = self.soc_config.padframe.domains or []
+        
+        for dom in domains_config:
+            pl_file = Path.cwd() / dom.pad_list
+            if pl_file.is_file():
+                raw_list = yaml.safe_load(pl_file.read_text(encoding='utf-8')) or []
+                for pad in raw_list:
+                    dp = pad.get("default_port", "")
+                    if dp.startswith("soc_exports."):
+                        p_name = dp.split(".")[-1]
+                        p_base = p_name.replace('_{i}', '').replace('[{i}]', '')
+                        port_multiples[p_base] = pad.get("multiple", 1)
+                    elif "connections" in pad:
+                        for k, v in pad["connections"].items():
+                            soc_sig = k if v in ["pad2chip", "paden2chip", "chip2pad"] else v
+                            if "_{i}" in soc_sig or "[{i}]" in soc_sig:
+                                p_name = soc_sig.replace('_{i}', '').replace('[{i}]', '')
+                                p_base = get_base_name(p_name)
+                                port_multiples[p_base] = pad.get("multiple", 1)
+
+        grouped_ports = {}
+        port_mapping = {}
+
+        def add_port(name, direction, soc_port_name, width=1):
+            if width > 1:
+                for i in range(width):
+                    base = get_base_name(name) + f"_{i}"
+                    if base not in grouped_ports:
+                        grouped_ports[base] = {}
+                    soc_sig = f"{soc_port_name}_{i}"
+                    if direction == "output":
+                        if name.endswith("_en_o") or name.endswith("_oe_o"):
+                            grouped_ports[base]["paden2chip"] = soc_sig
+                        else:
+                            grouped_ports[base]["chip2pad"] = soc_sig
+                    elif direction == "input":
+                        grouped_ports[base][soc_sig] = "pad2chip"
+            else:
+                base = get_base_name(name)
+                if base not in grouped_ports:
+                    grouped_ports[base] = {}
+                soc_sig = soc_port_name
+                if direction == "output":
+                    if name.endswith("_en_o") or name.endswith("_oe_o"):
+                        grouped_ports[base]["paden2chip"] = soc_sig
+                    else:
+                        grouped_ports[base]["chip2pad"] = soc_sig
+                elif direction == "input":
+                    grouped_ports[base][soc_sig] = "pad2chip"
+                
+            if soc_port_name not in port_mapping:
+                port_mapping[soc_port_name] = {'width': width, 'pad_base': get_base_name(name)}
+
+        # Always export primary global signals
+        if getattr(self.soc_config.clock_tree, 'generators', 0) > 0:
+            add_port("pwr_on_rst_ni", "input", "pwr_on_rst_ni")
+        else:
+            add_port("clk_i", "input", "clk_i")
+            add_port("rst_ni", "input", "rst_ni")
+        add_port("test_mode_i", "input", "test_mode_i")
+        add_port("boot_mode_i", "input", "boot_mode_i", port_multiples.get("boot_mode", 2))
+
+        def process_interfaces(target_comp, info, is_host):
+            c_ports = info.get("ports", {})
+            if target_comp.export_interfaces:
+                for ext_if in target_comp.export_interfaces:
+                    ports = get_interface_ports(ext_if, target_comp.name, is_host, info)
+                    for p in ports:
+                        comp_port = p.get("internal", p["top"])
+                        p_type = c_ports.get(comp_port, {}).get("type_dim", "logic")
+                        width = 1
+                        w_match = re.search(r'\[\s*(\d+)\s*[-:]+\s*(\d+)\s*\]', p_type)
+                        if w_match:
+                            width = abs(int(w_match.group(1)) - int(w_match.group(2))) + 1
+                        base_p = get_base_name(p["top"])
+                        if base_p in port_multiples:
+                            width = port_multiples[base_p]
+                        soc_port_name = p["top"]
+                        add_port(p["top"], p["dir"], soc_port_name, width)
+
+        for comp in all_comps:
+            c_info = comp_info.get(comp.name, {})
+            process_interfaces(comp, c_info, comp.name == self.soc_config.host.name)
+            
+            if comp.components:
+                for sub_c in comp.components:
+                    sub_info = comp_info.get(sub_c.name, {})
+                    process_interfaces(sub_c, sub_info, False)
+                
+        for base, conns in grouped_ports.items():
+            lines.append(f'      - name: "{base}"')
+            lines.append(f'        connections:')
+            for pad_sig, soc_sig in conns.items():
+                lines.append(f'          {pad_sig}: {soc_sig}')
+
+        write_if_changed(port_groups_file, "\n".join(lines) + "\n")
+        return grouped_ports, port_mapping
+
     def render_top_level(self, comp_info, wiring_matrix, global_defines):
         """
         Phase 3 (cont'd): The main generation loop where all Top-Level components,
         packages, memory maps, and the final Bender.yml manifest are rendered.
         """
+        grouped_ports, port_mapping = self.generate_port_groups(comp_info)
+        
+        pad_domains = self._get_pad_domains()
+
         hw_dir = self.env.outdir_path / self.env.hw_sub
         sw_dir = self.env.outdir_path / self.env.sw_sub
         doc_dir = self.env.outdir_path / self.env.doc_sub
@@ -371,6 +533,9 @@ class RTLGenerator:
             "comp_info": comp_info,
             "global_defines": sorted(list(global_defines)),
             "env_config": {"dependencies": self.env.registry_dependencies},
+            "grouped_ports": grouped_ports,
+            "port_mapping": port_mapping,
+            "pad_domains": pad_domains,
             "original_isle_types": self.original_isle_types,
             "fmt_dom": fmt_dom,
             "fmt_reg": fmt_reg,
@@ -460,6 +625,10 @@ class RTLGenerator:
             except Exception as e:
                 print(f"\n[ERROR] Failed to render {tpl_name}:\n{e}")
                 sys.exit(1)
+
+        # Explicitly require the Clock Generator for the Phase 8 Chip Wrapper
+        if getattr(self.soc_config.clock_tree, 'generators', 0) > 0:
+            self.required_local_files.add("olli_clk_gen.sv")
 
         # Iteratively resolve all local files (e.g., infrastructure primitives) that 
         # need to be copied into the output hierarchy based on 'OLLIVANDER: require' pragmas.
@@ -554,8 +723,224 @@ class RTLGenerator:
                     rendered_code = rendered_code.replace(noc_line, '')
                     rendered_code = re.sub(soc_pkg_pattern, lambda m: noc_line + m.group(1), rendered_code)
                     
+                # Inject Padframe sub-project dependency if enabled
+                if self.soc_config.padframe:
+                    hw_dir_rel = os.path.relpath(self.env.outdir_path / self.env.hw_sub, self.env.bender_dir).replace('\\', '/')
+                    padframe_path = f"{hw_dir_rel}/padframe"
+                    padframe_dep = f"  {self.soc_config.padframe.name}: {{ path: \"{padframe_path}\" }}\n"
+                    rendered_code = re.sub(r'(\ndependencies:\s*\n)', rf'\g<1>{padframe_dep}', rendered_code)
+                    
+                    # Create a dummy Bender manifest so Bender doesn't crash during Phase 4 dependency resolution.
+                    # Padrick will overwrite this with the real manifest later in Phase 7.
+                    pf_dir = self.env.outdir_path / self.env.hw_sub / "padframe"
+                    pf_dir.mkdir(parents=True, exist_ok=True)
+                    (pf_dir / "Bender.yml").write_text(f"package:\n  name: {self.soc_config.padframe.name}\n", encoding='utf-8')
+
                 out_file = self.env.bender_manifest_path
                 write_if_changed(out_file, rendered_code)
             except Exception as e:
                 print(f"\n[ERROR] Failed to render {bender_tpl}:\n{e}")
                 sys.exit(1)
+
+    def generate_chip_wrapper(self, comp_info, wiring_matrix, global_defines):
+        """
+        Phase 8: The Chip Wrapper Engine.
+        Reads the generated Top-Level Core RTL and the Padframe package generated 
+        by Padrick, extracts their exact port/struct signatures, validates 
+        type constraints, and securely renders the final Chip wrapper.
+        """
+        print("=" * 70)
+        print("[*] Starting Phase 8: Cross-Validating and Generating Chip Wrapper...\n")
+        
+        hw_dir = self.env.outdir_path / self.env.hw_sub
+        core_file = hw_dir / f"{self.soc_config.project.name}.sv"
+        
+        padframe_dir = hw_dir / "padframe"
+        pkg_filename = f"pkg_{self.soc_config.padframe.name}.sv"
+        pkg_file = next(padframe_dir.rglob(pkg_filename), None)
+        
+        if not core_file.is_file() or not pkg_file or not pkg_file.is_file():
+            print("\n[ERROR] Core RTL or Padframe package missing. Cannot validate wrapper.")
+            print(f"  -> Looked for Core RTL at: {core_file}")
+            print(f"  -> Looked for Padframe package '{pkg_filename}' in: {padframe_dir}")
+            sys.exit(1)
+            
+        # 1. Parse Core RTL Ports
+        core_clean = re.sub(r'//.*', '', core_file.read_text(encoding='utf-8'))
+        core_clean = re.sub(r'/\*.*?\*/', '', core_clean, flags=re.DOTALL)
+        
+        port_pattern = re.compile(r'\b(input|output|inout)\b\s+(logic(?:[\s\[\]0-9a-zA-Z_\-\+\*:]+)?)\s+([a-zA-Z0-9_]+)\s*(?:,|$|\))')
+        core_ports = {}
+        module_match = re.search(r'\bmodule\s+'+self.soc_config.project.name+r'\b[\s\S]*?\)\s*;', core_clean)
+        if module_match:
+            for m in port_pattern.finditer(module_match.group(0)):
+                p_type = re.sub(r'\s+', ' ', m.group(2).strip())
+                core_ports[m.group(3).strip()] = {'dir': m.group(1).strip(), 'type': p_type}
+                
+        # 2. Parse Padrick Package Structs
+        pkg_clean = re.sub(r'//.*', '', pkg_file.read_text(encoding='utf-8'))
+        pkg_clean = re.sub(r'/\*.*?\*/', '', pkg_clean, flags=re.DOTALL)
+        
+        field_pattern = re.compile(r'^\s*(logic(?:[\s\[\]0-9a-zA-Z_\-\+\*:]+)?)\s+([a-zA-Z0-9_]+)\s*;', re.MULTILINE)
+        padframe_fields = {}
+        for m in field_pattern.finditer(pkg_clean):
+            f_type = re.sub(r'\s+', ' ', m.group(1).strip())
+            padframe_fields[m.group(2).strip()] = {'type': f_type}
+            
+        grouped_ports, port_mapping = self.generate_port_groups(comp_info)
+        
+        pad_domains = self._get_pad_domains()
+        
+        statically_routed_wires = set()
+        core_sig_to_domain = {}
+        for dom in pad_domains:
+            for pad in dom["pad_list"]:
+                if "connections" in pad:
+                    for k, v in pad["connections"].items():
+                        soc_sig = k if v in ["pad2chip", "paden2chip", "chip2pad"] else v
+                        core_sig_to_domain[soc_sig] = dom["name"]
+                if "default_port" in pad:
+                    dp = pad["default_port"].split(".")[-1]
+                    core_sig_to_domain[dp] = dom["name"]
+                
+                if pad.get('is_static') and 'connections' in pad:
+                    for _, pad_sig in pad['connections'].items():
+                        statically_routed_wires.add(pad_sig)
+                    
+        # 3. Cross-Validation
+        fatal_errors = []
+        missing_pads = []
+        validated_connections = []
+        
+        for core_sig, mapping in port_mapping.items():
+            if core_sig not in core_ports:
+                continue
+                
+            is_input_to_soc = core_ports[core_sig]['dir'] == 'input'
+            core_type = core_ports[core_sig]['type']
+            width = mapping['width']
+            pad_base = mapping['pad_base']
+            
+            if core_sig in statically_routed_wires:
+                pad_sig = core_sig
+                if pad_sig not in padframe_fields:
+                    missing_pads.append((pad_sig, core_sig, core_type, "N/A (static)"))
+                else:
+                    pad_type = padframe_fields[pad_sig]['type']
+                    def norm_type(t):
+                        t = re.sub(r'\s+', '', t)
+                        t = t.replace('1-1', '0')
+                        return 'logic' if t == 'logic[0:0]' else t
+                    if norm_type(core_type) != norm_type(pad_type):
+                        fatal_errors.append(f"Width/Type mismatch on '{core_sig}': Core expects '{core_type}', Padframe provides '{pad_type}'")
+                    else:
+                        dom_name = core_sig_to_domain.get(core_sig, "domain_0")
+                        struct_path = f"static_pad2soc.{dom_name}.{pad_sig}" if is_input_to_soc else f"static_soc2pad.{dom_name}.{pad_sig}"
+                        validated_connections.append({
+                            'sig_name': core_sig,
+                            'sv_type': core_type,
+                            'is_input_to_soc': is_input_to_soc,
+                            'struct_path': struct_path
+                        })
+            else:
+                if width == 1:
+                    pad_sig = core_sig
+                    if pad_sig not in padframe_fields:
+                        missing_pads.append((pad_sig, core_sig, core_type, f"soc_exports.{pad_sig}"))
+                    else:
+                        pad_type = padframe_fields[pad_sig]['type']
+                        def norm_type(t):
+                            t = re.sub(r'\s+', '', t)
+                            t = t.replace('1-1', '0')
+                            return 'logic' if t == 'logic[0:0]' else t
+                        if norm_type(core_type) != norm_type(pad_type):
+                            fatal_errors.append(f"Width/Type mismatch on '{core_sig}': Core expects '{core_type}', Padframe provides '{pad_type}'")
+                        else:
+                            dom_name = core_sig_to_domain.get(pad_sig, "domain_0")
+                            struct_path = f"port_pad2soc.{dom_name}.soc_exports.{pad_sig}" if is_input_to_soc else f"port_soc2pad.{dom_name}.soc_exports.{pad_sig}"
+                            validated_connections.append({
+                                'sig_name': core_sig,
+                                'sv_type': core_type,
+                                'is_input_to_soc': is_input_to_soc,
+                                'struct_path': struct_path
+                            })
+                else:
+                    def get_core_width(t):
+                        if '[' not in t: return 1
+                        w_match = re.search(r'\[\s*(\d+)\s*[-:]+\s*(\d+)\s*\]', t)
+                        if w_match:
+                            return abs(int(w_match.group(1)) - int(w_match.group(2))) + 1
+                        return -1
+                    c_w = get_core_width(core_type)
+                    if c_w != -1 and c_w != width:
+                        fatal_errors.append(f"Width mismatch on '{core_sig}': Core expects '{core_type}', but Padframe defines multiple: {width}")
+                        
+                    found_all = True
+                    scalar_struct_paths = []
+                    for i in range(width):
+                        pad_sig_i = f"{core_sig}_{i}"
+                        if pad_sig_i not in padframe_fields:
+                            missing_pads.append((pad_sig_i, f"{core_sig}[{i}]", "logic", f"soc_exports.{pad_sig_i}"))
+                            found_all = False
+                        else:
+                            dom_name = core_sig_to_domain.get(pad_sig_i, "domain_0")
+                            if pad_sig_i in statically_routed_wires:
+                                struct_path = f"static_pad2soc.{dom_name}.{pad_sig_i}" if is_input_to_soc else f"static_soc2pad.{dom_name}.{pad_sig_i}"
+                            else:
+                                struct_path = f"port_pad2soc.{dom_name}.soc_exports.{pad_sig_i}" if is_input_to_soc else f"port_soc2pad.{dom_name}.soc_exports.{pad_sig_i}"
+                            scalar_struct_paths.append(struct_path)
+                    
+                    if found_all:
+                        # Reverse the list to pack correctly: {bit_3, bit_2, bit_1, bit_0}
+                        scalar_struct_paths.reverse()
+                        concat_str = "{" + ", ".join(scalar_struct_paths) + "}"
+                        validated_connections.append({
+                            'sig_name': core_sig,
+                            'sv_type': core_type,
+                            'is_input_to_soc': is_input_to_soc,
+                            'struct_path': concat_str
+                        })
+                    
+        if missing_pads:
+            print("  [WARNING] The following Core ports are missing from the Padframe:")
+            yml_lines = []
+            for ps, ss, ct, def_port in missing_pads:
+                print(f"    - {ss} ({ct})")
+                yml_lines.append(f"- name: PAD_{ps.upper()}")
+                yml_lines.append(f"  description: \"Auto-generated missing pad for {ss}\"")
+                yml_lines.append(f"  pad_type: PAD_BIDIR")
+                yml_lines.append(f"  default_port: {def_port}")
+                yml_lines.append("")
+                
+            cfg_dir = self.env.outdir_path / self.env.cfg_sub
+            missing_file = cfg_dir / f"{self.soc_config.project.name}_missing_pads.yml"
+            missing_file.write_text("\n".join(yml_lines))
+            print(f"  [HINT] A stub YAML has been generated at {missing_file.name}. You can copy-paste it into your pad list!\n")
+            
+        if fatal_errors:
+            print("\n[FATAL ERROR] Cross-Validation between Core RTL and Padframe failed!")
+            for err in fatal_errors:
+                print(f"  -> {err}")
+            sys.exit(1)
+            
+        print("  [SUCCESS] Core and Padframe types match perfectly!")
+        
+        template_kwargs = {
+            "config": self.soc_config,
+            "project_name": self.soc_config.project.name,
+            "pad_domains": pad_domains,
+            "core_sig_to_domain": core_sig_to_domain,
+            "validated_connections": validated_connections
+        }
+        
+        out_file = hw_dir / f"{self.soc_config.project.name}_chip.sv"
+        print(f"  -> Rendering chip wrapper into {out_file.name}")
+        try:
+            template = self.template_lookup.get_template("hw/chip_top.sv.mako")
+            rendered_code = template.render(**template_kwargs)
+            rendered_code = auto_import_sv_packages(rendered_code)
+            rendered_code = rendered_code.replace('\r\n', '\n')
+            write_if_changed(out_file, rendered_code)
+        except Exception as e:
+            print(f"\n[ERROR] Failed to render chip_top.sv.mako:\n{e}")
+            sys.exit(1)

@@ -489,7 +489,7 @@ class ClockDomain(BaseModel):
     name: str
     description: Optional[str] = None
     is_real_time: Optional[bool] = False       # Bypasses SW config registers (always-on, fixed freq)
-    source_fll: Optional[int] = None           # Hardwired FLL source index (useful to avoid boot deadlocks)
+    source_gen: Optional[int] = None           # Hardwired Clock Generator source index (useful to avoid boot deadlocks)
     static_div: Optional[int] = None           # Hardwired clock division factor (for static clocks)
     has_mux: bool                              # True = generates a glitch-free mux + selection register
     has_divider: bool                          # True = generates a SW-programmable clock divider
@@ -504,7 +504,7 @@ class ClockDomain(BaseModel):
 
 class ClockTree(BaseModel):
     """Root definition for the SoC clock generation and distribution tree."""
-    flls: int                                  # Total number of Frequency Locked Loops available
+    generators: int                            # Total number of analog Clock Generators (PLLs/FLLs) available
     domains: List[ClockDomain]
 
 # ==============================================================================
@@ -546,9 +546,42 @@ class SystemController(BaseModel):
     scratch_registers: Optional[int] = 0
     version_registers: Optional[int] = 0
     jedec_id: Optional[Union[str, int]] = 0
-    fll_status_regs: Optional[bool] = False
+    clk_gen_status_regs: Optional[bool] = False
     external_registers: Optional[List[ExternalRegister]] = None
     auto_control_groups: Optional[List[AutoControlGroup]] = Field(None, alias='groups')
+
+# ==============================================================================
+# 5. PADFRAME & PINMUX (Padrick Integration)
+# ==============================================================================
+
+class PadDomainConfig(BaseModel):
+    """
+    Configuration for a single Padframe domain (power/voltage domain).
+    """
+    name: str
+    tech: str
+    pad_list: str
+
+class PadframeConfig(BaseModel):
+    """
+    Configuration for the Padrick Padframe and Pinmux generator.
+    Delegates the physical pad definitions (technology macros, orientation, etc.) 
+    to a native Padrick YAML configuration file, maintaining the SoC YAML technology-agnostic.
+    """
+    name: str
+    description: Optional[str] = None
+    base_addr: Union[str, int]                 # RegBus base address for pinmux CSRs
+    size: Optional[Union[str, int]] = 0x1000
+    sync_domain: Optional[bool] = False        # True = Host Clock, False = Uses async CDC adapter
+    domains: Optional[List[PadDomainConfig]] = None
+    padrick_cfg: Optional[str] = None          # Path to a custom Padrick config_top.yml (overrides domains)
+    header_file: Optional[str] = None          # Path to a text file for the RTL header (auto-generates standard license if None)
+
+    @model_validator(mode='after')
+    def check_padrick_config(self) -> 'PadframeConfig':
+        if not self.padrick_cfg and not self.domains:
+            raise ValueError("Padframe requires either 'padrick_cfg' or a 'domains' list.")
+        return self
 
 # ==============================================================================
 # 5. HOST & COMPONENTS
@@ -610,6 +643,7 @@ class OllivanderConfig(BaseModel):
     system_settings: SystemSettings
     clock_tree: ClockTree
     system_controller: Optional[SystemController] = None
+    padframe: Optional[PadframeConfig] = None
     host: Component
     components: Optional[List[Component]] = Field(default_factory=list, alias='tiles')
     testbench: Optional[Dict[str, Any]] = None

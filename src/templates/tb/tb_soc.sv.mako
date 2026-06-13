@@ -22,8 +22,8 @@ module tb_${config.project.name}();
   // Clock and Reset definitions
   // ===========================================================================
   logic pwr_on_rst_ni;
-  logic [${config.clock_tree.flls - 1}:0] domain_clk_i;
-  logic [${config.clock_tree.flls - 1}:0] fll_lock_i;
+  logic [${config.clock_tree.generators - 1}:0] domain_clk_i;
+  logic [${config.clock_tree.generators - 1}:0] fll_lock_i;
   logic test_mode_i;
   logic [1:0] boot_mode_i;
 
@@ -32,7 +32,7 @@ module tb_${config.project.name}();
   // ===========================================================================
   // Dynamically generates the required number of clock sources (FLLs) 
   // based on the SoC's clock tree configuration.
-  for (genvar i = 0; i < ${config.clock_tree.flls}; i++) begin: gen_clocks
+  for (genvar i = 0; i < ${config.clock_tree.generators}; i++) begin: gen_clocks
     initial begin
       domain_clk_i[i] = 1'b0;
       forever #5 domain_clk_i[i] = ~domain_clk_i[i];

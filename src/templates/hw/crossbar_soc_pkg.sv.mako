@@ -175,7 +175,7 @@ package ${pkg};
   // 2. CLOCK & RESET DOMAINS
   // =========================================================================
   // Enums used as array indices to map components to their respective reset wires.
-  localparam int unsigned NumFll     = ${config.clock_tree.flls};
+  localparam int unsigned NumClkGen  = ${config.clock_tree.generators};
   localparam int unsigned NumDomains = ${len(gateable_domains)};
   
   typedef enum int {

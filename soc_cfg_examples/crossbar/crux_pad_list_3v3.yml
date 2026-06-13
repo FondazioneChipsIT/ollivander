@@ -1,0 +1,183 @@
+# 3.3V Pad Domain - Low-Speed Interfaces & System Control
+
+- name: PAD_UART_TX
+  description: "Dedicated UART TX Pad"
+  pad_type: PAD_OUTPUT
+  is_static: true
+  connections:
+    chip2pad: uart_tx_o
+
+- name: PAD_UART_RX
+  description: "Dedicated UART RX Pad"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: uart_rx_i
+
+- name: PAD_I2C_SDA
+  description: "Dedicated I2C SDA Pad"
+  pad_type: PAD_BIDIR
+  is_static: true
+  connections:
+    chip2pad: i2c_sda_o
+    pad2chip: i2c_sda_i
+    paden2chip: i2c_sda_en_o
+
+- name: PAD_I2C_SCL
+  description: "Dedicated I2C SCL Pad"
+  pad_type: PAD_BIDIR
+  is_static: true
+  connections:
+    chip2pad: i2c_scl_o
+    pad2chip: i2c_scl_i
+    paden2chip: i2c_scl_en_o
+
+- name: PAD_JTAG_TCK
+  description: "Dedicated JTAG TCK Pad"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_tck_i
+
+- name: PAD_JTAG_TDI
+  description: "Dedicated JTAG TDI Pad"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_tdi_i
+
+- name: PAD_JTAG_TDO
+  description: "Dedicated JTAG TDO Pad"
+  pad_type: PAD_BIDIR
+  is_static: true
+  connections:
+    chip2pad: jtag_tdo_o
+    paden2chip: jtag_tdo_oe_o
+
+- name: PAD_JTAG_TMS
+  description: "Dedicated JTAG TMS Pad"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_tms_i
+
+- name: PAD_TEST_MODE
+  description: "Test Mode"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: test_mode_i
+
+- name: PAD_JTAG_TRST_N
+  description: "JTAG TRST"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_trst_ni
+
+- name: PAD_SAFE_JTAG_TCK
+  description: "Safety Island JTAG TCK"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_safety_island_tck_i
+
+- name: PAD_SAFE_JTAG_TMS
+  description: "Safety Island JTAG TMS"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_safety_island_tms_i
+
+- name: PAD_SAFE_JTAG_TDI
+  description: "Safety Island JTAG TDI"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_safety_island_tdi_i
+
+- name: PAD_SAFE_JTAG_TDO
+  description: "Safety Island JTAG TDO"
+  pad_type: PAD_OUTPUT
+  is_static: true
+  connections:
+    chip2pad: jtag_safety_island_tdo_o
+
+- name: PAD_SAFE_JTAG_TRST_N
+  description: "Safety Island JTAG TRST"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_safety_island_trst_ni
+
+- name: PAD_SEC_JTAG_TCK
+  description: "Security Island JTAG TCK"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_security_island_tck_i
+
+- name: PAD_SEC_JTAG_TMS
+  description: "Security Island JTAG TMS"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_security_island_tms_i
+
+- name: PAD_SEC_JTAG_TDI
+  description: "Security Island JTAG TDI"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_security_island_tdi_i
+
+- name: PAD_SEC_JTAG_TDO
+  description: "Security Island JTAG TDO"
+  pad_type: PAD_BIDIR
+  is_static: true
+  connections:
+    chip2pad: jtag_security_island_tdo_o
+    paden2chip: jtag_security_island_tdo_oe_o
+
+- name: PAD_SEC_JTAG_TRST_N
+  description: "Security Island JTAG TRST"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: jtag_security_island_trst_ni
+
+- name: PAD_SEC_UART_TX
+  description: "Security Island UART TX"
+  pad_type: PAD_OUTPUT
+  is_static: true
+  connections:
+    chip2pad: uart_security_island_tx_o
+
+- name: PAD_SEC_UART_RX
+  description: "Security Island UART RX"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: uart_security_island_rx_i
+
+- name: PAD_APB_RX
+  description: "APB Subsystem RX"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: apb_subsystem_rx_i
+
+- name: PAD_APB_TX
+  description: "APB Subsystem TX"
+  pad_type: PAD_OUTPUT
+  is_static: true
+  connections:
+    chip2pad: apb_subsystem_tx_o
+
+- name: "PAD_BOOT_MODE_{i}"
+  description: "Boot Mode {i}"
+  pad_type: PAD_INPUT
+  multiple: 2
+  is_static: true
+  connections:
+    pad2chip: boot_mode_i_{i}

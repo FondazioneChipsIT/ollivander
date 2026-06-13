@@ -16,10 +16,11 @@ topology: ...            # 2. Global interconnect style
 system_settings: ...     # 3. Microarchitectural tuning
 clock_tree: ...          # 4. Clock and reset domains
 system_controller: ...   # 5. Central PCRs (Optional but recommended)
-host: ...                # 6. Main Manager component
-components: ...          # 7. List of Subordinate/Peripheral components
-testbench: ...           # 8. Simulation configuration (Optional)
-software_stack: ...      # 9. Firmware compilation setup (Optional)
+padframe: ...            # 6. Physical Padframe and Pinmux (Optional)
+host: ...                # 7. Main Manager component
+components: ...          # 8. List of Subordinate/Peripheral components
+testbench: ...           # 9. Simulation configuration (Optional)
+software_stack: ...      # 10. Firmware compilation setup (Optional)
 ```
 
 ---
@@ -95,28 +96,56 @@ Instructs Ollivander to generate a unified Control and Status Register (CSR) blo
 | `external_registers`  | List    | External RegBus blocks to route (`name`, `base_addr`, `size`).                         |
 | `auto_control_groups` | List    | Auto-generates arrays of clock gates/resets for NoC components (e.g., `cluster_ctrl`). |
 
+### 2.6 Padframe (`padframe`)
+Delegates the physical pad ring definition to **Padrick**, while Ollivander automatically handles the top-level RegBus, CDC adapters, and signal wiring in the Chip Wrapper Engine.
+
+| Field          | Type    | Description                                                                                   |
+| :------------- | :------ | :-------------------------------------------------------------------------------------------- |
+| `name`         | String  | Name of the padframe module (e.g., `carfield_padframe`).                                      |
+| `description`  | String  | *Optional*. Brief description of the padframe.                                                |
+| `base_addr`    | Int/Hex | Memory-mapped base address for the Padrick-generated Pinmux CSRs.                             |
+| `size`         | Int/Hex | *Optional*. Size of the memory region (default: `0x1000`).                                    |
+| `sync_domain`  | Boolean | *Optional*. `true` = Host Clock, `false` = Uses async CDC adapter for the configuration bus   |
+|                |         | (default: `false`).                                                                           |
+| `domains`      | List    | A list of power/voltage domains containing the physical pad definitions.                      |
+| `padrick_cfg`  | String  | *Optional*. Path to a custom Padrick `config_top.yml` (overrides the `domains` list).         |
+| `header_file`  | String  | *Optional*. Path to a text file for the RTL header (auto-generates standard license if        |
+|                |         | omitted).                                                                                     |
+
+**Domain Object (`domains` list):**
+Used to partition pads into multiple power or I/O domains (e.g., 1.8V vs 3.3V).
+*   `name`: String. Name of the domain (e.g., `domain_1v8`).
+*   `tech`: String. Name of the technology catalog file to use (e.g., `behavioral`, `tsmc28_io`). Ollivander looks for this file in the `padframes/tech/` directory of the component search paths.
+*   `pad_list`: String. Path to the YAML file detailing the specific pads for this domain.
+
 ---
 
 ## 3. Host and Components (`host`, `components`)
 
 The `host` block and the items in the `components` list share the **exact same schema**. They represent the hardware IPs (Isles/Tiles) stitched together by Ollivander.
 
-| Field               | Type    | Description                                                                                                              |
-| :------------------ | :------ | :----------------------------------------------------------------------------------------------------------------------- |
-| `name`              | String  | **Required**. Unique instance name in the SoC. Used to prefix generated wires and CSRs.                                  |
-| `type`              | String  | **Required**. Must match the exact filename of the SystemVerilog wrapper (e.g., `cheshire_isle`).                        |
-| `clock_domain`      | String  | **Required**. Assigns the component's `clk_i` to a domain in the `clock_tree`.                                           |
-| `reset_domain`      | String  | *Optional*. Derived automatically from `clock_domain` if omitted.                                                        |
-| `base_addr`         | Int/Hex | *Optional*. Base address in the memory map. (Mainly used for APB sub-components; AXI slaves declare it in `interfaces`). |
-| `size`              | Int/Hex | *Optional*. Size of the memory region.                                                                                   |
-| `export_interfaces` | List    | *Optional*. Raw I/O pins to route directly to the SoC top-level (e.g., `["uart", "jtag"]`).                              |
-| `interfaces`        | Object  | *Optional*. Standardized bus connections (AXI Master/Slave, RegBus, NoC routing).                                        |
-| `system_config`     | Object  | *Optional*. Links the component to the System Controller (isolation, fetch enable, status flags).                        |
-| `interrupts`        | Object  | *Optional*. Defines IRQ routing logic.                                                                                   |
-| `dedicated_clock_div`| Object | *Optional*. Auto-generates an independent clock divider specifically for this IP (e.g., for Ethernet RGMII).             |
-| `parameters`        | Object  | *Optional*. Overrides `parameter` values in the SV hardware wrapper.                                                     |
-| `placement`         | Object  | **Required in NoC**. Defines X/Y coordinates on the mesh.                                                                |
-| `components`        | List    | *Optional*. Nested components (e.g., Timers/Watchdogs instantiated inside an APB Subsystem wrapper).                     |
+| Field               | Type    | Description                                                                              |
+| :------------------ | :------ | :--------------------------------------------------------------------------------------- |
+| `name`              | String  | **Required**. Unique instance name in the SoC. Used to prefix generated wires and CSRs.  |
+| `type`              | String  | **Required**. Must match the exact filename of the SystemVerilog wrapper (e.g.,          |
+|                     |         | `cheshire_isle`).                                                                        |
+| `clock_domain`      | String  | **Required**. Assigns the component's `clk_i` to a domain in the `clock_tree`.           |
+| `reset_domain`      | String  | *Optional*. Derived automatically from `clock_domain` if omitted.                        |
+| `base_addr`         | Int/Hex | *Optional*. Base address in the memory map. (Mainly used for APB sub-components; AXI     |
+|                     |         | slaves declare it in `interfaces`).                                                      |
+| `size`              | Int/Hex | *Optional*. Size of the memory region.                                                   |
+| `export_interfaces` | List    | *Optional*. Raw I/O pins to route directly to the SoC top-level (e.g.,                   |
+|                     |         | `["uart", "jtag"]`).                                                                     |
+| `interfaces`        | Object  | *Optional*. Standardized bus connections (AXI Master/Slave, RegBus, NoC routing).        |
+| `system_config`     | Object  | *Optional*. Links the component to the System Controller (isolation, fetch enable,       |
+|                     |         | status flags).                                                                           |
+| `interrupts`        | Object  | *Optional*. Defines IRQ routing logic.                                                   |
+| `dedicated_clock_div`| Object | *Optional*. Auto-generates an independent clock divider specifically for this IP (e.g.,  |
+|                     |         | for Ethernet RGMII).                                                                     |
+| `parameters`        | Object  | *Optional*. Overrides `parameter` values in the SV hardware wrapper.                     |
+| `placement`         | Object  | **Required in NoC**. Defines X/Y coordinates on the mesh.                                |
+| `components`        | List    | *Optional*. Nested components (e.g., Timers/Watchdogs instantiated inside an APB         |
+|                     |         | Subsystem wrapper).                                                                      |
 
 ### 3.1 Interfaces (`interfaces`)
 *   `axi_master`: Boolean (`true` / `false`).

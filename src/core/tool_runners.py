@@ -13,6 +13,7 @@ import sys
 import os
 import shutil
 import subprocess
+import yaml
 from pathlib import Path
 
 def run_pre_build_steps(env):
@@ -30,7 +31,7 @@ def run_pre_build_steps(env):
         return
         
     print("=" * 70)
-    print("[*] Starting Phase 0: Preparing External IPs...\n")
+    print("[*] Phase 4 (cont'd): Preparing External IPs...\n")
     
     for dep_name, dep_info in registry.items():
         dep_dir = bender_work / dep_name
@@ -85,7 +86,7 @@ def run_floogen(soc_config, cfg_dir: Path, hw_dir: Path):
         return
         
     print("=" * 70)
-    print("[*] Starting Phase 4: Generating NoC RTL with FlooGen...\n")
+    print("[*] Starting Phase 5: Generating NoC RTL with FlooGen...\n")
     print(f"  -> Running FlooGen on {floogen_file.name}")
     
     # Try to find FlooGen in the system PATH first.
@@ -124,7 +125,7 @@ def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_
         return
         
     print("=" * 70)
-    print("[*] Starting Phase 5: Generating Register RTL with PeakRDL...\n")
+    print("[*] Starting Phase 6: Generating Register RTL with PeakRDL...\n")
     
     # Try to find PeakRDL in the system PATH first.
     peakrdl_exe = shutil.which("peakrdl")
@@ -222,7 +223,7 @@ def run_verible(hw_dir: Path, tb_dir: Path):
     human-readable, aligned, and adheres to strict formatting standards.
     """
     print("=" * 70)
-    print("[*] Starting Phase 6: Formatting RTL with Verible...\n")
+    print("[*] Starting Phase 9: Formatting RTL with Verible...\n")
     
     # Try to find the Verible formatter in the system PATH.
     verible_exe = shutil.which("verible-verilog-format")
@@ -242,3 +243,184 @@ def run_verible(hw_dir: Path, tb_dir: Path):
             print("  [SUCCESS] RTL formatting complete.")
     else:
         print("  [INFO] verible-verilog-format not found. Skipping RTL formatting.")
+
+def run_padrick(env, soc_config, project_dir: Path):
+    """
+    Invokes Padrick to generate the Padframe RTL, CSRs, and Padlist CSV.
+    """
+    if not soc_config.padframe:
+        return
+        
+    print("=" * 70)
+    print("[*] Starting Phase 7: Generating Padframe with Padrick...\n")
+    
+    padrick_exe = shutil.which("padrick")
+    venv_padrick = Path(sys.executable).parent / "padrick"
+    
+    padrick_base_cmd = None
+    
+    # If padrick is in the current virtual environment, we must monkey-patch Pydantic
+    # because Padrick strictly requires Pydantic v1, while Ollivander requires Pydantic v2.
+    if venv_padrick.is_file() and os.access(venv_padrick, os.X_OK):
+        padrick_wrapper = (
+            "import sys\n"
+            "try:\n"
+            "    import pydantic.v1 as pydantic\n"
+            "    sys.modules['pydantic'] = pydantic\n"
+            "except ImportError:\n"
+            "    pass\n"
+            "sys.argv = sys.argv[1:]\n"
+            "from padrick.CLIEntryPoint import cli\n"
+            "sys.exit(cli())\n"
+        )
+        padrick_base_cmd = [sys.executable, "-c", padrick_wrapper, "padrick"]
+    elif padrick_exe:
+        padrick_base_cmd = [padrick_exe]
+    else:
+        print("  [WARNING] Padrick executable not found. Skipping Padframe generation.")
+        print("  [HINT] Install Padrick via: pip install padrick")
+        return
+
+    hw_dir = env.outdir_path / env.hw_sub
+    doc_dir = env.outdir_path / env.doc_sub
+    cfg_dir = env.outdir_path / env.cfg_sub
+
+    if soc_config.padframe.padrick_cfg:
+        top_cfg = project_dir / soc_config.padframe.padrick_cfg
+        if not top_cfg.is_file():
+            print(f"\n[ERROR] Padrick configuration not found: {top_cfg}")
+            sys.exit(1)
+    else:
+        top_cfg = cfg_dir / f"{soc_config.project.name}_padrick_top.yml"
+        port_groups_file = cfg_dir / f"{soc_config.project.name}_soc_port_groups.yml"
+        
+        top_dict = {
+            "name": soc_config.padframe.name,
+            "manifest_version": 3,
+            "pad_domains": []
+        }
+        
+        domains_config = soc_config.padframe.domains or []
+        
+        for dom in domains_config:
+            tech_file = None
+            search_dirs = env.component_paths + [env.base_dir / "components"]
+            for d in search_dirs:
+                candidate = d / "padframes" / "tech" / f"{dom.tech}.yml"
+                if candidate.is_file():
+                    tech_file = candidate
+                    break
+            if not tech_file:
+                print(f"\n[ERROR] Padframe technology catalog '{dom.tech}' not found.")
+                sys.exit(1)
+                
+            pad_list_file = project_dir / dom.pad_list
+            if not pad_list_file.is_file():
+                print(f"\n[ERROR] Pad list file not found: {pad_list_file}")
+                sys.exit(1)
+                
+            top_dict["pad_domains"].append({
+                "name": dom.name,
+                "pad_types": yaml.safe_load(tech_file.read_text(encoding='utf-8')),
+                "pad_list": yaml.safe_load(pad_list_file.read_text(encoding='utf-8'))
+            })
+            
+        if port_groups_file.is_file():
+            pg_dict = yaml.safe_load(port_groups_file.read_text(encoding='utf-8'))
+            if "port_groups" in pg_dict:
+                for dom in top_dict["pad_domains"]:
+                    if any(not pad.get("is_static", False) for pad in dom.get("pad_list", [])):
+                        dom["port_groups"] = pg_dict["port_groups"]
+                        break # Padrick typically allows the port_group on the first dynamic domain
+                
+        # Check for unmapped logical ports to warn the user
+        pg_dict_val = yaml.safe_load(port_groups_file.read_text(encoding='utf-8')) if port_groups_file.is_file() else {}
+        soc_exports = next((pg for pg in pg_dict_val.get("port_groups", []) if pg["name"] == "soc_exports"), None)
+        if soc_exports:
+                    mapped_logical_ports = set()
+                    statically_routed_wires = set()
+                    for dom in top_dict["pad_domains"]:
+                        for pad in dom.get("pad_list", []):
+                            if "default_port" in pad:
+                                p_val = pad["default_port"].split(".")[-1]
+                                if "_{i}" in p_val and pad.get("multiple", 1) > 1:
+                                    base_p = p_val.replace("_{i}", "")
+                                    for i in range(pad.get("multiple", 1)):
+                                        mapped_logical_ports.add(f"{base_p}_{i}")
+                                else:
+                                    mapped_logical_ports.add(p_val)
+                            if "connections" in pad:
+                                for pad_sig, soc_sig in pad["connections"].items():
+                                    if "_{i}" in soc_sig and pad.get("multiple", 1) > 1:
+                                        base_s = soc_sig.replace("_{i}", "")
+                                        for i in range(pad.get("multiple", 1)):
+                                            statically_routed_wires.add(f"{base_s}_{i}")
+                                    else:
+                                        statically_routed_wires.add(soc_sig)
+                                
+                    unmapped_ports = []
+                    for port in soc_exports.get("ports", []):
+                        p_name = port["name"]
+                        if p_name in mapped_logical_ports:
+                            continue
+                            
+                        # Check if all its connections are statically routed
+                        conns = port.get("connections", {})
+                        if conns:
+                            is_fully_static = True
+                            for k, v in conns.items():
+                                soc_sig = k if v in ["pad2chip", "paden2chip", "chip2pad"] else v
+                                if soc_sig not in statically_routed_wires:
+                                    is_fully_static = False
+                                    break
+                            if is_fully_static:
+                                continue
+                                
+                        unmapped_ports.append(p_name)
+            
+        with open(top_cfg, 'w', encoding='utf-8') as f:
+            yaml.dump(top_dict, f, sort_keys=False, default_flow_style=False)
+
+    # Output directories
+    padframe_rtl_dir = hw_dir / "padframe"
+    padframe_rtl_dir.mkdir(parents=True, exist_ok=True)
+
+    # Handle RTL header generation
+    header_path = None
+    if soc_config.padframe.header_file:
+        user_header = project_dir / soc_config.padframe.header_file
+        if user_header.is_file():
+            header_path = user_header
+        else:
+            print(f"  [WARNING] Custom header file not found: {user_header}")
+
+    if not header_path:
+        # Auto-generate a default header matching license_header.mako
+        header_path = padframe_rtl_dir / "padrick_header.txt"
+        header_content = (
+            "// Copyright 2026 Fondazione Chips-IT.\n"
+            "// Licensed under the Solderpad Hardware License, Version 0.51, see LICENSE for details.\n"
+            "// SPDX-License-Identifier: SHL-0.51\n"
+        )
+        header_path.write_text(header_content, encoding='utf-8')
+
+    print(f"  -> Generating RTL from {top_cfg.name}...")
+    cmd_rtl = padrick_base_cmd + ["generate", "rtl", str(top_cfg), "-o", str(padframe_rtl_dir)]
+    if header_path:
+        cmd_rtl.extend(["--header", str(header_path)])
+
+    try:
+        subprocess.run(cmd_rtl, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"\n[ERROR] Padrick RTL generation failed:\n{e.stderr}\n{e.stdout}")
+        sys.exit(1)
+
+    print(f"  -> Generating Padlist CSV...")
+    cmd_csv = padrick_base_cmd + ["generate", "padlist", str(top_cfg), "-o", str(doc_dir)]
+    try:
+        subprocess.run(cmd_csv, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"\n[ERROR] Padrick Padlist generation failed:\n{e.stderr}\n{e.stdout}")
+        sys.exit(1)
+
+    print("  [SUCCESS] Padframe RTL and CSV successfully generated.")

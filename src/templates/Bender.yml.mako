@@ -70,6 +70,9 @@ sources:
   # --- Top-Level ---
   # The final SoC module instantiating all the wrappers and matrices.
   - ${rel_hw_dir}/${config.project.name}.sv
+% if config.padframe:
+  - ${rel_hw_dir}/${config.project.name}_chip.sv
+% endif
 
   # --- Testbench ---
   # Target-specific files for simulation (e.g. QuestaSim).

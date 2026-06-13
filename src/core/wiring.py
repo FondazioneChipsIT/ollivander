@@ -14,6 +14,7 @@ component declared it as an input source.
 """
 import re
 
+from core.interfaces import get_interface_ports
 from core.utils import camel_case, is_external
 
 def _is_array_port(comp_name, port_name, comp_info, is_input=True):
@@ -270,17 +271,18 @@ def build_connection_matrix(soc_config, comp_info):
             ports.append(f".pslverr_o ( apb_slv_rsps[{idx}].pslverr )")
 
         # ----------------------------------------------------------------------
-        # 3. JTAG CONNECTIONS
+        # 3. PHYSICAL PERIPHERAL PORTS EXPORT
         # ----------------------------------------------------------------------
-        if comp.interfaces and comp.interfaces.get('jtag'):
-            jtag_pfx = "jtag_" if comp.name == soc_config.host.name else f"jtag_{comp.name}_"
-            ports.append(f".jtag_tck_i ( {jtag_pfx}tck_i )")
-            ports.append(f".jtag_trst_ni ( {jtag_pfx}trst_ni )")
-            ports.append(f".jtag_tms_i ( {jtag_pfx}tms_i )")
-            ports.append(f".jtag_tdi_i ( {jtag_pfx}tdi_i )")
-            ports.append(f".jtag_tdo_o ( {jtag_pfx}tdo_o )")
-            if c_info.get("has_jtag_oe"):
-                ports.append(f".jtag_tdo_oe_o ( {jtag_pfx}tdo_oe_o )")
+        # Resolves standard physical interfaces (JTAG, UART, I2C, SPI, etc.)
+        # and automatically wires them directly to the Top-Level I/O boundaries.
+        interfaces_to_wire = set()
+        if comp.export_interfaces:
+            interfaces_to_wire.update(comp.export_interfaces)
+            
+        for if_name in interfaces_to_wire:
+            port_mappings = get_interface_ports(if_name, comp.name, comp.name == soc_config.host.name, c_info)
+            for pm in port_mappings:
+                ports.append(f".{pm['internal']} ( {pm['top']} )")
             
         # ----------------------------------------------------------------------
         # 4. INTERRUPT ROUTING & CDC
@@ -374,55 +376,23 @@ def build_connection_matrix(soc_config, comp_info):
                     if port_name not in output_ports_wired:
                         output_ports_wired.add(port_name)
                         ports.append(f".{p_name}_o ( intr_{comp.name}_{port_name} )")
-                    
-        # ----------------------------------------------------------------------
-        # 5. PHYSICAL PERIPHERAL PORTS EXPORT
-        # ----------------------------------------------------------------------
-        # Checks if the component implements standard physical interfaces (UART, I2C, SPI)
-        # and automatically wires them directly to the Top-Level I/O boundaries.
-        pfx = "" if comp.name == soc_config.host.name else f"{comp.name}_"
-        
-        if (comp.interfaces and comp.interfaces.get('uart')) or (comp.parameters and comp.parameters.get('Uart')):
-            uart_pfx = "uart_" if comp.name == soc_config.host.name else f"uart_{comp.name}_"
-            ports.append(f".uart_tx_o ( {uart_pfx}tx_o )")
-            ports.append(f".uart_rx_i ( {uart_pfx}rx_i )")
-            
-        if (comp.interfaces and comp.interfaces.get('i2c')) or (comp.parameters and comp.parameters.get('I2c')):
-            i2c_pfx = "i2c_" if comp.name == soc_config.host.name else f"i2c_{comp.name}_"
-            ports.append(f".i2c_sda_o ( {i2c_pfx}sda_o )")
-            ports.append(f".i2c_sda_i ( {i2c_pfx}sda_i )")
-            ports.append(f".i2c_sda_en_o ( {i2c_pfx}sda_en_o )")
-            ports.append(f".i2c_scl_o ( {i2c_pfx}scl_o )")
-            ports.append(f".i2c_scl_i ( {i2c_pfx}scl_i )")
-            ports.append(f".i2c_scl_en_o ( {i2c_pfx}scl_en_o )")
-            
-        if (comp.interfaces and comp.interfaces.get('spi_host')) or (comp.parameters and comp.parameters.get('SpiHost')):
-            spi_pfx = "spi_" if comp.name == soc_config.host.name else f"spi_{comp.name}_"
-            ports.append(f".spih_sck_o ( {spi_pfx}sck_o )")
-            ports.append(f".spih_sck_en_o ( {spi_pfx}sck_en_o )")
-            ports.append(f".spih_csb_o ( {spi_pfx}csb_o )")
-            ports.append(f".spih_csb_en_o ( {spi_pfx}csb_en_o )")
-            ports.append(f".spih_sd_o ( {spi_pfx}sd_o )")
-            ports.append(f".spih_sd_en_o ( {spi_pfx}sd_en_o )")
-            ports.append(f".spih_sd_i ( {spi_pfx}sd_i )")
 
-        if comp.interfaces and comp.interfaces.get('hyperbus_phy'):
-            for p in ['cs_no', 'ck_o', 'ck_no', 'rwds_o', 'rwds_i', 'rwds_oe_o', 'dq_i', 'dq_o', 'dq_oe_o', 'reset_no']:
-                p_dir = 'o' if p.endswith('_i') else 'i' # From component's perspective
-                ports.append(f".{p} ( {pfx}{p} )")
-                
-        if comp.interfaces and comp.interfaces.get('rgmii_phy'):
-            for p in ['phy_rx_clk_i', 'phy_rxd_i', 'phy_rx_ctl_i', 'phy_tx_clk_o', 'phy_txd_o', 'phy_tx_ctl_o', 'phy_resetn_o', 'phy_mdio_i', 'phy_mdio_o', 'phy_mdio_oe', 'phy_mdc_o']:
-                ports.append(f".{p} ( {pfx}{p} )")
-                
         if comp.components:
             for sub_c in comp.components:
+                sub_interfaces = set()
+                if sub_c.export_interfaces:
+                    sub_interfaces.update(sub_c.export_interfaces)
                 if sub_c.type == 'can_top_apb':
-                    ports.append(f".{sub_c.name}_rx_i ( {sub_c.name}_rx_i )")
-                    ports.append(f".{sub_c.name}_tx_o ( {sub_c.name}_tx_o )")
+                    sub_interfaces.add('can_bus')
+                
+                for if_name in sub_interfaces:
+                    sub_c_info = comp_info.get(sub_c.name, {})
+                    port_mappings = get_interface_ports(if_name, sub_c.name, False, sub_c_info)
+                    for pm in port_mappings:
+                        ports.append(f".{pm['internal']} ( {pm['top']} )")
 
         # ----------------------------------------------------------------------
-        # 6. SUB-COMPONENT INTERRUPT ROUTING (e.g., inside APB Subsystems)
+        # 5. SUB-COMPONENT INTERRUPT ROUTING (e.g., inside APB Subsystems)
         # ----------------------------------------------------------------------
         # APB subsystems hide multiple peripherals inside a single Isle wrapper.
         # We need to explicitly route their interrupts out to the Top-Level.

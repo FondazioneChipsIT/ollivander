@@ -55,7 +55,7 @@ If the Tile is subject to an `auto_control_group` in the System Controller, it c
 
 ### Optional Interconnect Signals
 *   **`sys_clk_i`** / **`sys_rst_ni`**: Global system clock and reset (`host_clk`).
-*   **`rt_clk_i` | `rtc_i`**: Real-Time Clock domain.
+*   **`rt_clk_i`**: Real-Time Clock domain.
 
 ---
 
@@ -63,6 +63,10 @@ If the Tile is subject to an `auto_control_group` in the System Controller, it c
 Custom Tiles support the same generic port export and interrupt routing mechanisms as standard Isles.
 
 Any port listed in the `export_interfaces` YAML list (e.g., `uart`, `jtag`, `gpio`) or mapped in the `interrupts` dictionary will be automatically extracted from the Tile's SystemVerilog header and routed to the SoC top-level or the appropriate destination component.
+
+> **⚠️ STRICT NAMING ENFORCEMENT**
+> The naming conventions for standard interfaces are **strictly enforced**. No deviations, custom prefixes, or alternative spellings (e.g., using `bootmode` instead of `boot_mode`) are permitted. 
+> The primary purpose of the wrapper is to adapt the inner IP's arbitrary port names to match the exact Ollivander standard. Failure to expose these exact names at the boundary will result in unconnected wires and architectural validation errors.
 
 ---
 

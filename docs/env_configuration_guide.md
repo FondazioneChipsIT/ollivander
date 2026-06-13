@@ -51,7 +51,9 @@ These define where Ollivander looks when you declare a component `type` or a `re
 | `components` | List of Strings | `["components"]`              | Directories containing SystemVerilog IP      |
 |              |                 |                               | wrappers (`*_isle.sv` or `*_tile.sv`). To    |
 |              |                 |                               | inject your custom IPs, add your project's   |
-|              |                 |                               | hardware folder here.                        |
+|              |                 |                               | hardware folder here. Ollivander also looks  |
+|              |                 |                               | in these paths for custom Padframe           |
+|              |                 |                               | technology catalogs (`padframes/tech/`).     |
 | `rdl_includes`| List of Strings| `[]`                          | Directories where PeakRDL should search for  |
 |              |                 |                               | custom `.rdl` files. Files found here have   |
 |              |                 |                               | absolute priority and will override external |

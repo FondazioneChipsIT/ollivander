@@ -49,7 +49,7 @@ Ollivander currently supports two major routing topologies:
 
 ## 3. The Generation Flow
 
-The generation engine (`ollivander.py`) combines Python and Mako templates in a rigorous 5-Phase pipeline:
+The generation engine (`ollivander.py`) combines Python and Mako templates in a rigorous 9-Phase pipeline:
 
 ### Phase 1: Dynamic Isles Generation
 Ollivander reads the YAML configuration and generates intermediate SystemVerilog wrappers for composite blocks. For example, the `apb_subsystem` is built dynamically: Ollivander injects standard peripheral interrupts, generates the `AXI -> AXI-Lite -> APB` conversion pipeline, and instantiates the requested IP cores (Timers, Watchdogs, CAN, etc.) into a single, cohesive Isle.
@@ -64,13 +64,25 @@ Ollivander builds a massive connection matrix and uses Mako templates to generat
 *   `<project_name>_regs.rdl` & `<project_name>_memory_map.rdl`: The SystemRDL specifications for the central System Controller registers and the global SoC memory map.
 *   `Bender.yml`: A complete compilation manifest auto-populated with external IP packages and linked local dependencies.
 
-### Phase 4: Network-on-Chip Generation (Optional)
+### Phase 4: Fetch External IPs & Pre-Build
+Ollivander invokes **Bender** to fetch all the external IP repositories defined in the dependencies registry. Once downloaded, it executes any defined pre-build scripts or applies on-the-fly text patches to prepare the IPs for compilation.
+
+### Phase 5: Network-on-Chip Generation (Optional)
 If the NoC topology is selected, Ollivander invokes `floogen` to generate the NoC configuration, router instances, and standard FlooNoC packages based on the physical placement defined in the YAML.
 
-### Phase 5: Register RTL Generation
+### Phase 6: Register RTL Generation
 Ollivander invokes **PeakRDL** to parse the generated SystemRDL files. This produces the synthesis-ready SystemVerilog for the System Controller (handling software resets, AXI isolation, and clock gating) and the C-header files (`.h`) for bare-metal software drivers.
 
-### Phase 6: Software Bridging & Testbench Preloading (Optional)
+### Phase 7: Padframe Generation (Optional)
+If a padframe is defined, Ollivander delegates the physical I/O ring and pinmux generation to **Padrick**. It supports multiple power domains and generates the CSRs and the RTL for the complete pad ring.
+
+### Phase 8: Chip Wrapper Engine (Optional)
+Ollivander parses the Core RTL and the Padrick-generated Padframe package, cross-validating the exact port struct signatures. It then safely renders the final `<project_name>_chip.sv` physical wrapper, instantiating the core, the padframe, and the necessary Clock Domain Crossing (CDC) adapters for the configuration bus.
+
+### Phase 9: RTL Formatting
+To ensure a clean, professional, and highly readable output, Ollivander invokes **Verible** to automatically format all generated SystemVerilog code according to strict formatting standards.
+
+### Beyond Generation: Software Bridging & Testbench Preloading
 To close the gap between hardware generation and bare-metal validation, Ollivander can fully automate the software build and simulation setup. If defined in your YAML, it will:
 1. Generate a **Linker Script** (`link.ld`) perfectly synchronized with your SoC's physical memory map, eliminating manual offset errors.
 2. Create a starter **`main.c` firmware skeleton** that automatically includes the generated hardware CSR headers.
@@ -88,6 +100,7 @@ To close the gap between hardware generation and bare-metal validation, Ollivand
 *   **Decoupled Register Specifications**: Third-party IP registers are discovered dynamically via the `// PEAKRDL: source="..." map="..."` pragma inside their SystemVerilog wrappers, allowing Ollivander to automatically build a unified global C-header for the software stack.
 *   **AXI Isolation**: Heterogeneous SoCs require IPs to be powered down or reset independently. Ollivander automatically generates AXI isolation fences controlled by the central System Controller to prevent bus deadlocks.
 *   **Hardware-to-Software Synchronization**: Linker scripts and C-headers are dynamically generated directly from the hardware specification, guaranteeing that your bare-metal software always targets the correct memory map and peripheral base addresses.
+*   **Physical Chip Wrapping**: Fully automates the tedious and error-prone process of instantiating hundreds of physical I/O pads and routing them to the internal SoC logic.
 
 ---
 
@@ -122,7 +135,9 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 <outdir>/
 ├── <sub_hw>/                     # Hardware RTL (*.sv)
 │   ├── <project_name>.sv
+│   ├── <project_name>_chip.sv    # The final physical chip wrapper (if padframe is used)
 │   ├── <project_name>_soc_pkg.sv
+│   ├── padframe/                 # Auto-generated RTL and packages from Padrick
 │   └── ...
 ├── <sub_sw>/                     # Software bridging artifacts:
 │   ├── <project_name>_soc_regs.h # Auto-generated C-headers for bare-metal CSR access

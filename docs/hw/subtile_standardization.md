@@ -53,6 +53,10 @@ To guarantee system-wide coherence without tight coupling to a specific system p
 Subtiles abstract away the native interfaces of their underlying IPs. Ollivander automatically maps these interfaces during Tile generation if they match the exact naming conventions below.
 The expected naming convention depends strictly on the **`noc_mode`** and **`sync_domain`** fields defined in the YAML configuration.
 
+> **⚠️ STRICT NAMING ENFORCEMENT**
+> The naming conventions defined below are **strictly enforced**. No deviations, custom prefixes, or alternative spellings (e.g., using `spih_` instead of `spi_`, or `bootmode` instead of `boot_mode`) are permitted. 
+> The primary purpose of the Subtile wrapper is to adapt the inner IP's arbitrary port names to match this exact Ollivander standard. Failure to expose these exact names at the Subtile boundary will result in unconnected wires and architectural validation errors.
+
 ### 3.1 AXI Slave (`axi_slave` in YAML)
 Subtiles receiving requests from the NoC.
 
@@ -120,7 +124,7 @@ Ollivander automatically wires up specific system/control signals if it finds th
 ### Optional Signals
 *   **`pwr_on_rst_ni`** (`logic`): Power-On Reset (active low).
 *   **`sys_clk_i`** / **`sys_rst_ni`**: Global system clock and reset (`host_clk`).
-*   **`rt_clk_i` | `rtc_i`**: Real-Time Clock domain (usually 32.768 kHz).
+*   **`rt_clk_i`**: Real-Time Clock domain (usually 32.768 kHz).
 *   **`test_mode_i`**: DFT/Scan-chain bypass enable flag.
 *   **`boot_mode_i`**: System boot mode strapping pins.
 
