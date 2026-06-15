@@ -74,3 +74,20 @@
     % if conn.get("chip2pad"):
     assign ${conn["pad"]} = ${conn["chip2pad"]};
     % endif
+
+- name: PAD_ANALOG
+  description: "Direct pass-through for analog or pre-buffered inout signals"
+  pad_signals:
+    - name: pad
+      description: "External pad pin"
+      size: 1
+      kind: pad
+    - name: pad_inout
+      description: "Direct inout connection to the chip core"
+      size: 1
+      kind: pad
+      conn_type: dynamic
+  template: |
+    % if conn.get("pad_inout"):
+    alias ${conn["pad"]} = ${conn["pad_inout"]};
+    % endif

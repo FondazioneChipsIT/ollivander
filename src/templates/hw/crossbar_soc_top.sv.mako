@@ -217,52 +217,49 @@ module ${p_name}
         top_ports.append(f"output soc_reg_req_t {comp.name}_reg_req_o")
         top_ports.append(f"input  soc_reg_rsp_t {comp.name}_reg_rsp_i")
 
-    # Map interface names to SV port prefixes (or exact names if no prefix)
-    interface_port_map = {
-        "spi": ["spi_", "spih_"],
-        "hyperbus": ["pad_hyper_", "pad_config_"]
-    }
-    
+    from core.interfaces import get_interface_ports
+
     for comp in [config.host] + config.components:
-        # 2. Generic Interface Exports
+        comp_extra_conns.setdefault(comp.name, [])
         exported_interfaces = comp.export_interfaces if comp.export_interfaces else []
-        if not exported_interfaces:
-            continue
-            
-        c_header = comp_info.get(comp.name, {}).get("header_content", "")
-        prefixes_to_export = []
+        c_info = comp_info.get(comp.name, {})
+        is_host = (comp.name == config.host.name)
+
         for if_name in exported_interfaces:
-            prefixes = interface_port_map.get(if_name, [if_name + "_"])
-            prefixes_to_export.extend(prefixes)
-            
-        exported_seen = set()
-        known_params = {}
-        known_params.update(comp_info.get(comp.name, {}).get("supported_params", {}))
-        known_params.update(comp_info.get(comp.name, {}).get("fixed_params", {}))
-        if comp.parameters:
-            for k, v in comp.parameters.items():
-                known_params[k] = "1" if v is True else "0" if v is False else str(v)
-                
-        comp_extra_conns[comp.name] = []
-        for port_name, p_info in comp_info.get(comp.name, {}).get("ports", {}).items():
-            if port_name in exported_seen: continue
-            if any(port_name.startswith(prefix) for prefix in prefixes_to_export):
-                exported_seen.add(port_name)
+            # The get_interface_ports function now contains all the "smart" logic
+            ports_to_export = get_interface_ports(if_name, comp.name, is_host, c_info)
+
+            for p in ports_to_export:
+                internal_port = p['internal']
+                top_port = p['top']
+                p_dir = p['dir']
+
+                # Get the full declaration from the parsed component info
+                p_info = c_info.get("ports", {}).get(internal_port)
+                if not p_info: continue
+
                 decl = p_info["decl"]
-                p_dir = p_info["dir"]
-                
+
                 # Evaluate parameters in the port declaration
+                known_params = {}
+                known_params.update(c_info.get("supported_params", {}))
+                known_params.update(c_info.get("fixed_params", {}))
+                if comp.parameters:
+                    for k, v in comp.parameters.items():
+                        known_params[k] = "1" if v is True else "0" if v is False else str(v)
+
                 for param_name, param_val in known_params.items():
                     decl = re.sub(rf'\b{param_name}\b', param_val, decl)
-                
+
+                # Reconstruct the declaration with the correct top-level name
                 name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-                
-                is_host = (comp.name == config.host.name)
-                top_port_name = port_name if is_host else f"{comp.name}_{port_name}"
-                decl = decl[:name_match.start()] + top_port_name + name_match.group(2)
-                
-                top_ports.append(f"{p_dir} {decl}")
-                comp_extra_conns[comp.name].append(f".{port_name:<17} ( {top_port_name} )")
+                if name_match:
+                    decl = decl[:name_match.start()] + top_port + name_match.group(2)
+                    if f"{p_dir} {decl}" not in top_ports:
+                        top_ports.append(f"{p_dir} {decl}")
+                    conn_str = f".{internal_port:<17} ( {top_port} )"
+                    if conn_str not in comp_extra_conns[comp.name]:
+                        comp_extra_conns[comp.name].append(conn_str)
 %>\
 % if top_ports:
 ,

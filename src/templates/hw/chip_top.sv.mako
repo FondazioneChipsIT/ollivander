@@ -59,7 +59,13 @@ module ${project_name}_chip (
     // ---------------------------------------------------------------------
 % for conn in validated_connections:
     ${conn['sv_type']} ${conn['sig_name']};
-    % if conn['is_input_to_soc']:
+    % if conn.get('is_inout', False):
+    // inout connections are directly routed to the padframe ports below
+    % elif 'assignments' in conn:
+    % for assign in conn['assignments']:
+    assign ${assign['lhs']} = ${assign['rhs']};
+    % endfor
+    % elif conn['is_input_to_soc']:
     assign ${conn['sig_name']} = ${conn['struct_path']};
     % else:
     assign ${conn['struct_path']} = ${conn['sig_name']};
@@ -125,6 +131,11 @@ module ${project_name}_chip (
  % for pad in dom['pad_list']:
         .pad_${dom['name']}_${pad['name']}_pad(${pad['name']}),
  % endfor
+% endfor
+% for conn in validated_connections:
+ % if conn.get('is_inout', False):
+        .${conn['sig_name']}(${conn['sig_name']}),
+ % endif
 % endfor
 % if pf_idx != -1:
         .config_req_i(pf_reg_req),

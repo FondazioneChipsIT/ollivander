@@ -343,9 +343,13 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
             ids = list(extract_tokens(imp_decl, "SymbolIdentifier"))
             if ids:
                 imports.add(ids[0].get("text", ""))
-    else:
-        for m in re.finditer(r'\bimport\s+([a-zA-Z_][a-zA-Z0-9_]*)::\*;', header_clean):
-            imports.add(m.group(1))
+                
+    # Always run the regex fallback on the full content to catch imports before the module declaration
+    content_clean = re.sub(r'//.*', '', content)
+    content_clean = re.sub(r'/\*.*?\*/', '', content_clean, flags=re.DOTALL)
+    for m in re.finditer(r'\bimport\s+([a-zA-Z_][a-zA-Z0-9_]*)::\*;', content_clean):
+        imports.add(m.group(1))
+        
     info["imports"] = list(imports)
 
     # Detect interfaces based on standardized port naming conventions defined 

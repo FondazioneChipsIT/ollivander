@@ -316,13 +316,15 @@ def run_padrick(env, soc_config, project_dir: Path):
                 
             pad_list_file = project_dir / dom.pad_list
             if not pad_list_file.is_file():
-                print(f"\n[ERROR] Pad list file not found: {pad_list_file}")
-                sys.exit(1)
+                print(f"  [WARNING] Pad list file not found: {pad_list_file}. Treating as empty.")
+                pad_list_data = []
+            else:
+                pad_list_data = yaml.safe_load(pad_list_file.read_text(encoding='utf-8')) or []
                 
             top_dict["pad_domains"].append({
                 "name": dom.name,
                 "pad_types": yaml.safe_load(tech_file.read_text(encoding='utf-8')),
-                "pad_list": yaml.safe_load(pad_list_file.read_text(encoding='utf-8'))
+                "pad_list": pad_list_data
             })
             
         if port_groups_file.is_file():
@@ -411,16 +413,15 @@ def run_padrick(env, soc_config, project_dir: Path):
 
     try:
         subprocess.run(cmd_rtl, check=True, capture_output=True, text=True)
+        print("  [SUCCESS] Padframe RTL successfully generated.")
     except subprocess.CalledProcessError as e:
-        print(f"\n[ERROR] Padrick RTL generation failed:\n{e.stderr}\n{e.stdout}")
-        sys.exit(1)
+        print(f"\n[WARNING] Padrick RTL generation failed (possibly due to empty padlist). Skipping.")
+        print(f"  -> {e.stderr if e.stderr else ''}\n{e.stdout if e.stdout else ''}")
 
     print(f"  -> Generating Padlist CSV...")
     cmd_csv = padrick_base_cmd + ["generate", "padlist", str(top_cfg), "-o", str(doc_dir)]
     try:
         subprocess.run(cmd_csv, check=True, capture_output=True, text=True)
+        print("  [SUCCESS] Padlist CSV successfully generated.")
     except subprocess.CalledProcessError as e:
-        print(f"\n[ERROR] Padrick Padlist generation failed:\n{e.stderr}\n{e.stdout}")
-        sys.exit(1)
-
-    print("  [SUCCESS] Padframe RTL and CSV successfully generated.")
+        print(f"\n[WARNING] Padrick Padlist CSV generation failed. Skipping.")

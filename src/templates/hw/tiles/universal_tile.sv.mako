@@ -10,6 +10,7 @@
 
   import re
   from core.soc_schema import get_isle_info
+  from core.interfaces import get_interface_ports
 
   c_name = comp.name
   c_type = comp.type
@@ -61,54 +62,67 @@
   # native parameters and physical I/O ports. This ensures the wrapper perfectly 
   # matches the underlying hardware (Single Source of Truth).
   isle_info = get_isle_info(isle_name, search_paths)
-  isle_ports = []
   terminated_ports = []
   error_slave_ports = []
   isle_params = {}
   axi_req_o_dim = ""
   axi_req_i_dim = ""
-  known_ports = set()
   terminate_prefixes = comp.features.get('terminate_ports', []) if comp.features else []
   error_slave_prefixes = comp.features.get('error_slaves', []) if comp.features else []
+  isle_ports = []
+  known_ports = set(isle_info.get("ports", {}).keys()) if isle_info else set()
   
   if isle_info:
       isle_params.update(isle_info.get('supported_params', {}))
       
+      # Get the set of ports that should be exported based on the "stupid" logic
+      exported_interfaces = comp.export_interfaces if comp.export_interfaces else []
+      ports_to_export_list = []
+      for if_name in exported_interfaces:
+          ports_to_export_list.extend(get_interface_ports(if_name, c_name, is_host, isle_info))
+      exported_internal_ports = {p['internal'] for p in ports_to_export_list}
+
       for p_port_name, p_data in isle_info.get("ports", {}).items():
-          if p_port_name in known_ports: continue
           p_dir = p_data["dir"]
           p_type_dim = p_data["type_dim"]
           p_unpacked_dim = p_data["unpacked"]
-              
-          known_ports.add(p_port_name)
               
           if p_port_name == 'axi_req_o':
               axi_req_o_dim = p_type_dim
           elif p_port_name == 'axi_req_i':
               axi_req_i_dim = p_type_dim
           
-          # Skip standard infra ports explicitly declared by the Tile wrapper
-          if p_port_name in ['clk_i', 'rst_ni', 'test_mode_i', 'id_i']: continue
+          # Check if the port is part of an exported interface
+          if p_port_name in exported_internal_ports:
+              isle_ports.append({'dir': p_dir, 'type': p_type_dim, 'name': p_port_name, 'unpacked': p_unpacked_dim})
+              continue # Port handled, move to next one
+
+          # Passthrough ports for architecture wiring
+          passthrough_ports = {
+              'sys_clk_i', 'sys_rst_ni', 'pwr_on_rst_ni', 'rt_clk_i', 'boot_mode_i', 'bootmode_i',
+              'hart_base_id_i', 'cluster_base_addr_i', 'cluster_base_offset_i',
+              'axi_isolate_i', 'axi_isolated_o', 'fetch_en_i', 'en_sa_boot_i', 'boot_addr_i',
+              'busy_o', 'eoc_o', 'debug_req_i'
+          }
           
+          if comp.interrupts:
+              for irq_name, irq_cfg in comp.interrupts.items():
+                  passthrough_ports.add(irq_name)
+                  if isinstance(irq_cfg, dict) and 'port' in irq_cfg:
+                      passthrough_ports.add(irq_cfg['port'])
+
+          if p_port_name in passthrough_ports:
+              isle_ports.append({'dir': p_dir, 'type': p_type_dim, 'name': p_port_name, 'unpacked': p_unpacked_dim})
+              continue
+
+          # The port is NOT exported. Now check for other special handling.
           if any(p_port_name.startswith(pfx) for pfx in error_slave_prefixes):
               error_slave_ports.append({'dir': p_dir, 'type': p_type_dim, 'name': p_port_name, 'unpacked': p_unpacked_dim})
               continue
 
-          # Handle explicit port terminations defined in YAML
           if any(p_port_name.startswith(pfx) for pfx in terminate_prefixes):
               terminated_ports.append({'dir': p_dir, 'name': p_port_name})
               continue
-              
-          # Core NoC AXI ports are handled internally by the Tile via Chimney/Join
-          if p_port_name in [
-              'axi_req_o', 'axi_resp_i', 'axi_req_i', 'axi_resp_o',
-              'axi_narrow_req_o', 'axi_narrow_resp_i', 'axi_narrow_req_i', 'axi_narrow_resp_o',
-              'axi_wide_req_o', 'axi_wide_resp_i', 'axi_wide_req_i', 'axi_wide_resp_o'
-          ]: continue
-          
-          if p_port_name in ['offload_wide_req_i', 'offload_wide_rsp_o', 'offload_narrow_req_i', 'offload_narrow_rsp_o']: continue
-          
-          isle_ports.append({'dir': p_dir, 'type': p_type_dim, 'name': p_port_name, 'unpacked': p_unpacked_dim})
   
   valid_user_params = {k: v for k, v in (comp.parameters or {}).items() if k in isle_params}
   all_params = {**isle_params, **valid_user_params}
@@ -255,10 +269,16 @@ module ${p_name}_${c_type}
 % endif
 
 % if is_host and config.system_controller:
+<%
+  reg_rsp_type = isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t")
+  reg_req_type = isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t")
+%>
   ,
   // System Controller Hardware Interfaces (Exported to Top-Level)
   output ${p_name}_sys_regs_pkg::${p_name}_sys_regs__out_t sys_regs_hwif_out_o,
-  input  ${p_name}_sys_regs_pkg::${p_name}_sys_regs__in_t  sys_regs_hwif_in_i
+  input  ${p_name}_sys_regs_pkg::${p_name}_sys_regs__in_t  sys_regs_hwif_in_i,
+  output ${reg_req_type} reg_req_o,
+  input  ${reg_rsp_type} reg_rsp_i
 % endif
 );
 
@@ -584,8 +604,8 @@ module ${p_name}_${c_type}
   // the PeakRDL System Controller. This allows the Host to access its 
   // core CSRs locally without a full NoC roundtrip.
   <%
-    reg_rsp_type = next((p['type'] for p in isle_ports if p['name'] == 'reg_rsp_i'), 'soc_reg_rsp_t')
-    reg_req_type = next((p['type'] for p in isle_ports if p['name'] == 'reg_req_o'), 'soc_reg_req_t')
+    reg_rsp_type = isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t")
+    reg_req_type = isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t")
     base_rsp_type = reg_rsp_type.split('[')[0].strip()
     base_req_type = reg_req_type.split('[')[0].strip()
   %>
@@ -656,13 +676,14 @@ module ${p_name}_${c_type}
 
   if isle_ports:
       for p in isle_ports:
-          if is_host and config.system_controller and p['name'] == 'reg_req_o':
-              isle_connections.append(f".reg_req_o ( tile_reg_req )")
-          elif is_host and config.system_controller and p['name'] == 'reg_rsp_i':
-              isle_connections.append(f".reg_rsp_i ( tile_reg_rsp )")
-          else:
-              isle_connections.append(f".{p['name']} ( {p['name']} )")
+          if is_host and config.system_controller and p['name'] in ['reg_req_o', 'reg_rsp_i']:
+              continue # Handled explicitly below
+          isle_connections.append(f".{p['name']} ( {p['name']} )")
           
+  if is_host and config.system_controller:
+      if 'reg_req_o' in known_ports: isle_connections.append(".reg_req_o ( tile_reg_req )")
+      if 'reg_rsp_i' in known_ports: isle_connections.append(".reg_rsp_i ( tile_reg_rsp )")
+
   if terminated_ports:
       for p in terminated_ports:
           if p['dir'] == 'input':
@@ -710,6 +731,17 @@ module ${p_name}_${c_type}
           else:
               isle_connections.append(f".axi_req_i  ( {req_sig} )")
               isle_connections.append(f".axi_resp_o ( {rsp_sig} )")
+
+  # Auto-tie-off remaining unconnected ports to prevent TFMPC / Linter warnings.
+  connected_ports = []
+  for p in isle_connections:
+      m = re.match(r'^\s*\.\s*([a-zA-Z0-9_]+)\s*\(', p)
+      if m: connected_ports.append(m.group(1))
+      
+  for port_name, p_info in isle_info.get("ports", {}).items():
+      if port_name not in connected_ports:
+          val = "'0" if p_info["dir"] == "input" else ""
+          isle_connections.append(f".{port_name:<17} ( {val} )")
 %>
 
   // =======================================================================

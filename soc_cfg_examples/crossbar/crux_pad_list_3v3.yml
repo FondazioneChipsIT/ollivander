@@ -14,6 +14,48 @@
   connections:
     pad2chip: uart_rx_i
 
+- name: PAD_UART_RTS_N
+  description: "UART RTS"
+  pad_type: PAD_OUTPUT
+  is_static: true
+  connections:
+    chip2pad: uart_rts_no
+
+- name: PAD_UART_DTR_N
+  description: "UART DTR"
+  pad_type: PAD_OUTPUT
+  is_static: true
+  connections:
+    chip2pad: uart_dtr_no
+
+- name: PAD_UART_CTS_N
+  description: "UART CTS"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: uart_cts_ni
+
+- name: PAD_UART_DSR_N
+  description: "UART DSR"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: uart_dsr_ni
+
+- name: PAD_UART_DCD_N
+  description: "UART DCD"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: uart_dcd_ni
+
+- name: PAD_UART_RIN_N
+  description: "UART RIN"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: uart_rin_ni
+
 - name: PAD_I2C_SDA
   description: "Dedicated I2C SDA Pad"
   pad_type: PAD_BIDIR
@@ -80,85 +122,85 @@
   pad_type: PAD_INPUT
   is_static: true
   connections:
-    pad2chip: jtag_safety_island_tck_i
+    pad2chip: safety_island_jtag_tck_i
 
 - name: PAD_SAFE_JTAG_TMS
   description: "Safety Island JTAG TMS"
   pad_type: PAD_INPUT
   is_static: true
   connections:
-    pad2chip: jtag_safety_island_tms_i
+    pad2chip: safety_island_jtag_tms_i
 
 - name: PAD_SAFE_JTAG_TDI
   description: "Safety Island JTAG TDI"
   pad_type: PAD_INPUT
   is_static: true
   connections:
-    pad2chip: jtag_safety_island_tdi_i
+    pad2chip: safety_island_jtag_tdi_i
 
 - name: PAD_SAFE_JTAG_TDO
   description: "Safety Island JTAG TDO"
   pad_type: PAD_OUTPUT
   is_static: true
   connections:
-    chip2pad: jtag_safety_island_tdo_o
+    chip2pad: safety_island_jtag_tdo_o
 
 - name: PAD_SAFE_JTAG_TRST_N
   description: "Safety Island JTAG TRST"
   pad_type: PAD_INPUT
   is_static: true
   connections:
-    pad2chip: jtag_safety_island_trst_ni
+    pad2chip: safety_island_jtag_trst_ni
 
 - name: PAD_SEC_JTAG_TCK
   description: "Security Island JTAG TCK"
   pad_type: PAD_INPUT
   is_static: true
   connections:
-    pad2chip: jtag_security_island_tck_i
+    pad2chip: security_island_jtag_tck_i
 
 - name: PAD_SEC_JTAG_TMS
   description: "Security Island JTAG TMS"
   pad_type: PAD_INPUT
   is_static: true
   connections:
-    pad2chip: jtag_security_island_tms_i
+    pad2chip: security_island_jtag_tms_i
 
 - name: PAD_SEC_JTAG_TDI
   description: "Security Island JTAG TDI"
   pad_type: PAD_INPUT
   is_static: true
   connections:
-    pad2chip: jtag_security_island_tdi_i
+    pad2chip: security_island_jtag_tdi_i
 
 - name: PAD_SEC_JTAG_TDO
   description: "Security Island JTAG TDO"
   pad_type: PAD_BIDIR
   is_static: true
   connections:
-    chip2pad: jtag_security_island_tdo_o
-    paden2chip: jtag_security_island_tdo_oe_o
+    chip2pad: security_island_jtag_tdo_o
+    paden2chip: security_island_jtag_tdo_oe_o
 
 - name: PAD_SEC_JTAG_TRST_N
   description: "Security Island JTAG TRST"
   pad_type: PAD_INPUT
   is_static: true
   connections:
-    pad2chip: jtag_security_island_trst_ni
+    pad2chip: security_island_jtag_trst_ni
 
 - name: PAD_SEC_UART_TX
   description: "Security Island UART TX"
   pad_type: PAD_OUTPUT
   is_static: true
   connections:
-    chip2pad: uart_security_island_tx_o
+    chip2pad: security_island_uart_tx_o
 
 - name: PAD_SEC_UART_RX
   description: "Security Island UART RX"
   pad_type: PAD_INPUT
   is_static: true
   connections:
-    pad2chip: uart_security_island_rx_i
+    pad2chip: security_island_uart_rx_i
 
 - name: PAD_APB_RX
   description: "APB Subsystem RX"
@@ -173,6 +215,27 @@
   is_static: true
   connections:
     chip2pad: apb_subsystem_tx_o
+
+- name: PAD_CAN_RX
+  description: "CAN Bus RX"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: apb_subsystem_can_bus_rx_i
+
+- name: PAD_CAN_TX
+  description: "CAN Bus TX"
+  pad_type: PAD_OUTPUT
+  is_static: true
+  connections:
+    chip2pad: apb_subsystem_can_bus_tx_o
+
+- name: PAD_CAN_EVENT
+  description: "CAN Bus Event"
+  pad_type: PAD_OUTPUT
+  is_static: true
+  connections:
+    chip2pad: apb_subsystem_can_bus_event_o
 
 - name: "PAD_BOOT_MODE_{i}"
   description: "Boot Mode {i}"

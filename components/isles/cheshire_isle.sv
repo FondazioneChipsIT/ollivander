@@ -212,7 +212,7 @@ module cheshire_isle
   output logic [SpihNumCs-1:0] spi_csb_o,
   output logic [SpihNumCs-1:0] spi_csb_en_o,
   output logic [ 3:0]          spi_sd_o,
-  output logic [ 3:0]          spih_sd_en_o,
+  output logic [ 3:0]          spi_sd_en_o,
   input  logic [ 3:0]          spi_sd_i,
   input  logic [31:0] gpio_i,
   output logic [31:0] gpio_o,

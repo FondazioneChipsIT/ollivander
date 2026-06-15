@@ -342,6 +342,10 @@ class RTLGenerator:
                     self.project_dependencies.setdefault(dep_name, {})
                     self.project_dependencies[dep_name].update(dep_dict)
 
+        import core.interfaces
+        core.interfaces.GLOBAL_COMP_INFO.clear()
+        core.interfaces.GLOBAL_COMP_INFO.update(comp_info)
+
         wiring_matrix = build_connection_matrix(self.soc_config, comp_info)
 
         global_defines = set()
@@ -360,20 +364,23 @@ class RTLGenerator:
             pl_file = Path.cwd() / dom.pad_list
             if pl_file.is_file():
                 raw_list = yaml.safe_load(pl_file.read_text(encoding='utf-8')) or []
-                expanded_list = []
-                for pad in raw_list:
-                    if pad.get("multiple", 1) > 1:
-                        for i in range(pad.get("multiple", 1)):
-                            ep = dict(pad)
-                            ep["name"] = ep["name"].replace("{i}", str(i))
-                            if "default_port" in ep:
-                                ep["default_port"] = ep["default_port"].replace("{i}", str(i))
-                            if "connections" in ep:
-                                ep["connections"] = {k.replace("{i}", str(i)) if isinstance(k, str) else k: v.replace("{i}", str(i)) if isinstance(v, str) else v for k, v in ep["connections"].items()}
-                            expanded_list.append(ep)
-                    else:
-                        expanded_list.append(pad)
-                pad_domains.append({"name": dom.name, "pad_list": expanded_list})
+            else:
+                raw_list = []
+
+            expanded_list = []
+            for pad in raw_list:
+                if pad.get("multiple", 1) > 1:
+                    for i in range(pad.get("multiple", 1)):
+                        ep = dict(pad)
+                        ep["name"] = ep["name"].replace("{i}", str(i))
+                        if "default_port" in ep:
+                            ep["default_port"] = ep["default_port"].replace("{i}", str(i))
+                        if "connections" in ep:
+                            ep["connections"] = {k.replace("{i}", str(i)) if isinstance(k, str) else k: v.replace("{i}", str(i)) if isinstance(v, str) else v for k, v in ep["connections"].items()}
+                        expanded_list.append(ep)
+                else:
+                    expanded_list.append(pad)
+            pad_domains.append({"name": dom.name, "pad_list": expanded_list})
         return pad_domains
 
     def generate_port_groups(self, comp_info):
@@ -400,6 +407,7 @@ class RTLGenerator:
         def get_base_name(name):
             if name.endswith("_en_o"): return name[:-5]
             if name.endswith("_oe_o"): return name[:-5]
+            if name.endswith("_oe"): return name[:-3]
             if name.endswith("_no"): return name[:-1]
             if name.endswith("_ni"): return name[:-1]
             if name.endswith("_o"): return name[:-2]
@@ -432,62 +440,110 @@ class RTLGenerator:
         grouped_ports = {}
         port_mapping = {}
 
-        def add_port(name, direction, soc_port_name, width=1):
-            if width > 1:
-                for i in range(width):
-                    base = get_base_name(name) + f"_{i}"
-                    if base not in grouped_ports:
-                        grouped_ports[base] = {}
-                    soc_sig = f"{soc_port_name}_{i}"
-                    if direction == "output":
-                        if name.endswith("_en_o") or name.endswith("_oe_o"):
-                            grouped_ports[base]["paden2chip"] = soc_sig
-                        else:
-                            grouped_ports[base]["chip2pad"] = soc_sig
-                    elif direction == "input":
-                        grouped_ports[base][soc_sig] = "pad2chip"
-            else:
+        def extract_dims(type_str):
+            dims = []
+            for m in re.finditer(r'\[\s*([^\]:]+)\s*:\s*([^\]]+)\s*\]', str(type_str)):
+                try:
+                    msb = int(eval(m.group(1), {"__builtins__": {}}))
+                    lsb = int(eval(m.group(2), {"__builtins__": {}}))
+                    dims.append((msb, lsb))
+                except Exception: pass
+            return dims
+
+        def add_port(name, direction, soc_port_name, p_type="logic"):
+            dims = extract_dims(p_type)
+            if not dims:
                 base = get_base_name(name)
                 if base not in grouped_ports:
                     grouped_ports[base] = {}
                 soc_sig = soc_port_name
                 if direction == "output":
-                    if name.endswith("_en_o") or name.endswith("_oe_o"):
+                    if name.endswith("_en_o") or name.endswith("_oe_o") or name.endswith("_oe"):
                         grouped_ports[base]["paden2chip"] = soc_sig
                     else:
                         grouped_ports[base]["chip2pad"] = soc_sig
                 elif direction == "input":
                     grouped_ports[base][soc_sig] = "pad2chip"
+                elif direction == "inout":
+                    grouped_ports[base][soc_sig] = "pad_inout"
+            else:
+                def get_suffixes(dims_list):
+                    if not dims_list: return [""]
+                    c_msb, c_lsb = dims_list[0]
+                    c_step = -1 if c_msb >= c_lsb else 1
+                    res = []
+                    for c_idx in range(c_msb, c_lsb + c_step, c_step):
+                        for sub in get_suffixes(dims_list[1:]):
+                            res.append(f"_{c_idx}{sub}")
+                    return res
+                
+                for suf in get_suffixes(dims):
+                    base = get_base_name(name) + suf
+                    if base not in grouped_ports:
+                        grouped_ports[base] = {}
+                    soc_sig = f"{soc_port_name}{suf}"
+                    if direction == "output":
+                        if name.endswith("_en_o") or name.endswith("_oe_o") or name.endswith("_oe"):
+                            grouped_ports[base]["paden2chip"] = soc_sig
+                        else:
+                            grouped_ports[base]["chip2pad"] = soc_sig
+                    elif direction == "input":
+                        grouped_ports[base][soc_sig] = "pad2chip"
+                    elif direction == "inout":
+                        grouped_ports[base][soc_sig] = "pad_inout"
                 
             if soc_port_name not in port_mapping:
-                port_mapping[soc_port_name] = {'width': width, 'pad_base': get_base_name(name)}
+                port_mapping[soc_port_name] = {
+                    'pad_base': get_base_name(name),
+                    'dir': direction
+                }
 
         # Always export primary global signals
         if getattr(self.soc_config.clock_tree, 'generators', 0) > 0:
             add_port("pwr_on_rst_ni", "input", "pwr_on_rst_ni")
+            add_port("ref_clk_i", "input", "ref_clk_i")
         else:
             add_port("clk_i", "input", "clk_i")
             add_port("rst_ni", "input", "rst_ni")
         add_port("test_mode_i", "input", "test_mode_i")
-        add_port("boot_mode_i", "input", "boot_mode_i", port_multiples.get("boot_mode", 2))
+        bm_w = port_multiples.get("boot_mode", 2)
+        add_port("boot_mode_i", "input", "boot_mode_i", f"logic [{bm_w-1}:0]" if bm_w > 1 else "logic")
 
         def process_interfaces(target_comp, info, is_host):
             c_ports = info.get("ports", {})
             if target_comp.export_interfaces:
                 for ext_if in target_comp.export_interfaces:
+                    # 1. DYNAMIC INTERFACE EXTRACTION (The Smart Way)
+                    # Find all physical ports that start with the requested interface prefix
+                    for comp_port, p_info in c_ports.items():
+                        if comp_port.startswith(f"{ext_if}_") or comp_port == ext_if:
+                            p_type = p_info.get("type_dim", "logic")
+                            p_dir = p_info.get("dir", "inout")
+                            
+                            width = 1
+                            w_match = re.search(r'\[\s*(\d+)\s*[-:]+\s*(\d+)\s*\]', p_type)
+                            if w_match:
+                                width = abs(int(w_match.group(1)) - int(w_match.group(2))) + 1
+                                
+                            if is_host:
+                                p_top = comp_port
+                            else:
+                                if comp_port.startswith(f"{target_comp.name}_"):
+                                    p_top = comp_port
+                                else:
+                                    p_top = f"{target_comp.name}_{comp_port}"
+                                    
+                            add_port(p_top, p_dir, p_top, p_type)
+
                     ports = get_interface_ports(ext_if, target_comp.name, is_host, info)
                     for p in ports:
                         comp_port = p.get("internal", p["top"])
                         p_type = c_ports.get(comp_port, {}).get("type_dim", "logic")
-                        width = 1
-                        w_match = re.search(r'\[\s*(\d+)\s*[-:]+\s*(\d+)\s*\]', p_type)
-                        if w_match:
-                            width = abs(int(w_match.group(1)) - int(w_match.group(2))) + 1
-                        base_p = get_base_name(p["top"])
-                        if base_p in port_multiples:
-                            width = port_multiples[base_p]
-                        soc_port_name = p["top"]
-                        add_port(p["top"], p["dir"], soc_port_name, width)
+                        p_dir = p.get("dir", c_ports.get(comp_port, {}).get("dir", "inout"))
+                        
+                        p_top = p["top"]
+                            
+                        add_port(p_top, p_dir, p_top, p_type)
 
         for comp in all_comps:
             c_info = comp_info.get(comp.name, {})
@@ -759,17 +815,16 @@ class RTLGenerator:
         pkg_filename = f"pkg_{self.soc_config.padframe.name}.sv"
         pkg_file = next(padframe_dir.rglob(pkg_filename), None)
         
-        if not core_file.is_file() or not pkg_file or not pkg_file.is_file():
-            print("\n[ERROR] Core RTL or Padframe package missing. Cannot validate wrapper.")
+        if not core_file.is_file():
+            print("\n[ERROR] Core RTL missing. Cannot validate wrapper.")
             print(f"  -> Looked for Core RTL at: {core_file}")
-            print(f"  -> Looked for Padframe package '{pkg_filename}' in: {padframe_dir}")
             sys.exit(1)
             
         # 1. Parse Core RTL Ports
         core_clean = re.sub(r'//.*', '', core_file.read_text(encoding='utf-8'))
         core_clean = re.sub(r'/\*.*?\*/', '', core_clean, flags=re.DOTALL)
         
-        port_pattern = re.compile(r'\b(input|output|inout)\b\s+(logic(?:[\s\[\]0-9a-zA-Z_\-\+\*:]+)?)\s+([a-zA-Z0-9_]+)\s*(?:,|$|\))')
+        port_pattern = re.compile(r'\b(input|output|inout)\b\s+(?:wire\s+|var\s+)?(logic(?:[\s\[\]0-9a-zA-Z_\-\+\*:]+)?)\s+([a-zA-Z0-9_]+)\s*(?:,|$|\))')
         core_ports = {}
         module_match = re.search(r'\bmodule\s+'+self.soc_config.project.name+r'\b[\s\S]*?\)\s*;', core_clean)
         if module_match:
@@ -778,8 +833,13 @@ class RTLGenerator:
                 core_ports[m.group(3).strip()] = {'dir': m.group(1).strip(), 'type': p_type}
                 
         # 2. Parse Padrick Package Structs
-        pkg_clean = re.sub(r'//.*', '', pkg_file.read_text(encoding='utf-8'))
-        pkg_clean = re.sub(r'/\*.*?\*/', '', pkg_clean, flags=re.DOTALL)
+        pkg_clean = ""
+        if not pkg_file or not pkg_file.is_file():
+            print(f"\n[WARNING] Padframe package '{pkg_filename}' missing in: {padframe_dir}")
+            print("  -> Treating all core ports as unmapped to generate missing pads stub.")
+        else:
+            pkg_clean = re.sub(r'//.*', '', pkg_file.read_text(encoding='utf-8'))
+            pkg_clean = re.sub(r'/\*.*?\*/', '', pkg_clean, flags=re.DOTALL)
         
         field_pattern = re.compile(r'^\s*(logic(?:[\s\[\]0-9a-zA-Z_\-\+\*:]+)?)\s+([a-zA-Z0-9_]+)\s*;', re.MULTILINE)
         padframe_fields = {}
@@ -818,13 +878,21 @@ class RTLGenerator:
                 
             is_input_to_soc = core_ports[core_sig]['dir'] == 'input'
             core_type = core_ports[core_sig]['type']
-            width = mapping['width']
             pad_base = mapping['pad_base']
             
             if core_sig in statically_routed_wires:
                 pad_sig = core_sig
-                if pad_sig not in padframe_fields:
-                    missing_pads.append((pad_sig, core_sig, core_type, "N/A (static)"))
+                p_dir = core_ports[core_sig]['dir']
+                if p_dir == 'inout':
+                    validated_connections.append({
+                        'sig_name': core_sig,
+                        'sv_type': core_type,
+                        'is_input_to_soc': False,
+                        'is_inout': True,
+                        'struct_path': core_sig
+                    })
+                elif pad_sig not in padframe_fields:
+                    missing_pads.append((pad_sig, core_sig, core_type, p_dir))
                 else:
                     pad_type = padframe_fields[pad_sig]['type']
                     def norm_type(t):
@@ -843,44 +911,47 @@ class RTLGenerator:
                             'struct_path': struct_path
                         })
             else:
-                if width == 1:
+                p_dir = core_ports[core_sig]['dir']
+                dims = []
+                for m in re.finditer(r'\[\s*([^\]:]+)\s*:\s*([^\]]+)\s*\]', core_type):
+                    try:
+                        dims.append((int(eval(m.group(1), {"__builtins__": {}})), int(eval(m.group(2), {"__builtins__": {}}))))
+                    except Exception: pass
+                    
+                if not dims:
                     pad_sig = core_sig
-                    if pad_sig not in padframe_fields:
-                        missing_pads.append((pad_sig, core_sig, core_type, f"soc_exports.{pad_sig}"))
+                    if p_dir == 'inout':
+                        validated_connections.append({
+                            'sig_name': core_sig,
+                            'sv_type': core_type,
+                            'is_input_to_soc': False,
+                            'is_inout': True,
+                            'struct_path': core_sig
+                        })
+                    elif pad_sig not in padframe_fields:
+                        missing_pads.append((pad_sig, core_sig, core_type, p_dir))
                     else:
-                        pad_type = padframe_fields[pad_sig]['type']
-                        def norm_type(t):
-                            t = re.sub(r'\s+', '', t)
-                            t = t.replace('1-1', '0')
-                            return 'logic' if t == 'logic[0:0]' else t
-                        if norm_type(core_type) != norm_type(pad_type):
-                            fatal_errors.append(f"Width/Type mismatch on '{core_sig}': Core expects '{core_type}', Padframe provides '{pad_type}'")
-                        else:
-                            dom_name = core_sig_to_domain.get(pad_sig, "domain_0")
-                            struct_path = f"port_pad2soc.{dom_name}.soc_exports.{pad_sig}" if is_input_to_soc else f"port_soc2pad.{dom_name}.soc_exports.{pad_sig}"
-                            validated_connections.append({
-                                'sig_name': core_sig,
-                                'sv_type': core_type,
-                                'is_input_to_soc': is_input_to_soc,
-                                'struct_path': struct_path
-                            })
-                else:
-                    def get_core_width(t):
-                        if '[' not in t: return 1
-                        w_match = re.search(r'\[\s*(\d+)\s*[-:]+\s*(\d+)\s*\]', t)
-                        if w_match:
-                            return abs(int(w_match.group(1)) - int(w_match.group(2))) + 1
-                        return -1
-                    c_w = get_core_width(core_type)
-                    if c_w != -1 and c_w != width:
-                        fatal_errors.append(f"Width mismatch on '{core_sig}': Core expects '{core_type}', but Padframe defines multiple: {width}")
-                        
+                        dom_name = core_sig_to_domain.get(pad_sig, "domain_0")
+                        struct_path = f"port_pad2soc.{dom_name}.soc_exports.{pad_sig}" if is_input_to_soc else f"port_soc2pad.{dom_name}.soc_exports.{pad_sig}"
+                        validated_connections.append({
+                            'sig_name': core_sig,
+                            'sv_type': core_type,
+                            'is_input_to_soc': is_input_to_soc,
+                            'is_inout': False,
+                            'assignments': [{"lhs": core_sig, "rhs": struct_path} if is_input_to_soc else {"lhs": struct_path, "rhs": core_sig}]
+                        })
+                elif len(dims) == 1:
+                    msb, lsb = dims[0]
+                    step = -1 if msb >= lsb else 1
+                    
                     found_all = True
                     scalar_struct_paths = []
-                    for i in range(width):
-                        pad_sig_i = f"{core_sig}_{i}"
-                        if pad_sig_i not in padframe_fields:
-                            missing_pads.append((pad_sig_i, f"{core_sig}[{i}]", "logic", f"soc_exports.{pad_sig_i}"))
+                    for idx in range(msb, lsb + step, step):
+                        pad_sig_i = f"{core_sig}_{idx}"
+                        if p_dir == 'inout':
+                            continue
+                        elif pad_sig_i not in padframe_fields:
+                            missing_pads.append((pad_sig_i, f"{core_sig}[{idx}]", "logic", p_dir))
                             found_all = False
                         else:
                             dom_name = core_sig_to_domain.get(pad_sig_i, "domain_0")
@@ -890,26 +961,126 @@ class RTLGenerator:
                                 struct_path = f"port_pad2soc.{dom_name}.soc_exports.{pad_sig_i}" if is_input_to_soc else f"port_soc2pad.{dom_name}.soc_exports.{pad_sig_i}"
                             scalar_struct_paths.append(struct_path)
                     
-                    if found_all:
-                        # Reverse the list to pack correctly: {bit_3, bit_2, bit_1, bit_0}
-                        scalar_struct_paths.reverse()
+                    if found_all and p_dir != 'inout':
                         concat_str = "{" + ", ".join(scalar_struct_paths) + "}"
                         validated_connections.append({
                             'sig_name': core_sig,
                             'sv_type': core_type,
                             'is_input_to_soc': is_input_to_soc,
-                            'struct_path': concat_str
+                            'is_inout': False,
+                            'assignments': [{"lhs": core_sig, "rhs": concat_str} if is_input_to_soc else {"lhs": concat_str, "rhs": core_sig}]
+                        })
+                    elif p_dir == 'inout':
+                        validated_connections.append({
+                            'sig_name': core_sig,
+                            'sv_type': core_type,
+                            'is_input_to_soc': False,
+                            'is_inout': True,
+                            'struct_path': core_sig
+                        })
+                else:
+                    outer_msb, outer_lsb = dims[0]
+                    outer_step = -1 if outer_msb >= outer_lsb else 1
+
+                    assignments = []
+                    found_all = True
+                    for out_idx in range(outer_msb, outer_lsb + outer_step, outer_step):
+                        inner_dims = dims[1:]
+                        
+                        def get_suffixes(dims_list):
+                            if not dims_list: return [""]
+                            c_msb, c_lsb = dims_list[0]
+                            c_step = -1 if c_msb >= c_lsb else 1
+                            res = []
+                            for c_idx in range(c_msb, c_lsb + c_step, c_step):
+                                for sub in get_suffixes(dims_list[1:]):
+                                    res.append(f"_{c_idx}{sub}")
+                            return res
+                            
+                        inner_suffixes = get_suffixes(inner_dims)
+                        chunk_paths = []
+                        for suf in inner_suffixes:
+                            pad_sig_i = f"{core_sig}_{out_idx}{suf}"
+                            if p_dir == 'inout':
+                                continue
+                            elif pad_sig_i not in padframe_fields:
+                                display_suf = suf.replace('_', '][') + ']'
+                                missing_pads.append((pad_sig_i, f"{core_sig}[{out_idx}{display_suf}", "logic", p_dir))
+                                found_all = False
+                            else:
+                                dom_name = core_sig_to_domain.get(pad_sig_i, "domain_0")
+                                if pad_sig_i in statically_routed_wires:
+                                    struct_path = f"static_pad2soc.{dom_name}.{pad_sig_i}" if is_input_to_soc else f"static_soc2pad.{dom_name}.{pad_sig_i}"
+                                else:
+                                    struct_path = f"port_pad2soc.{dom_name}.soc_exports.{pad_sig_i}" if is_input_to_soc else f"port_soc2pad.{dom_name}.soc_exports.{pad_sig_i}"
+                                chunk_paths.append(struct_path)
+                                
+                        if found_all and p_dir != 'inout':
+                            concat_str = "{" + ", ".join(chunk_paths) + "}"
+                            inner_dim_str = "".join(f"[{m[0]}:{m[1]}]" for m in inner_dims)
+                            lhs_str = f"{core_sig}[{out_idx}]{inner_dim_str}"
+                            if is_input_to_soc:
+                                assignments.append({"lhs": lhs_str, "rhs": concat_str})
+                            else:
+                                assignments.append({"lhs": concat_str, "rhs": lhs_str})
+
+                    if found_all and p_dir != 'inout':
+                        validated_connections.append({
+                            'sig_name': core_sig,
+                            'sv_type': core_type,
+                            'is_input_to_soc': is_input_to_soc,
+                            'is_inout': False,
+                            'assignments': assignments
+                        })
+                    elif p_dir == 'inout':
+                        validated_connections.append({
+                            'sig_name': core_sig,
+                            'sv_type': core_type,
+                            'is_input_to_soc': False,
+                            'is_inout': True,
+                            'struct_path': core_sig
                         })
                     
+        # 4. Catch-all for unmapped core ports
+        for core_sig, p_info in core_ports.items():
+            if core_sig not in port_mapping:
+                if core_sig.startswith("ext_reg_async_slv_") or core_sig.startswith("domain_clk_i") or core_sig.startswith("clk_gen_lock_i"):
+                    continue
+                
+                p_type = p_info['type']
+                p_dir = p_info['dir']
+                width = 1
+                for w_match in re.finditer(r'\[\s*(\d+)\s*[-:]+\s*(\d+)\s*\]', p_type):
+                    width *= abs(int(w_match.group(1)) - int(w_match.group(2))) + 1
+
+                if width > 1:
+                    for i in range(width):
+                        missing_pads.append((f"{core_sig}_{i}", f"{core_sig}[{i}]", "logic", p_dir))
+                else:
+                    missing_pads.append((core_sig, core_sig, p_type, p_dir))
+                    
         if missing_pads:
-            print("  [WARNING] The following Core ports are missing from the Padframe:")
+            print("\n  [ERROR] The following Core ports are missing from the Padframe:")
             yml_lines = []
-            for ps, ss, ct, def_port in missing_pads:
+            for ps, ss, ct, p_dir in missing_pads:
                 print(f"    - {ss} ({ct})")
+                
+                if p_dir == 'input':
+                    pad_type = 'PAD_INPUT'
+                    conn_str = f"    pad2chip: {ps}"
+                elif p_dir == 'output':
+                    pad_type = 'PAD_OUTPUT'
+                    conn_str = f"    chip2pad: {ps}"
+                else:
+                    pad_type = 'PAD_ANALOG'
+                    conn_str = f"    pad_inout: {ps}"
+                    
                 yml_lines.append(f"- name: PAD_{ps.upper()}")
                 yml_lines.append(f"  description: \"Auto-generated missing pad for {ss}\"")
-                yml_lines.append(f"  pad_type: PAD_BIDIR")
-                yml_lines.append(f"  default_port: {def_port}")
+                yml_lines.append(f"  pad_type: {pad_type}")
+                yml_lines.append(f"  is_static: true")
+                yml_lines.append(f"  connections:")
+                yml_lines.append(conn_str)
                 yml_lines.append("")
                 
             cfg_dir = self.env.outdir_path / self.env.cfg_sub
@@ -922,8 +1093,8 @@ class RTLGenerator:
             for err in fatal_errors:
                 print(f"  -> {err}")
             sys.exit(1)
-            
-        print("  [SUCCESS] Core and Padframe types match perfectly!")
+        elif not missing_pads:
+            print("  [SUCCESS] Core and Padframe types match perfectly!")
         
         template_kwargs = {
             "config": self.soc_config,

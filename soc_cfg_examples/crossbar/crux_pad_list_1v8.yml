@@ -49,12 +49,21 @@
     pad2chip: spi_sd_i_{i}
     paden2chip: spi_sd_en_o_{i}
 
-- name: PAD_HYPERBUS_CK
-  description: "Hyperbus CK"
+- name: "PAD_HYPERBUS_CK_{i}"
+  description: "Hyperbus CK {i}"
   pad_type: PAD_OUTPUT
+  multiple: 2
   is_static: true
   connections:
-    chip2pad: hyperbus_ck_o
+    chip2pad: hyperbus_ck_o_{i}
+
+- name: "PAD_HYPERBUS_CK_NO_{i}"
+  description: "Hyperbus CK_NO {i}"
+  pad_type: PAD_OUTPUT
+  multiple: 2
+  is_static: true
+  connections:
+    chip2pad: hyperbus_ck_no_{i}
 
 - name: "PAD_HYPERBUS_CS_{i}"
   description: "Hyperbus CS {i}"
@@ -62,49 +71,61 @@
   multiple: 2
   is_static: true
   connections:
-    chip2pad: hyperbus_cs_no_{i}
+    chip2pad: hyperbus_cs_no_{i}_0
 
-- name: PAD_HYPERBUS_RWDS
-  description: "Hyperbus RWDS"
+- name: "PAD_HYPERBUS_RWDS_{i}"
+  description: "Hyperbus RWDS {i}"
   pad_type: PAD_BIDIR
+  multiple: 2
   is_static: true
   connections:
-    chip2pad: hyperbus_rwds_o
-    pad2chip: hyperbus_rwds_i
-    paden2chip: hyperbus_rwds_oe_o
+    chip2pad: hyperbus_rwds_o_{i}
+    pad2chip: hyperbus_rwds_i_{i}
+    paden2chip: hyperbus_rwds_oe_o_{i}
 
-- name: "PAD_HYPERBUS_DQ_{i}"
-  description: "Hyperbus DQ {i}"
+- name: "PAD_HYPERBUS_DQ_0_{i}"
+  description: "Hyperbus DQ 0 {i}"
   pad_type: PAD_BIDIR
   multiple: 8
   is_static: true
   connections:
-    chip2pad: hyperbus_dq_o_{i}
-    pad2chip: hyperbus_dq_i_{i}
-    paden2chip: hyperbus_dq_oe_o_{i}
+    chip2pad: hyperbus_dq_o_0_{i}
+    pad2chip: hyperbus_dq_i_0_{i}
+    paden2chip: hyperbus_dq_oe_o_0
 
-- name: PAD_HYPERBUS_RESET
-  description: "Hyperbus Reset"
-  pad_type: PAD_OUTPUT
+- name: "PAD_HYPERBUS_DQ_1_{i}"
+  description: "Hyperbus DQ 1 {i}"
+  pad_type: PAD_BIDIR
+  multiple: 8
   is_static: true
   connections:
-    chip2pad: hyperbus_reset_no
+    chip2pad: hyperbus_dq_o_1_{i}
+    pad2chip: hyperbus_dq_i_1_{i}
+    paden2chip: hyperbus_dq_oe_o_1
+
+- name: "PAD_HYPERBUS_RESET_{i}"
+  description: "Hyperbus Reset {i}"
+  pad_type: PAD_OUTPUT
+  multiple: 2
+  is_static: true
+  connections:
+    chip2pad: hyperbus_reset_no_{i}
 
 - name: PAD_SEC_SPI_SCK
   description: "Security Island SPI SCK"
   pad_type: PAD_BIDIR
   is_static: true
   connections:
-    chip2pad: spi_security_island_sck_o
-    paden2chip: spi_security_island_sck_en_o
+    chip2pad: security_island_spi_host_sck_o
+    paden2chip: security_island_spi_host_sck_en_o
 
 - name: PAD_SEC_SPI_CSB
   description: "Security Island SPI CSB"
   pad_type: PAD_BIDIR
   is_static: true
   connections:
-    chip2pad: spi_security_island_csb_o
-    paden2chip: spi_security_island_csb_en_o
+    chip2pad: security_island_spi_host_csb_o
+    paden2chip: security_island_spi_host_csb_en_o
 
 - name: "PAD_SEC_SPI_SD_{i}"
   description: "Security Island SPI SD {i}"
@@ -112,9 +133,9 @@
   multiple: 4
   is_static: true
   connections:
-    chip2pad: spi_security_island_sd_o_{i}
-    pad2chip: spi_security_island_sd_i_{i}
-    paden2chip: spi_security_island_sd_en_o_{i}
+    chip2pad: security_island_spi_host_sd_o_{i}
+    pad2chip: security_island_spi_host_sd_i_{i}
+    paden2chip: security_island_spi_host_sd_en_o_{i}
 
 - name: PAD_ETH_RX_CLK
   description: "Ethernet RX Clock"
@@ -174,9 +195,23 @@
   connections:
     chip2pad: ethernet_phy_mdc_o
 
-- name: PAD_ETH_CLK200
-  description: "Ethernet 200MHz Clock"
-  pad_type: PAD_OUTPUT
+- name: PAD_ETH_INTN
+  description: "Ethernet PHY Interrupt"
+  pad_type: PAD_INPUT
   is_static: true
   connections:
-    chip2pad: ethernet_eth_clk200
+    pad2chip: ethernet_phy_intn_i
+
+- name: PAD_ETH_PME
+  description: "Ethernet PHY Power Management Event"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: ethernet_phy_pme_i
+
+- name: PAD_ETH_CLK200
+  description: "Ethernet 200MHz Clock"
+  pad_type: PAD_INPUT
+  is_static: true
+  connections:
+    pad2chip: ethernet_eth_clk200_i

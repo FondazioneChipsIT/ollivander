@@ -36,10 +36,10 @@ module cluster_subtile
   input  logic                                    test_mode_i,
   
   // Cluster ports
-  input  logic                      [NrCores-1:0] debug_req_i,
-  input  logic                      [NrCores-1:0] meip_i,
-  input  logic                      [NrCores-1:0] mtip_i,
-  input  logic                      [NrCores-1:0] msip_i,
+  input  logic                      [snitch_cluster_pkg::NrCores-1:0] debug_req_i,
+  input  logic                      [snitch_cluster_pkg::NrCores-1:0] meip_i,
+  input  logic                      [snitch_cluster_pkg::NrCores-1:0] mtip_i,
+  input  logic                      [snitch_cluster_pkg::NrCores-1:0] msip_i,
   input  logic                      [        9:0] hart_base_id_i,
   input  snitch_cluster_pkg::addr_t               cluster_base_addr_i,
   input  snitch_cluster_pkg::addr_t               cluster_base_offset_i,
@@ -86,7 +86,7 @@ module cluster_subtile
   hwpectrl_req_t               hwpectrl_req;
   hwpectrl_rsp_t               hwpectrl_rsp;
 
-  logic          [NrCores-1:0] mxip;
+  logic          [snitch_cluster_pkg::NrCores-1:0] mxip;
 
   ////////////////////////
   // Wide FPU Reduction //
@@ -307,7 +307,7 @@ module cluster_subtile
       .periph_rsp_t (hwpectrl_rsp_t),
       .HwpeDataWidth(snitch_cluster_pkg::WideDataWidth),
       .IdWidth      (snitch_cluster_pkg::NarrowIdWidthOut),
-      .NrCores      (NrCores),
+      .NrCores      (snitch_cluster_pkg::NrCores),
       .TCDMDataWidth(snitch_cluster_pkg::NarrowDataWidth)
     ) i_snitch_hwpe_subsystem (
       .clk_i          (clk_i),

@@ -119,18 +119,14 @@ module ${p_name}
   all_extra_ports = []
   # Key: (comp.name, inst_idx), Value: list of connection strings
   comp_extra_conns = {}
-  
-  # This map now only contains exceptions to the standard rule 'if_name + "_"'
-  interface_port_map = {
-      "spi": ["spi_", "spih_"], # Exception: YAML 'spi' maps to 'spih_' prefix
-      "hyperbus": ["pad_hyper_", "pad_config_"]
-  }
-  
+
+  from core.interfaces import get_interface_ports
+
   for comp in [config.host] + config.components:
       exported_interfaces = comp.export_interfaces if comp.export_interfaces else []
       if not exported_interfaces:
           continue
-          
+
       # Determine the number of instances for this component to properly suffix port names.
       num_instances = 0
       inst_coords = {}
@@ -141,51 +137,54 @@ module ${p_name}
       if num_instances == 0:
           num_instances = 1
 
-      c_header = comp_info.get(comp.name, {}).get("header_content", "")
-      prefixes_to_export = []
+      c_info = comp_info.get(comp.name, {})
+      is_host = (comp.name == config.host.name)
+
       for if_name in exported_interfaces:
-          prefixes = interface_port_map.get(if_name, [if_name + "_"])
-          prefixes_to_export.extend(prefixes)
-          
-      exported_seen = set()
-      known_params = {}
-      known_params.update(comp_info.get(comp.name, {}).get("supported_params", {}))
-      known_params.update(comp_info.get(comp.name, {}).get("fixed_params", {}))
-      if comp.parameters:
-          for k, v in comp.parameters.items():
-              known_params[k] = "1" if v is True else "0" if v is False else str(v)
-              
-      for port_name, p_info in comp_info.get(comp.name, {}).get("ports", {}).items():
-          if port_name in exported_seen: continue
-          if any(port_name.startswith(prefix) for prefix in prefixes_to_export):
-              exported_seen.add(port_name)
+          ports_to_export = get_interface_ports(if_name, comp.name, is_host, c_info)
+
+          for p in ports_to_export:
+              internal_port = p['internal']
+              p_dir = p['dir']
+
+              p_info = c_info.get("ports", {}).get(internal_port)
+              if not p_info: continue
+
               decl = p_info["decl"]
-              p_dir = p_info["dir"]
-              
-              # Evaluate parameters in the port declaration to resolve array sizes (e.g., [NumPorts-1:0])
+
+              known_params = {}
+              known_params.update(c_info.get("supported_params", {}))
+              known_params.update(c_info.get("fixed_params", {}))
+              if comp.parameters:
+                  for k, v in comp.parameters.items():
+                      known_params[k] = "1" if v is True else "0" if v is False else str(v)
+
               for param_name, param_val in known_params.items():
                   decl = re.sub(rf'\b{param_name}\b', param_val, decl)
-              
+
               name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-              
-              is_host = (comp.name == config.host.name)
+
               for inst_idx in range(num_instances):
                   if is_host:
-                      top_port_name = port_name
+                      top_port_name = p['top']
                   else:
                       if num_instances > 1:
                           cx, cy = inst_coords.get(inst_idx, (0,0))
-                          top_port_name = f"{comp.name}_{cx}_{cy}_{port_name}"
+                          top_port_name = f"{comp.name}_{cx}_{cy}_{internal_port}"
                       else:
-                          top_port_name = f"{comp.name}_{port_name}"
-                  
+                          top_port_name = p['top']
+
                   inst_decl = decl[:name_match.start()] + top_port_name + name_match.group(2)
-                  all_extra_ports.append(f"{p_dir} {inst_decl}")
-                  
+                  if f"{p_dir} {inst_decl}" not in all_extra_ports:
+                      all_extra_ports.append(f"{p_dir} {inst_decl}")
+
                   key = (comp.name, inst_idx)
                   if key not in comp_extra_conns:
                       comp_extra_conns[key] = []
-                  comp_extra_conns[key].append(f".{port_name:<17} ( {top_port_name} )")
+
+                  conn_str = f".{internal_port:<17} ( {top_port_name} )"
+                  if conn_str not in comp_extra_conns[key]:
+                      comp_extra_conns[key].append(conn_str)
 
   # Add explicit RegBus ports for external registers (e.g., located in the padframe)
   if config.system_controller and config.system_controller.external_registers:
@@ -383,12 +382,6 @@ ${clock_and_reset_tree(config, p_name)}
                 "sys_regs_hwif_in_i": "sys_regs_hwif_in",
             "boot_mode_i": "boot_mode_i",
             "rtc_i": "rtc_i",
-            "jtag_tck_i": "jtag_tck_i",
-            "jtag_trst_ni": "jtag_trst_ni",
-            "jtag_tms_i": "jtag_tms_i",
-            "jtag_tdi_i": "jtag_tdi_i",
-            "jtag_tdo_o": "jtag_tdo_o",
-            "jtag_tdo_oe_o": "jtag_tdo_oe_o",
             "reg_req_o": "host_reg_req" if ext_regs else "/* unused */",
             "reg_rsp_i": "host_reg_rsp" if ext_regs else "'0"
         }
