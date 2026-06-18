@@ -250,7 +250,10 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
             if not re.search(r'\b(?:module|macromodule|program|class)\b', c_clean):
                 return True
         except Exception:
-            pass
+            # If we cannot read or resolve the file (e.g., due to env vars in the path),
+            # keep it intact and let QuestaSim handle it.
+            return True
+            
         # Default behavior: replace with a stub
         return False
 
@@ -286,9 +289,10 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
                                 bld_tokens.append(bp)
                                 
                         if bld_tokens:
-                            fast_bld_path = bld_path.with_name(bld_path.name + ".fast")
+                            fast_bld_name = bld_path.stem + "_fast" + bld_path.suffix
+                            fast_bld_path = bld_path.with_name(fast_bld_name)
                             fast_bld_path.write_text("\n".join(bld_tokens), encoding='utf-8')
-                            new_tokens.append(p.replace(bld_path.name, fast_bld_path.name))
+                            new_tokens.append(p.replace(bld_path.name, fast_bld_name))
                     except Exception:
                         new_tokens.append(p)
                 else:

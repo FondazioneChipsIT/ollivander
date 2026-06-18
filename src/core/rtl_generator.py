@@ -50,13 +50,7 @@ class RTLGenerator:
         if rev: self.project_dependencies[name]['rev'] = rev
         if version: self.project_dependencies[name]['version'] = version
         
-        args = []
-        if git: args.append(f'git="{git}"')
-        if rev: args.append(f'rev="{rev}"')
-        if version: args.append(f'version="{version}"')
-        arg_str = " ".join(args)
-        if arg_str: arg_str = " " + arg_str
-        return f'// BENDER: name="{name}"{arg_str}'
+        return f'// BENDER: name="{name}"'
 
     def find_file_in_paths(self, rel_path, paths_list):
         """Recursively finds a file within a list of base directories."""
@@ -572,6 +566,16 @@ class RTLGenerator:
         
         pad_domains = self._get_pad_domains()
 
+        top_level_module_name = self.soc_config.project.name
+        top_level_filename = f"{self.soc_config.project.name}.sv"
+        if self.soc_config.project.build_mode == "macro":
+            if self.soc_config.project.macro_settings:
+                suffix = self.soc_config.project.macro_settings.export_type
+                top_level_module_name = f"{self.soc_config.project.name}_{suffix}"
+                top_level_filename = f"{top_level_module_name}.sv"
+
+
+        macro_pragmas = []
         hw_dir = self.env.outdir_path / self.env.hw_sub
         sw_dir = self.env.outdir_path / self.env.sw_sub
         doc_dir = self.env.outdir_path / self.env.doc_sub
@@ -581,6 +585,7 @@ class RTLGenerator:
         
         template_kwargs = {
             "config": self.soc_config,
+            "top_level_module_name": top_level_module_name,
             "project_name": self.soc_config.project.name,
             "sys_ctrl": self.soc_config.system_controller.model_dump(exclude_none=True) if self.soc_config.system_controller else {},
             "wiring_matrix": wiring_matrix,
@@ -592,6 +597,7 @@ class RTLGenerator:
             "grouped_ports": grouped_ports,
             "port_mapping": port_mapping,
             "pad_domains": pad_domains,
+            "macro_pragmas": macro_pragmas,
             "original_isle_types": self.original_isle_types,
             "fmt_dom": fmt_dom,
             "fmt_reg": fmt_reg,
@@ -614,7 +620,7 @@ class RTLGenerator:
                 "reg/soc_regs.rdl.mako": reg_dir / f"{self.soc_config.project.name}_regs.rdl",
                 "reg/soc_memory_map.rdl.mako": reg_dir / f"{self.soc_config.project.name}_memory_map.rdl",
                 "hw/crossbar_soc_pkg.sv.mako": hw_dir / f"{self.soc_config.project.name}_soc_pkg.sv",
-                "hw/crossbar_soc_top.sv.mako": hw_dir / f"{self.soc_config.project.name}.sv",
+                "hw/crossbar_soc_top.sv.mako": hw_dir / top_level_filename,
                 "hw/infrastructure/soc_rstgen.sv.mako": hw_dir / f"{self.soc_config.project.name}_rstgen.sv",
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
                 "doc/crossbar_map.csv.mako": doc_dir / f"{self.soc_config.project.name}_map.csv",
@@ -624,7 +630,7 @@ class RTLGenerator:
         else:
             templates_to_render = {
                 "hw/noc_soc_pkg.sv.mako": hw_dir / f"{self.soc_config.project.name}_soc_pkg.sv",
-                "hw/noc_soc_top.sv.mako": hw_dir / f"{self.soc_config.project.name}.sv",
+                "hw/noc_soc_top.sv.mako": hw_dir / top_level_filename,
                 "hw/tiles/dummy_tile.sv.mako": hw_dir / f"{self.soc_config.project.name}_dummy_tile.sv",
                 "hw/infrastructure/soc_rstgen.sv.mako": hw_dir / f"{self.soc_config.project.name}_rstgen.sv",
                 "reg/soc_regs.rdl.mako": reg_dir / f"{self.soc_config.project.name}_regs.rdl",
@@ -780,7 +786,7 @@ class RTLGenerator:
                     rendered_code = re.sub(soc_pkg_pattern, lambda m: noc_line + m.group(1), rendered_code)
                     
                 # Inject Padframe sub-project dependency if enabled
-                if self.soc_config.padframe:
+                if self.soc_config.padframe and self.soc_config.project.build_mode == "standalone":
                     hw_dir_rel = os.path.relpath(self.env.outdir_path / self.env.hw_sub, self.env.bender_dir).replace('\\', '/')
                     padframe_path = f"{hw_dir_rel}/padframe"
                     padframe_dep = f"  {self.soc_config.padframe.name}: {{ path: \"{padframe_path}\" }}\n"
@@ -792,11 +798,58 @@ class RTLGenerator:
                     pf_dir.mkdir(parents=True, exist_ok=True)
                     (pf_dir / "Bender.yml").write_text(f"package:\n  name: {self.soc_config.padframe.name}\n", encoding='utf-8')
 
+                if self.soc_config.project.build_mode == "macro":
+                    rendered_code = re.sub(rf'hw/{self.soc_config.project.name}\.sv', f'hw/{top_level_filename}', rendered_code)
+
                 out_file = self.env.bender_manifest_path
                 write_if_changed(out_file, rendered_code)
             except Exception as e:
                 print(f"\n[ERROR] Failed to render {bender_tpl}:\n{e}")
                 sys.exit(1)
+                
+        # ----------------------------------------------------------------------
+        # Inject macro pragmas using the fully resolved Bender lists
+        # ----------------------------------------------------------------------
+        top_file_path = hw_dir / top_level_filename
+        if top_file_path.is_file():
+            content = top_file_path.read_text(encoding='utf-8')
+            if self.soc_config.project.build_mode == "macro":
+                macro_pragmas = []
+                
+                for dep_name, dep_info in sorted(resolved_dependencies.items()):
+                    macro_pragmas.append(f'// BENDER: name="{dep_name}"')
+    
+                if self.soc_config.topology.type == "noc":
+                    macro_pragmas.append(f'// OLLIVANDER: require="floo_{self.soc_config.project.name}_noc_pkg.sv"')
+                macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_soc_pkg.sv"')
+                if self.soc_config.system_controller:
+                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_sys_regs_pkg.sv"')
+    
+                for f in sorted(external_local_files):
+                    fname = Path(f).name
+                    if fname not in [f"floo_{self.soc_config.project.name}_noc_pkg.sv", f"{self.soc_config.project.name}_soc_pkg.sv", f"{self.soc_config.project.name}_sys_regs_pkg.sv"]:
+                        macro_pragmas.append(f'// OLLIVANDER: require="{fname}"')
+    
+                for f in sorted(self.generated_module_files):
+                    fname = Path(f).name
+                    macro_pragmas.append(f'// OLLIVANDER: require="{fname}"')
+    
+                if self.soc_config.topology.type == "noc":
+                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_dummy_tile.sv"')
+                if getattr(self.soc_config.clock_tree, 'generators', 0) > 0:
+                    macro_pragmas.append('// OLLIVANDER: require="olli_clk_gen.sv"')
+                macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_rstgen.sv"')
+                if self.soc_config.system_controller:
+                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_sys_regs.sv"')
+    
+                macro_pragmas.append(f'// PEAKRDL: source="{self.soc_config.project.name}_memory_map.rdl" map="{self.soc_config.project.name}_map"')
+    
+                pragma_str = "\n".join(macro_pragmas)
+                content = content.replace("// OLLIVANDER_MACRO_PRAGMAS_PLACEHOLDER", pragma_str)
+            else:
+                content = content.replace("// OLLIVANDER_MACRO_PRAGMAS_PLACEHOLDER\n", "").replace("// OLLIVANDER_MACRO_PRAGMAS_PLACEHOLDER", "")
+                
+            write_if_changed(top_file_path, content)
 
     def generate_chip_wrapper(self, comp_info, wiring_matrix, global_defines):
         """
@@ -807,6 +860,11 @@ class RTLGenerator:
         """
         print("=" * 70)
         print("[*] Starting Phase 8: Cross-Validating and Generating Chip Wrapper...\n")
+
+        if self.soc_config.project.build_mode == "macro":
+            print("  [INFO] Build mode is 'macro'. Skipping Chip Wrapper generation.")
+            print("=" * 70)
+            return
         
         hw_dir = self.env.outdir_path / self.env.hw_sub
         core_file = hw_dir / f"{self.soc_config.project.name}.sv"

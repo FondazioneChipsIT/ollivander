@@ -389,6 +389,25 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
 # 1. PROJECT & TOPOLOGY
 # ==============================================================================
 
+class MacroExport(BaseModel):
+    """Defines an exported AXI interface and its internal connection target."""
+    bus_type: Literal["standard", "narrow", "wide"]
+    target: str
+
+class MacroSettings(BaseModel):
+    """
+    Defines how the SoC should be wrapped when exported as a macro IP.
+    """
+    export_type: Literal["isle", "subtile"] = "isle"
+    masters: Optional[List[MacroExport]] = Field(default_factory=list)
+    slaves: Optional[List[MacroExport]] = Field(default_factory=list)
+    
+    @model_validator(mode='after')
+    def check_macro(self) -> 'MacroSettings':
+        if not self.masters and not self.slaves:
+            raise ValueError("A macro must export at least one AXI master or slave interface.")
+        return self
+
 class Project(BaseModel):
     """
     Basic project metadata.
@@ -397,6 +416,8 @@ class Project(BaseModel):
     name: str
     description: str
     author: str
+    build_mode: Literal["standalone", "macro"] = "standalone"
+    macro_settings: Optional[MacroSettings] = None
 
 class GlobalBus(BaseModel):
     """
@@ -653,6 +674,14 @@ class OllivanderConfig(BaseModel):
     testbench: Optional[Dict[str, Any]] = None
     software_stack: Optional[Dict[str, Any]] = None
 
+    @model_validator(mode='after')
+    def enforce_macro_rules(self) -> 'OllivanderConfig':
+        if self.project.build_mode == "macro":
+            if self.padframe is not None:
+                print("[INFO] Build mode is 'macro'. Forcing padframe to None (Phase 7 and 8 will be skipped).")
+                self.padframe = None
+        return self
+
     # Allows Mako templates to safely use config.get("key", default) as if it were a dictionary
     def get(self, key, default=None):
         return getattr(self, key, default)
@@ -677,6 +706,10 @@ def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] =
         # If the component was wrapped in a NoC Tile during Phase 1, we must validate
         # the underlying original user IP (the Isle), not the auto-generated Tile wrapper.
         c_type = original_types.get(comp.name, comp.type) if original_types else comp.type
+
+        if config.project.build_mode == "macro" and config.project.macro_settings:
+            if config.topology.type == "crossbar" and config.project.macro_settings.export_type != "isle":
+                raise ValueError("Projects with 'crossbar' topology can only be exported as 'isle' macros.")
         
         # TOPOLOGY ENFORCEMENT: Crossbar cannot use NoC-specific components
         if config.topology.type == "crossbar":

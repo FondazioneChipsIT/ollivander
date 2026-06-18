@@ -1,0 +1,268 @@
+# ==============================================================================
+# OLLIVANDER UNIFIED SoC ARCHITECTURE SCHEMA - MESH CONFIGURATION
+# ==============================================================================
+# This YAML file describes the Mesh SoC using the Unified Component Model.
+# Ollivander will parse this, recognize the "noc" topology switch, and map
+# the components' logical placements to physical coordinates for FlooNoC.
+# ==============================================================================
+
+project:
+  name: "mesh"
+  description: "AI and Machine Learning acceleration platform (Gwaihir clone)"
+  author: "Ollivander Generator"
+  build_mode: "macro"
+  macro_settings:
+    export_type: "subtile"
+    # Export the native narrow and wide AXI interfaces for direct integration into another NoC
+    slaves:
+      - bus_type: "narrow"
+        target: "[9,3].East"
+      - bus_type: "wide"
+        target: "[9,3].East"
+    masters:
+      - bus_type: "narrow"
+        target: "[9,3].East"
+      - bus_type: "wide"
+        target: "[9,3].East"
+
+# ------------------------------------------------------------------------------
+# 1. TOPOLOGY & INTERCONNECT
+# ------------------------------------------------------------------------------
+# The master switch for Ollivander to use FlooNoC templates instead of Crossbar.
+# In a "noc" topology, components are wrapped in standard "Tiles" and placed
+# on a 2D physical routing mesh.
+topology:
+  type: "noc"
+  noc_settings:
+    type: "floo_noc"
+    routing_algorithm: "XY"     # Deterministic XY routing algorithm
+    networks:
+      # FlooNoC supports multiple parallel physical networks to separate traffic classes.
+      narrow: { data_width: 64, addr_width: 48 }
+      wide:   { data_width: 512, addr_width: 48 }
+    default_tile: "dummy_tile"  # Used to fill empty coordinates in the 2D mesh
+
+# ------------------------------------------------------------------------------
+# 2. SYSTEM MICROARCHITECTURE SETTINGS
+# ------------------------------------------------------------------------------
+# Defines global microarchitectural parameters to ensure system-wide coherence
+# across all components. In a NoC, these size the FIFOs and adapters inside 
+# the individual Tile wrappers.
+system_settings:
+  # Mapping of the AXI 'user' field bits for system-wide coherence
+  user_mapping:
+    amo_msb: 2          # MSB of the AMO Hart ID (used for LR/SC reservation tracking)
+    amo_lsb: 0          # LSB of the AMO Hart ID
+    ecc_err_bit: 4      # Bit index for ECC error reporting
+    
+  # Microarchitecture parameters for the Shared Memory (LLC/L2)
+  llc:
+    max_read_txns: 32   # Outstanding read transactions
+    max_write_txns: 32  # Outstanding write transactions
+    amo_num_cuts: 1     # AXI cuts for Atomic Memory Operations
+    amo_post_cut: true  # Do not bypass cut after AMO conversion
+    
+  # Microarchitecture parameters for Peripheral RegBuses
+  reg_bus:
+    max_read_txns: 8    # Outstanding read transactions
+    max_write_txns: 8   # Outstanding write transactions
+    amo_num_cuts: 1     # AXI cuts for Atomic Memory Operations
+    amo_post_cut: true  # Do not bypass cut after AMO to RegBus conversion
+
+# ------------------------------------------------------------------------------
+# 3. CLOCK & RESET DOMAINS
+# ------------------------------------------------------------------------------
+# Defines the clock generation and distribution network.
+# Resets are automatically derived from clock domains unless explicitly overridden.
+clock_tree:
+  generators: 0 # 0 means no clock generators are instantiated in the chip wrapper (clocks are supplied directly from pads)
+  domains:
+    - name: "system"
+      description: "Main synchronous clock domain for the entire NoC"
+      is_real_time: false
+      has_mux: false
+      has_divider: false
+      has_debug_divider: false
+
+# ------------------------------------------------------------------------------
+# 4. GLOBAL SYSTEM CONTROLLER & REGISTERS
+# ------------------------------------------------------------------------------
+# Ollivander will generate the SystemRDL specification from this section via PeakRDL.
+system_controller:
+  description: "Main system control and status registers (PCRs)"
+  name: "gw_soc_regs"
+  base_addr: 0x18003000       # Memory mapped base address
+  size: 0x00001000            # Size of the memory region
+  scratch_registers: 2        # Number of generic GENERIC_SCRATCHx registers
+  version_registers: 1        # Number of VERSIONx registers
+  jedec_id: 0x00000000        # Value for the JEDEC_IDCODE register
+  clk_gen_status_regs: false  # Clock generators are outside the SoC, no internal lock status
+  
+  # Registers implemented outside the SoC top-level (e.g., in the chip/padframe wrapper).
+  # Ollivander maps these in the RDL (conditionally) and exports the RegBus at the top-level.
+  external_registers:
+    - name: "fll"
+      base_addr: 0x18001000
+    - name: "gw_chip_regs"
+      base_addr: 0x18002000
+      
+  # Auto Control Groups are a powerful feature for NoC arrays.
+  # Instead of generating a separate CSR for each tile instance, it groups them by 
+  # 'target_component_type' and generates a single packed array register.
+  auto_control_groups:
+    - name: "cluster_ctrl"
+      type: "clk_rst_control"
+      target_component_type: "cluster_subtile" # Ollivander auto-sizes this based on count
+    - name: "mem_tile_ctrl"
+      type: "clk_rst_control"
+      target_component_type: "sram_isle"
+
+# ------------------------------------------------------------------------------
+# 5. HOST SYSTEM (Manager)
+# ------------------------------------------------------------------------------
+host:
+  name: "manager"
+  description: "Main application processor (Cheshire host)"
+  type: "cheshire_isle"
+  clock_domain: "system"
+  placement:
+    logical: { x: 9, y: 3 } # Physical 2D coordinate on the FlooNoC mesh
+  export_interfaces: ["gpio", "slink", "uart", "spi", "i2c"]
+  interfaces:
+    axi_master: true
+    noc_networks:
+      # The Host initiates traffic only on the narrow network, but can be
+      # accessed as a slave from both narrow and wide networks.
+      master: ["narrow"]
+      slave: ["narrow", "wide"]
+      noc_mode: "joined" # Automatically instantiates a FlooNoC Join adapter
+    axi_slave:
+      - name: "internal_rom_ram"
+        base_addr: 0x00000000
+        size: 0x20000000      # 512 MB
+      - name: "external_dram"
+        base_addr: 0x80000000
+        size: 0x1800000000    # Off-chip DDR
+  features:
+    # Automatically instantiates dummy AXI slaves returning DECERR for these unconnected ports
+    error_slaves: ["async_axi_llc"]
+    # Automatically ties off these specific native ports to 0 (inputs) or leaves them unconnected
+    terminate_ports: ["async_axi_in", "async_axi_out"]
+  parameters:                 # Renamed from system_config to match HW-First semantics
+    Vga: false                # Aligned standard Cheshire parameter name
+
+# ------------------------------------------------------------------------------
+# 6. SYSTEM COMPONENTS (Compute, Memories, Peripherals)
+# ------------------------------------------------------------------------------
+# List of all hardware blocks attached to the SoC. 
+# In a NoC, each block MUST be encapsulated in a "Tile" wrapper (or an "Isle" 
+# which Ollivander will automatically wrap in a Universal Tile).
+components:
+  # -- COMPUTE CLUSTERS (Snitch) --
+  - name: "compute_clusters"
+    description: "AI and Machine Learning compute clusters"
+    type: "cluster_subtile"
+    clock_domain: "system"
+    # A 'box' placement automatically generates a 2D array of instances.
+    # Here: X from 4 to 7 (4 columns), Y from 0 to 3 (4 rows) = 16 clusters total!
+    placement:
+      logical:
+        box: { x_start: 4, x_end: 7, y_start: 0, y_end: 3 }
+    export_interfaces: ["debug_req"]
+    interfaces:
+      axi_master: true
+      noc_networks:
+        master: ["narrow", "wide"]
+        slave: ["narrow", "wide"]
+        # "dual" mode means the component natively exposes two separate AXI ports
+        # (one for narrow, one for wide) without needing a Join adapter.
+        noc_mode: "dual"
+      axi_slave:
+        - name: "cluster_tcdm_and_periph"
+          base_addr: 0x20000000
+          size_per_instance: 0x00040000 # 256 kB per cluster
+    features: 
+      multicast_target: true  
+    parameters:
+      UseHWPE: true
+
+  # -- SHARED L2 MEMORY --
+  - name: "l2_shared_memory"
+    description: "Level 2 shared SRAM memory"
+    type: "sram_isle" # Topology-agnostic memory block
+    clock_domain: "system"
+    # You can define multiple disjoint placement boxes for the same component type.
+    # Here we instantiate 8 memory banks (4 on the West edge, 4 on the East edge).
+    placement:
+      logical:
+        - box: { x_start: 0, x_end: 0, y_start: 0, y_end: 3 } # West column
+        - box: { x_start: 8, x_end: 8, y_start: 0, y_end: 3 } # East inner column
+    interfaces:
+      noc_networks:
+        slave: ["narrow", "wide"]
+        noc_mode: "joined"
+      axi_slave:
+        - name: "l2_spm_global"
+          base_addr: 0x70000000
+          size_per_instance: 0x00100000 # 1 MB per tile
+    parameters:
+      AxiUserAtop: true # Hardware atomics enabled
+      SramDataWidth: 128
+      SramNumWords: 1024
+      MemSize: 0x00100000
+
+  # -- NARROW SCRATCHPAD MEMORY --
+  - name: "top_spm_narrow"
+    description: "Narrow network scratchpad memory"
+    type: "spm_isle" # Topology-agnostic single-port memory
+    clock_domain: "system"
+    placement:
+      logical: { x: 9, y: 2 }
+    interfaces:
+      noc_networks:
+        slave: ["narrow"]
+      axi_slave:
+        - name: "spm_narrow_buffer"
+          base_addr: 0x60000000
+          size: 0x00040000
+    parameters:
+      SpmWordsPerBank: 2048
+      SpmDataWidth: 64
+
+  # -- WIDE SCRATCHPAD MEMORY --
+  - name: "top_spm_wide"
+    description: "Wide network scratchpad memory"
+    type: "spm_isle" # Topology-agnostic single-port memory
+    clock_domain: "system"
+    placement:
+      logical: { x: 9, y: 1 }
+    interfaces:
+      noc_networks:
+        slave: ["wide"]
+      axi_slave:
+        - name: "spm_wide_buffer"
+          base_addr: 0x60040000
+          size: 0x00040000
+    parameters:
+      SpmWordsPerBank: 1024
+      SpmDataWidth: 128
+
+# ------------------------------------------------------------------------------
+# 7. TESTBENCH CONFIGURATION
+# ------------------------------------------------------------------------------
+# Instructions for the simulation environment.
+testbench:
+  preload_memories:
+    - instance: "i_tile_0_0.sram_array" # Hierarchical RTL path to the first L2 tile
+      file: "generated/sw/hello_world.hex"    # Path to the compiled hex binary
+
+# ------------------------------------------------------------------------------
+# 8. SOFTWARE STACK & FIRMWARE
+# ------------------------------------------------------------------------------
+# Defines the toolchain and target memory for automated bare-metal C compilation.
+software_stack:
+  toolchain: "riscv64-unknown-elf-"
+  boot_memory: "l2_shared_memory"    # Ollivander will use this to auto-generate the Linker Script
+  test_app:
+    name: "hello_world"
+    auto_generate_c: true            # Instructs Ollivander to create a basic main.c

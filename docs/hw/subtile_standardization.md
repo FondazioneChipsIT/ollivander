@@ -47,6 +47,16 @@ To guarantee system-wide coherence without tight coupling to a specific system p
 *   `AxiUserAmoMsb` / `AxiUserAmoLsb`: Bit mapping for Atomic Memory Operation (AMO) reservation IDs.
 *   `AxiUserEccErrBit`: Bit mapping for the ECC error flag within the `user` field.
 
+### 2.4 AXI Struct Parameter Types (Strict Type Equivalence)
+To avoid strict type equivalence errors, Subtiles should expose their AXI structs as `parameter type` in the module header.
+*   **Standard / Joined Mode:**
+    *   `axi_req_t`, `axi_resp_t`
+*   **Dual Mode:**
+    *   `axi_narrow_req_t`, `axi_narrow_resp_t`
+    *   `axi_wide_req_t`, `axi_wide_resp_t`
+
+Ollivander will automatically inject the appropriate network types from the local NoC package when instantiating the Subtile.
+
 ---
 
 ## 3. Supported Interfaces & Port Naming

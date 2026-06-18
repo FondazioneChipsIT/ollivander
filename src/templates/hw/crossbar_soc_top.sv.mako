@@ -149,15 +149,14 @@ ${license()}\
 // peripherals (UART, SPI, I2C), and debug interfaces (JTAG), while hiding
 // the internal routing matrices and synchronization logic.
 //
-// BENDER: name="axi"
-// BENDER: name="register_interface"
+// OLLIVANDER_MACRO_PRAGMAS_PLACEHOLDER
 
 `include "axi/typedef.svh"
 `include "axi/assign.svh"
 `include "register_interface/typedef.svh"
 `include "apb/typedef.svh"
 
-module ${p_name}
+module ${top_level_module_name}
   import ${pkg}::*;
   import ${rpkg}::*;
   import axi_pkg::*;
@@ -175,18 +174,35 @@ module ${p_name}
 % endfor
 #(
   // Standard System Parameters extracted from Configuration
-  parameter int unsigned AxiAddrWidth = ${config.topology.global_bus.addr_width},
-  parameter int unsigned AxiDataWidth = ${config.topology.global_bus.data_width},
-  parameter int unsigned AxiUserWidth = ${config.topology.global_bus.user_width},
-  parameter int unsigned AxiIdWidth   = ${config.topology.global_bus.mst_id_width}
+  localparam int unsigned AxiAddrWidth = ${config.topology.global_bus.addr_width},
+  localparam int unsigned AxiDataWidth = ${config.topology.global_bus.data_width},
+  localparam int unsigned AxiUserWidth = ${config.topology.global_bus.user_width},
+  localparam int unsigned AxiIdWidth   = ${config.topology.global_bus.mst_id_width}
+% if config.project.build_mode == "macro":
+  ,
+  localparam int unsigned AxiInIdWidth  = ${config.topology.global_bus.mst_id_width},
+  localparam int unsigned AxiOutIdWidth = ${config.topology.global_bus.mst_id_width}
+% endif
+% if config.project.build_mode == "macro":
+  ,
+  // Macro Types
+  parameter type axi_req_t  = ${pkg}::soc_axi_req_t,
+  parameter type axi_resp_t = ${pkg}::soc_axi_resp_t
+% endif
 ) (
   // ---------------------------------------------------------
   // Global Clocks, Resets and Control
   // ---------------------------------------------------------
+% if config.clock_tree.generators > 0:
   input  logic [${config.clock_tree.generators - 1}:0] domain_clk_i,
   input  logic [${config.clock_tree.generators - 1}:0] clk_gen_lock_i,
+% else:
+  input  logic clk_i,
+  input  logic rst_ni,
+% endif
   input  logic pwr_on_rst_ni,
   input  logic test_mode_i,
+  input  logic rtc_i,
   input  logic [1:0] boot_mode_i\
 <%
     top_ports = []
@@ -260,6 +276,14 @@ module ${p_name}
                     conn_str = f".{internal_port:<17} ( {top_port} )"
                     if conn_str not in comp_extra_conns[comp.name]:
                         comp_extra_conns[comp.name].append(conn_str)
+
+    if config.project.build_mode == "macro" and config.project.macro_settings:
+        if config.project.macro_settings.slaves:
+            top_ports.append("input  axi_req_t  axi_req_i")
+            top_ports.append("output axi_resp_t axi_resp_o")
+        if config.project.macro_settings.masters:
+            top_ports.append("output axi_req_t  axi_req_o")
+            top_ports.append("input  axi_resp_t axi_resp_i")
 %>\
 % if top_ports:
 ,
@@ -416,6 +440,10 @@ ${clock_and_reset_tree(config, p_name)}
   logic [`IOMSB(${pkg}::NumAxiMasters):0][${mst_w}-1:0] xbar_mst_${sig};
 % endfor
 
+  // Synchronous Masters (Components -> Host)
+  soc_axi_req_t  [`IOMSB(${pkg}::NumAxiMastersSync):0] xbar_sync_mst_req;
+  soc_axi_resp_t [`IOMSB(${pkg}::NumAxiMastersSync):0] xbar_sync_mst_rsp;
+
   // Dedicated LLC Wires (Host <-> LLC Peripheral)
 % for sig, slv_w, mst_w in channels:
 <%
@@ -469,6 +497,18 @@ ${clock_and_reset_tree(config, p_name)}
   % endfor
 % endif
 
+% if config.project.build_mode == "macro" and config.project.macro_settings:
+ % if config.project.macro_settings.slaves:
+  // Macro slave interface -> Host's sync master slot
+  assign xbar_sync_mst_req[${pkg}::NumAxiMastersSync - 1] = axi_req_i;
+  assign axi_resp_o = xbar_sync_mst_rsp[${pkg}::NumAxiMastersSync - 1];
+ % endif
+ % if config.project.macro_settings.masters:
+  // Macro master interface <- Host's sync slave slot
+  assign axi_req_o = xbar_sync_slv_req[${pkg}::NumAxiSlavesSync - 1];
+  assign xbar_sync_slv_rsp[${pkg}::NumAxiSlavesSync - 1] = axi_resp_i;
+ % endif
+% endif
 
   // Logical Aliases for sparse interrupt mapping.
   // If an interrupt destination is just a single bit of a larger bus, we create an alias wire.
@@ -876,4 +916,4 @@ ${clock_and_reset_tree(config, p_name)}
  % endif
 % endfor
 
-endmodule : ${p_name}
+endmodule : ${top_level_module_name}

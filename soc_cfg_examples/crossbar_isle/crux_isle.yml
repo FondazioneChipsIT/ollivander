@@ -1,0 +1,436 @@
+# ==============================================================================
+# OLLIVANDER UNIFIED SoC ARCHITECTURE SCHEMA - crux CONFIGURATION
+# ==============================================================================
+# This YAML file describes the crux SoC using the Unified Component Model.
+# Ollivander will parse this, recognize the "crossbar" topology switch, and map
+# the components to a central AXI4 global interconnect (provided by the host).
+# ==============================================================================
+
+project:
+  name: "crux"
+  description: "crux Heterogeneous Multi-Core SoC Specification"
+  author: "Ollivander Generator"
+  build_mode: "macro"
+  macro_settings:
+    export_type: "isle"
+    # Export one AXI slave port to allow the parent SoC to access this macro's memory map.
+    slaves:
+      - bus_type: "standard"
+        target: "host" # Target is required by schema, but ignored by crossbar logic
+    # Export one AXI master port to allow this macro to access the parent's memory map.
+    masters:
+      - bus_type: "standard"
+        target: "host" # Target is required by schema, but ignored by crossbar logic
+
+# ------------------------------------------------------------------------------
+# 1. TOPOLOGY & INTERCONNECT
+# ------------------------------------------------------------------------------
+# The master switch for Ollivander to select the interconnect generation engine.
+# In a "crossbar" topology, the Host component instantiates a central, multi-dimensional
+# AXI interconnect. All masters and slaves connect directly to this central router.
+topology:
+  type: "crossbar"
+  global_bus:
+    protocol: "AXI4"
+    data_width: 64      # Main AXI data width (in bits)
+    addr_width: 48      # Main AXI address width (in bits)
+    user_width: 10      # User bits (used by Cheshire for RISC-V AMOs and bus errors)
+    mst_id_width: 2     # Master ID width assigned by the crossbar
+
+# ------------------------------------------------------------------------------
+# 2. SYSTEM MICROARCHITECTURE SETTINGS
+# ------------------------------------------------------------------------------
+# Defines deep microarchitectural parameters to ensure system-wide coherence.
+# Ollivander passes these down to the AXI adapters and FIFOs in the top-level
+# to guarantee there are no parameter mismatches between different IPs.
+system_settings:
+  # Mapping of the AXI 'user' sideband signal bits.
+  user_mapping:
+    amo_msb: 2          # MSB of the AMO Hart ID (used for LR/SC reservation tracking)
+    amo_lsb: 0          # LSB of the AMO Hart ID
+    ecc_err_bit: 4      # Bit index for ECC error reporting
+    
+  # Crossbar sizing for the Last Level Cache (LLC/L2) AXI network
+  llc:
+    max_read_txns: 32   # Outstanding read transactions
+    max_write_txns: 32  # Outstanding write transactions
+    amo_num_cuts: 1     # AXI cuts for Atomic Memory Operations
+    
+  # Crossbar sizing for the low-speed peripheral configuration bus (RegBus)
+  reg_bus:
+    max_read_txns: 8    # Outstanding read transactions
+    max_write_txns: 8   # Outstanding write transactions
+    amo_num_cuts: 1     # AXI cuts for Atomic Memory Operations
+    amo_post_cut: true  # Do not bypass cut after AMO to RegBus conversion
+
+# ------------------------------------------------------------------------------
+# 3. CLOCK & RESET DOMAINS
+# ------------------------------------------------------------------------------
+# Defines the clock generation and distribution network.
+# Ollivander uses this to automatically instantiate glitch-free muxes, dividers, 
+# and the related configuration registers in the System Controller.
+# Reset trees are automatically derived from these clock domains.
+clock_tree:
+  generators: 0               # 0 means no clock generators (clocks supplied directly from parent SoC)
+  domains:
+    - name: "rt"
+      description: "Real-Time Clock for CLINT and AON timers"
+      is_real_time: true      # Bypass SW control: always-on, cannot be gated
+      static_div: 100         # Static division value (e.g. FLL0 / 100)
+      has_mux: false
+      has_divider: false
+
+    - name: "host"
+      description: "Main Host Clock for Cheshire CPU"
+      has_divider: false      # Host usually runs at max speed (no divider)
+      has_debug_divider: true # Generates a parallel, slower clock for JTAG/DMI
+      has_mux: false
+      
+    - name: "periph"
+      description: "Clock domain for slow/medium speed peripherals"
+      has_divider: true       # Generates SW-programmable divider registers
+      has_mux: true           # Generates a glitch-free mux to switch between FLLs
+      has_debug_divider: true
+      default_div: 1          # Default division value at boot
+
+    - name: "safety"
+      description: "Clock domain for the Safety Island"
+      has_divider: true
+      has_mux: true
+      has_debug_divider: true
+      default_div: 1
+
+    - name: "secure"
+      description: "Clock domain for the Security Island"
+      has_divider: true
+      has_mux: true
+      has_debug_divider: true
+      default_div: 1
+
+    - name: "pulp"
+      description: "Clock domain for the PULP Integer Cluster"
+      has_divider: true
+      has_mux: true
+      has_debug_divider: true
+      default_div: 1
+
+    - name: "spatz"
+      description: "Clock domain for the Spatz Vectorial Cluster"
+      has_divider: true
+      has_mux: true
+      has_debug_divider: true
+      default_div: 1
+
+    - name: "l2"
+      description: "Clock domain for the L2 Shared Memory"
+      has_divider: true
+      has_mux: true
+      has_debug_divider: true
+      default_div: 1
+
+# ------------------------------------------------------------------------------
+# 4. GLOBAL SYSTEM CONTROLLER & REGISTERS
+# ------------------------------------------------------------------------------
+# Instructs Ollivander to generate the central System Controller (PCRs).
+# It auto-generates a SystemRDL specification that PeakRDL will convert
+# into physical SystemVerilog registers and C-headers for firmware drivers.
+system_controller:
+  description: "Main system control and status registers (PCRs)"
+  name: "sys_ctrl"
+  base_addr: 0x20010000       # Memory mapped base address
+  size: 0x00001000            # Size of the memory region
+  scratch_registers: 2        # Number of generic GENERIC_SCRATCHx registers
+  version_registers: 5        # Number of VERSIONx registers (e.g., for storing Git hashes)
+  jedec_id: 0x00000000        # Value for the JEDEC_IDCODE register (Silicon ID)
+  clk_gen_status_regs: false  # Macro has no internal clock generators
+
+# ------------------------------------------------------------------------------
+# 5. PADFRAME & PINMUX (Padrick Integration)
+# ------------------------------------------------------------------------------
+# Useless when build_mode: "macro"
+
+# ------------------------------------------------------------------------------
+# 6. HOST SYSTEM (Manager)
+# ------------------------------------------------------------------------------
+# The Host is the central orchestrator (e.g., a RISC-V application class CPU like Cheshire).
+# It boots the system, configures the clock tree, and manages the PLIC/CLINT.
+host:
+  name: "manager"
+  description: "Main application processor (Cheshire host)"
+  type: "cheshire_isle"       # Must match a SystemVerilog wrapper (e.g., cheshire_isle.sv)
+  clock_domain: "host"        # Automatically wires clk_i/rst_ni to the 'host' clock tree
+  export_interfaces: ["jtag", "uart", "spi", "i2c"] # Routes these physical pins to the Top-Level
+  interfaces:
+    axi_master: true          # The Host initiates transactions
+    axi_slave:
+      - name: "internal_subsystem"
+        base_addr: 0x00000000
+        size: 0x20000000      # 512 MB reserved for internal ROM/RAM/CSRs
+  parameters:
+    # These are mapped directly to the SystemVerilog module #parameters.
+    # Ollivander checks them against the SV header to ensure they exist.
+    NumCores: 1
+    RtcFreq: 1000000
+    Bootrom: true
+    Uart: true
+    I2c: true
+    SpiHost: true
+    Dma: true
+    SerialLink: false
+    Vga: false
+    Snooper: true
+    IrqRouter: true
+  interrupts:
+    # INTERRUPT ROUTING
+    # The Host aggregates interrupts from all peripherals into its PLIC.
+    intr_ext_i:
+      cdc: false              # Disable CDC synchronizers if the source provides stable levels
+      # Dictionary-style mapping automatically creates a concatenated SystemVerilog vector.
+      # Syntax: { [target_bit] : source_component.source_port }
+      source: >
+        {
+          [22] : ethernet.eth_rx_irq_o,
+          [21] : apb_subsystem.system_timer_irq_hi_o,
+          [20] : apb_subsystem.system_timer_irq_lo_o,
+          [19:16] : apb_subsystem.advanced_timer_events_o,
+          [15:12] : apb_subsystem.advanced_timer_channels_o,
+          [11] : apb_subsystem.can_bus_event_o,
+          [10] : apb_subsystem.watchdog_aon_timer_rst_req_o,
+          [9] : apb_subsystem.watchdog_wkup_req_o,
+          [8] : apb_subsystem.watchdog_nmi_wdog_timer_bark_o,
+          [7] : apb_subsystem.watchdog_intr_wdog_timer_bark_o,
+          [6] : apb_subsystem.watchdog_intr_wkup_timer_expired_o,
+          [5] : l2_shared_memory.ecc_error_o,
+          [4] : mailbox.snd_irq_o[11],
+          [3] : mailbox.snd_irq_o[15],
+          [2] : mailbox.snd_irq_o[7],
+          [1] : mailbox.snd_irq_o[9],
+          [0] : pulp_cluster.eoc_o
+        }
+
+# ------------------------------------------------------------------------------
+# 7. SYSTEM COMPONENTS (Compute, Memories, Peripherals)
+# ------------------------------------------------------------------------------
+# List of all hardware IPs attached to the SoC interconnect.
+# Each block MUST be encapsulated in an "Isle" SystemVerilog wrapper 
+# (e.g., `<type>.sv`) placed in the `components/` directory.
+components:
+  - name: "hyperbus"
+    description: "High-speed external memory interface (DRAM/Flash)"
+    type: "hyperbus_isle"
+    clock_domain: "periph"
+    export_interfaces: ["hyperbus"]
+    interfaces:
+      llc_port:
+        - base_addr: 0x80000000
+          size: 0x08000000
+      regbus_slave:
+        - base_addr: 0x20009000
+          size: 0x00001000
+          # sync_domain: false means this IP runs on a different clock (periph) than the host.
+          # Ollivander will automatically instantiate an async AXI/RegBus CDC adapter!
+          sync_domain: false
+
+  - name: "l2_shared_memory"
+    description: "Level 2 shared SRAM with ECC"
+    type: "l2_isle"
+    clock_domain: "l2"
+    interfaces:
+      axi_slave:
+        - ports: 2             # Automatically splits the crossbar routing into an array of 2 AXI ports
+          base_addr: 0x78000000
+          size: 0x00200000
+          sync_domain: false
+      regbus_slave:
+        - base_addr: 0x2000B000
+          size: 0x00001000
+          sync_domain: false
+
+  - name: "safety_island"
+    description: "Triple-Core-Lockstep RV32 system for ASIL compliant tasks"
+    type: "safety_island_isle"
+    clock_domain: "safety"
+    export_interfaces: ["jtag"]
+    interfaces:
+      axi_master: true
+      axi_slave:
+        - base_addr: 0x60000000
+          size: 0x00800000
+          sync_domain: false
+    system_config:
+      # These flags tell the System Controller to generate dedicated CSRs for this IP.
+      isolate: true           # Generates an AXI isolation fence (to safely turn off the domain)
+      fetch_enable: true      # Generates a boot-enable bit
+      boot_addr: 0x70000000   # Generates a programmable boot address register
+    interrupts:
+      irqs_i: 
+        cdc: false
+        source: >
+          {
+            [55:29] : manager.intr_ext_o[55:29],
+            [28:4]  : manager.intr_ext_o[24:0],
+            [3] : mailbox.snd_irq_o[8],
+            [2] : mailbox.snd_irq_o[10],
+            [1] : mailbox.snd_irq_o[12],
+            [0] : mailbox.snd_irq_o[6]
+          }
+
+  - name: "security_island"
+    description: "Hardware Root-of-Trust (OpenTitan/Ibex)"
+    type: "security_island_isle"
+    clock_domain: "secure"
+    export_interfaces: ["jtag", "uart", "spi"]
+    interfaces:
+      axi_master: true
+    system_config:
+      isolate: true
+      fetch_enable: true
+      boot_addr: 0x70000000
+    interrupts:
+      # A simple string directly connects an output wire to this input.
+      # Standard bitwise logic operators (like OR '|') are supported!
+      irq_ibex_i: { source: "mailbox.snd_irq_o[5] | mailbox.snd_irq_o[14]", cdc: false }
+      cfi_req_irq_i: { source: "manager.intr_ext_o[23]" }
+      cfi_watermark_irq_i: { source: "manager.intr_ext_o[22]" }
+
+  - name: "pulp_cluster"
+    description: "Multicore array for integer math acceleration"
+    type: "pulp_cluster_isle"
+    clock_domain: "pulp"
+    interfaces:
+      axi_master: true
+      axi_slave:
+        - base_addr: 0x50000000
+          size: 0x00800000
+          sync_domain: false
+      dma_events: true
+    system_config:
+      isolate: true
+      fetch_enable: true
+      boot_enable: true
+      boot_addr: 0x70000000
+      has_busy_status: true   # Auto-generates a read-only 'busy' status register in the System Controller
+      has_eoc_status: true    # Auto-generates an End-Of-Computation flag
+    interrupts:
+      mbox_irq_i: { source: "mailbox.snd_irq_o[4]", cdc: false } 
+      dbg_irq_valid_i: { source: "safety_island.debug_req_o[39:32]", cdc: false }
+
+  - name: "spatz_cluster"
+    description: "Vectorial / Floating-point accelerator"
+    type: "spatz_cluster_isle"
+    clock_domain: "spatz"
+    interfaces:
+      axi_master: true
+      axi_slave:
+        - base_addr: 0x51000000
+          size: 0x00800000
+          sync_domain: false
+    system_config:
+      isolate: true
+      fetch_enable: false
+      boot_addr: 0x70000000
+      has_busy_status: true
+      debug_req: true
+    interrupts:
+      msip_i: 
+        cdc: false
+        source: >
+          {
+            [1] : mailbox.snd_irq_o[3] | mailbox.snd_irq_o[1],
+            [0] : mailbox.snd_irq_o[2] | mailbox.snd_irq_o[0]
+          }
+      mtip_i:
+        cdc: false
+        source: >
+          {
+            [7:0] : {8{manager.mtip_ext_o}}
+          }
+      # 'none' explicitly ties the interrupt input to 0 to avoid floating wires
+      meip_i: { source: "none" }
+
+  - name: "mailbox"
+    description: "Centralized Mailbox for cross-domain Machine Software Interrupts (MSI)"
+    type: "mailbox_isle"
+    clock_domain: "host"
+    interfaces:
+      axi_slave:
+        - base_addr: 0x40000000
+          size: 0x00001000
+          sync_domain: true
+
+
+  - name: "ethernet"
+    description: "Gigabit Ethernet MAC with built-in DMA"
+    type: "ethernet_isle"
+    clock_domain: "periph"
+    export_interfaces: ["phy", "eth_clk200"]
+    interfaces:
+      axi_master: true
+      regbus_slave:
+        - base_addr: 0x20000000
+          size: 0x00001000
+          sync_domain: false
+    dedicated_clock_div:
+      # Auto-generates an independent clock divider specifically for this IP (e.g., for RGMII)
+      name: "eth"
+      default_div: 10
+
+  - name: "apb_subsystem"
+    description: "Subsystem for low-speed automotive/industrial peripherals"
+    type: "apb_subsystem_isle"
+    clock_domain: "periph"
+    export_interfaces: ["can_bus"]
+    interfaces:
+      axi_slave:
+        - base_addr: 0x20001000
+          size: 0x00009000
+          sync_domain: false
+    parameters:
+      ApbDataWidth: 32
+      ApbAddrWidth: 32
+    # Components nested inside an 'apb_subsystem' will be instantiated within its wrapper.
+    # Ollivander automatically generates the AXI-to-APB conversion pipeline and demultiplexer!
+    components:
+      - name: "system_timer"
+        description: "General purpose system timer"
+        type: "apb_timer_unit"
+        base_addr: 0x20004000
+        size: 0x00001000
+
+      - name: "advanced_timer"
+        description: "Advanced timer with PWM and event capabilities"
+        type: "apb_adv_timer"
+        base_addr: 0x20005000
+        size: 0x00001000
+
+      - name: "watchdog"
+        description: "Always-On (AON) watchdog timer"
+        type: "aon_timer"
+        base_addr: 0x20007000
+        size: 0x00001000
+
+      - name: "can_bus"
+        description: "Controller Area Network (CAN) bus interface"
+        type: "can_top_apb"
+        base_addr: 0x20001000
+        size: 0x00001000
+
+# ------------------------------------------------------------------------------
+# 8. TESTBENCH CONFIGURATION
+# ------------------------------------------------------------------------------
+# Instructions for the simulation environment.
+testbench:
+  preload_memories:
+    - instance: "l2_shared_memory.sram_array" # Hierarchical RTL path inside the SoC
+      file: "generated/sw/hello_world.hex"    # Path to the compiled hex binary
+
+# ------------------------------------------------------------------------------
+# 9. SOFTWARE STACK & FIRMWARE
+# ------------------------------------------------------------------------------
+# Defines the toolchain and target memory for automated bare-metal C compilation.
+software_stack:
+  toolchain: "riscv64-unknown-elf-"
+  boot_memory: "l2_shared_memory"    # Ollivander will use this to auto-generate the Linker Script
+  test_app:
+    name: "hello_world"
+    auto_generate_c: true            # Instructs Ollivander to create a basic main.c

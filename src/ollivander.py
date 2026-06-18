@@ -293,7 +293,7 @@ def main():
     bender_exe = shutil.which("bender") or (str(base_dir / "bender") if (base_dir / "bender").is_file() else "bender")
     lock_file = env.bender_dir / "Bender.lock"
     try:
-        if lock_file.is_file():
+        if lock_file.is_file() and env.bender_manifest_path.is_file() and lock_file.stat().st_mtime >= env.bender_manifest_path.stat().st_mtime:
             subprocess.run([bender_exe, "checkout"], cwd=env.bender_dir, check=True)
         else:
             subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True)

@@ -43,6 +43,14 @@ To guarantee system-wide coherence without introducing tight coupling to a speci
 *   `AxiUserEccErrBit`: Bit mapping for the ECC error flag within the `user` field.
 *   `AxiAmoNumCuts`: Number of pipeline registers in the AXI ATOP adapters.
 
+### 2.4 AXI Struct Parameter Types (Strict Type Equivalence)
+SystemVerilog enforces strict type equivalence for structs. To avoid compilation errors when instantiating Isles in different SoCs (or when exporting an entire SoC as a Macro IP), Isles should expose their AXI structs as `parameter type` in the module header, rather than hardcoding a specific package.
+*   `axi_req_t`: Synchronous AXI request type.
+*   `axi_resp_t`: Synchronous AXI response type.
+*   `axi_aw_chan_t`, `axi_w_chan_t`, `axi_b_chan_t`, `axi_ar_chan_t`, `axi_r_chan_t`: Asynchronous channel types (optional, if the IP supports CDC internally).
+
+Ollivander will automatically inject the local SoC package types (e.g., `my_soc_pkg::soc_axi_req_t`) when instantiating the Isle.
+
 ---
 
 ## 3. Supported Interfaces & Port Naming

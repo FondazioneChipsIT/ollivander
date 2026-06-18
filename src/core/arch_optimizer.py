@@ -92,9 +92,9 @@ def autoconfigure_host(soc_config):
     if soc_config.topology.type == "noc":
         # In a NoC, the Host is a single node. Its AXI counts are bounded to 1
         # (the connection to its local Chimney).
-        host_axi_mst_sync = 1 if ('axi_slave' in soc_config.host.interfaces or 'llc_port' in soc_config.host.interfaces) else 0
+        host_axi_mst_sync = 1 if soc_config.host.interfaces and 'axi_slave' in soc_config.host.interfaces else 0
         host_axi_mst_async = 0
-        host_axi_slv_sync = 1 if soc_config.host.interfaces.get('axi_master') else 0
+        host_axi_slv_sync = 1 if soc_config.host.interfaces and 'axi_master' in soc_config.host.interfaces else 0
         host_axi_slv_async = 0
         # For NoC, RegNumSlvSync must account for ALL slaves attached to the Host's
         # local RegBus. This includes external register blocks AND the internal System Controller.
@@ -131,6 +131,21 @@ def autoconfigure_host(soc_config):
                         host_reg_slv_sync += 1
                     else:
                         host_reg_slv_async += 1
+
+    # If the SoC is being exported as a reusable macro, we need to add extra
+    # AXI ports on the Host to bridge the internal interconnect to the outside world.
+    # IMPORTANT: This applies ONLY to Crossbar topologies! In a NoC, exported macro 
+    # interfaces are routed through the peripheral Border Routers, NOT the Host.
+    if soc_config.project.build_mode == "macro" and soc_config.project.macro_settings:
+        if soc_config.topology.type == "crossbar":
+            if soc_config.project.macro_settings.slaves:
+                # Exporting a slave port on the macro means the parent SoC acts as a master.
+                # The host needs an extra synchronous master port to listen to it.
+                host_axi_mst_sync += len(soc_config.project.macro_settings.slaves)
+            if soc_config.project.macro_settings.masters:
+                # Exporting a master port on the macro means it acts as a master to the parent.
+                # The host needs an extra synchronous slave port for it to connect to.
+                host_axi_slv_sync += len(soc_config.project.macro_settings.masters)
 
     # 4. Inject the calculated parameters into the Host component's configuration.
     if getattr(soc_config.host, 'parameters', None) is None:

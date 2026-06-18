@@ -45,6 +45,14 @@
                   if is_sync: axi_slaves_sync.append(obj)
                   else: axi_slaves_async.append(obj)
                   
+  if config.project.build_mode == "macro" and config.project.macro_settings and config.project.macro_settings.masters:
+      for idx, mst in enumerate(config.project.macro_settings.masters):
+          axi_slaves_sync.append({
+              'name': f'macro_export_{idx}',
+              'base': '0',
+              'size': '0'
+          })
+
   axi_slaves = axi_slaves_async + axi_slaves_sync
                   
   # ============================================================================
@@ -190,6 +198,7 @@ package ${pkg};
   // Master and Slave enumeration indices. These are crucial to correctly wire 
   // components to specific ports of the central multidimensional AXI crossbar.
   localparam int unsigned NumAxiMasters = ${len(axi_masters)};
+  localparam int unsigned NumAxiMastersSync = ${config.host.parameters.get('AxiNumMstSync', 0)};
   typedef enum int {
 % for mst in axi_masters:
     AxiMstIdx_${camel_case(mst)} = ${loop.index}${"," if not loop.last else ""}
@@ -197,7 +206,7 @@ package ${pkg};
   } axi_mst_idx_e;
 
   localparam int unsigned NumAxiSlavesAsync = ${len(axi_slaves_async)};
-  localparam int unsigned NumAxiSlavesSync  = ${len(axi_slaves_sync)};
+  localparam int unsigned NumAxiSlavesSync  = ${config.host.parameters.get('AxiNumSlvSync', len(axi_slaves_sync))};
   localparam int unsigned NumAxiSlaves      = NumAxiSlavesAsync + NumAxiSlavesSync;
   typedef enum int {
 % for slv in axi_slaves:

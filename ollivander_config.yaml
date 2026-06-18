@@ -78,8 +78,10 @@ dependencies:
     git: "https://github.com/pulp-platform/floonoc.git"
     rev: "main"
   hci:
-    git: "https://github.com/pulp-platform/hci.git"
-    rev: "master"
+    git: "https://github.com/FondazioneChipsIT/hci.git"
+    rev: "3e63936991569d0b1e315d6914478937b37bb338"
+    # git: "https://github.com/pulp-platform/hci.git"
+    # rev: "master"
   hyperbus:
     git: "https://github.com/pulp-platform/hyperbus.git"
     rev: "main"

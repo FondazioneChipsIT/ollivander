@@ -54,6 +54,24 @@
       for y in range(max_y + 1):
           if (x,y) not in grid:
               grid[(x,y)] = (None, 0)
+              
+  # ============================================================================
+  # MACRO TARGET PARSING
+  # ============================================================================
+  # Parses user-defined macro export targets in the format "[x,y].Direction"
+  used_edges = set()
+  macro_targets = {}
+  if config.project.build_mode == "macro" and config.project.macro_settings:
+      for t_type in ["slaves", "masters"]:
+          items = getattr(config.project.macro_settings, t_type) or []
+          for item in items:
+              m = re.match(r'\[\s*(\d+)\s*,\s*(\d+)\s*\]\s*\.\s*([A-Za-z]+)', item.target)
+              if m:
+                  tx, ty, tdir = int(m.group(1)), int(m.group(2)), m.group(3).capitalize()
+                  key = (tx, ty, tdir)
+                  used_edges.add(key)
+                  if key not in macro_targets: macro_targets[key] = {"masters": [], "slaves": []}
+                  macro_targets[key][t_type].append(item.bus_type)
 %><%namespace file="/license_header.mako" import="license"/>\
 ${license()}\
 //
@@ -64,13 +82,12 @@ ${license()}\
 // Mesh Dimensions: ${max_x + 1} x ${max_y + 1}
 // (See ${p_name}_noc_map.csv for the 2D grid placement)
 //
-// BENDER: name="floo_noc"
-// BENDER: name="register_interface"
+// OLLIVANDER_MACRO_PRAGMAS_PLACEHOLDER
 
 `include "floo_noc/typedef.svh"
 `include "register_interface/typedef.svh"
 
-module ${p_name}
+module ${top_level_module_name}
   import ${pkg}::*;
   import ${rpkg}::*;
   import floo_pkg::*;
@@ -87,15 +104,59 @@ module ${p_name}
 % for imp in sorted(all_imports):
   import ${imp}::*;
 % endfor
+<%
+  if config.topology.global_bus:
+      g_addr_w = config.topology.global_bus.addr_width
+      g_data_w = config.topology.global_bus.data_width
+      g_user_w = config.topology.global_bus.user_width
+      g_id_w   = config.topology.global_bus.mst_id_width
+  else:
+      narrow_net = config.topology.noc_settings.networks.get('narrow') if config.topology.noc_settings and config.topology.noc_settings.networks else None
+      g_addr_w = narrow_net.addr_width if narrow_net else 48
+      g_data_w = narrow_net.data_width if narrow_net else 64
+      g_user_w = 10
+      g_id_w   = 4
+%>
+#(
+  // Standard System Parameters extracted from Configuration
+  localparam int unsigned AxiAddrWidth = ${g_addr_w},
+  localparam int unsigned AxiDataWidth = ${g_data_w},
+  localparam int unsigned AxiUserWidth = ${g_user_w},
+  localparam int unsigned AxiIdWidth   = ${g_id_w}
+% if config.project.build_mode == "macro":
+  ,
+  localparam int unsigned AxiInIdWidth  = ${g_id_w},
+  localparam int unsigned AxiOutIdWidth = ${g_id_w}
+% endif
+% if config.project.build_mode == "macro" and config.project.macro_settings:
+  ,
+  // Macro Types for Parent SoC Integration
+  parameter type axi_req_t  = ${pkg}::soc_axi_req_t,
+  parameter type axi_resp_t = ${pkg}::soc_axi_resp_t,
+<%
+  has_narrow = "narrow" in config.topology.noc_settings.networks if config.topology.noc_settings and config.topology.noc_settings.networks else False
+  has_wide   = "wide" in config.topology.noc_settings.networks if config.topology.noc_settings and config.topology.noc_settings.networks else False
+  narrow_req_def = f"{pkg}::soc_axi_narrow_req_t" if has_narrow else f"{pkg}::soc_axi_req_t"
+  narrow_rsp_def = f"{pkg}::soc_axi_narrow_resp_t" if has_narrow else f"{pkg}::soc_axi_resp_t"
+  wide_req_def   = f"{pkg}::soc_axi_wide_req_t" if has_wide else f"{pkg}::soc_axi_req_t"
+  wide_rsp_def   = f"{pkg}::soc_axi_wide_resp_t" if has_wide else f"{pkg}::soc_axi_resp_t"
+%>
+  parameter type axi_narrow_req_t  = ${narrow_req_def},
+  parameter type axi_narrow_resp_t = ${narrow_rsp_def},
+  parameter type axi_wide_req_t    = ${wide_req_def},
+  parameter type axi_wide_resp_t   = ${wide_rsp_def}
+% endif
+)
 (
   // Global Clock and Reset
 % if config.clock_tree.generators > 0:
   input  logic [${config.clock_tree.generators - 1}:0] domain_clk_i,
-  input  logic [${config.clock_tree.generators - 1}:0] fll_lock_i,
+  input  logic [${config.clock_tree.generators - 1}:0] clk_gen_lock_i,
   input  logic pwr_on_rst_ni,
 % else:
   input  logic clk_i,
   input  logic rst_ni,
+  input  logic pwr_on_rst_ni,
 % endif
   input  logic test_mode_i,
   input  logic [1:0] boot_mode_i,
@@ -185,6 +246,23 @@ module ${p_name}
                   conn_str = f".{internal_port:<17} ( {top_port_name} )"
                   if conn_str not in comp_extra_conns[key]:
                       comp_extra_conns[key].append(conn_str)
+                      
+  if config.project.build_mode == "macro" and config.project.macro_settings:
+      if config.project.macro_settings.export_type == "isle":
+          if config.project.macro_settings.slaves:
+              all_extra_ports.extend(["input  axi_req_t  axi_req_i", "output axi_resp_t axi_resp_o"])
+          if config.project.macro_settings.masters:
+              all_extra_ports.extend(["output axi_req_t  axi_req_o", "input  axi_resp_t axi_resp_i"])
+      else:
+          if config.project.macro_settings.slaves:
+              for slv in config.project.macro_settings.slaves:
+                  pfx = "narrow" if slv.bus_type == "narrow" else "wide"
+                  all_extra_ports.extend([f"input  axi_{pfx}_req_t  axi_{pfx}_req_i", f"output axi_{pfx}_resp_t axi_{pfx}_resp_o"])
+          if config.project.macro_settings.masters:
+              for mst in config.project.macro_settings.masters:
+                  pfx = "narrow" if mst.bus_type == "narrow" else "wide"
+                  all_extra_ports.extend([f"output axi_{pfx}_req_t  axi_{pfx}_req_o", f"input  axi_{pfx}_resp_t axi_{pfx}_resp_i"])
+
 
   # Add explicit RegBus ports for external registers (e.g., located in the padframe)
   if config.system_controller and config.system_controller.external_registers:
@@ -209,7 +287,7 @@ ${"," if all_extra_ports else ""}
   ${p_name}_sys_regs_pkg::${p_name}_sys_regs__in_t  sys_regs_hwif_in;
 
 % if config.system_controller and config.system_controller.clk_gen_status_regs:
-  assign sys_regs_hwif_in.fll_lock.fll_lock.next  = fll_lock_i;
+  assign sys_regs_hwif_in.clk_gen_lock.clk_gen_lock.next  = clk_gen_lock_i;
 % endif
 
 % for c in config.components:
@@ -268,13 +346,17 @@ ${clock_and_reset_tree(config, p_name)}
       assign tile_wide_i[x][y][East]  = tile_wide_o[x+1][y][West];
     end
     // East/West Boundaries Tie-Offs
+    % if (0, y, 'West') not in used_edges:
     assign tile_req_i[0][y][West] = '0;
     assign tile_rsp_i[0][y][West] = '0;
     assign tile_wide_i[0][y][West] = '0;
+    % endif
     
+    % if (max_x, y, 'East') not in used_edges:
     assign tile_req_i[${max_x}][y][East] = '0;
     assign tile_rsp_i[${max_x}][y][East] = '0;
     assign tile_wide_i[${max_x}][y][East] = '0;
+    % endif
   end
 
   // 3.2 Vertical connections (North <-> South)
@@ -289,13 +371,17 @@ ${clock_and_reset_tree(config, p_name)}
       assign tile_wide_i[x][y][North]  = tile_wide_o[x][y+1][South];
     end
     // North/South Boundaries Tie-Offs
+    % if (x, 0, 'South') not in used_edges:
     assign tile_req_i[x][0][South] = '0;
     assign tile_rsp_i[x][0][South] = '0;
     assign tile_wide_i[x][0][South] = '0;
+    % endif
     
+    % if (x, max_y, 'North') not in used_edges:
     assign tile_req_i[x][${max_y}][North] = '0;
     assign tile_rsp_i[x][${max_y}][North] = '0;
     assign tile_wide_i[x][${max_y}][North] = '0;
+    % endif
   end
 
   // =========================================================================
@@ -568,4 +654,157 @@ ${clock_and_reset_tree(config, p_name)}
  % endfor
 % endfor
 
-endmodule : ${p_name}
+  // =========================================================================
+  // 5. MACRO NOC ADAPTERS (CHIMNEY / JOIN)
+  // =========================================================================
+% if config.project.build_mode == "macro" and macro_targets:
+ % for (tx, ty, tdir), info in macro_targets.items():
+  // --- Border Adapter @ [${tx}, ${ty}] ${tdir} ---
+  <%
+    is_isle = config.project.macro_settings.export_type == "isle"
+    has_slaves = len(info["slaves"]) > 0
+    has_masters = len(info["masters"]) > 0
+    
+    has_narrow_in = has_slaves and ("narrow" in info["slaves"] or not is_isle)
+    has_wide_in = has_slaves and ("wide" in info["slaves"] or is_isle)
+    has_narrow_out = has_masters and ("narrow" in info["masters"] or is_isle)
+    has_wide_out = has_masters and ("wide" in info["masters"] or is_isle)
+    
+    c_name = f"border_{tx}_{ty}_{tdir}"
+  %>
+  id_t ${c_name}_id;
+  assign ${c_name}_id.x = ${tx} ${'- 1' if tdir == 'West' else '+ 1' if tdir == 'East' else ''};
+  assign ${c_name}_id.y = ${ty} ${'- 1' if tdir == 'South' else '+ 1' if tdir == 'North' else ''};
+  
+  axi_narrow_req_t   ${c_name}_narrow_in_req;
+  axi_narrow_resp_t  ${c_name}_narrow_in_rsp;
+  axi_narrow_req_t   ${c_name}_narrow_out_req;
+  axi_narrow_resp_t  ${c_name}_narrow_out_rsp;
+  axi_wide_req_t     ${c_name}_wide_in_req;
+  axi_wide_resp_t    ${c_name}_wide_in_rsp;
+  axi_wide_req_t     ${c_name}_wide_out_req;
+  axi_wide_resp_t    ${c_name}_wide_out_rsp;
+  
+  floo_req_t  ${c_name}_floo_req_o, ${c_name}_floo_req_i;
+  floo_rsp_t  ${c_name}_floo_rsp_o, ${c_name}_floo_rsp_i;
+  floo_wide_t ${c_name}_floo_wide_o, ${c_name}_floo_wide_i;
+  
+  assign tile_req_i[${tx}][${ty}][${tdir}] = ${c_name}_floo_req_o;
+  assign ${c_name}_floo_req_i = tile_req_o[${tx}][${ty}][${tdir}];
+  
+  assign tile_rsp_i[${tx}][${ty}][${tdir}] = ${c_name}_floo_rsp_o;
+  assign ${c_name}_floo_rsp_i = tile_rsp_o[${tx}][${ty}][${tdir}];
+  
+  assign tile_wide_i[${tx}][${ty}][${tdir}] = ${c_name}_floo_wide_o;
+  assign ${c_name}_floo_wide_i = tile_wide_o[${tx}][${ty}][${tdir}];
+  
+  floo_nw_chimney #(
+    .AxiCfgN             ( AxiCfgN ),
+    .AxiCfgW             ( AxiCfgW ),
+    .ChimneyCfgN         ( set_ports(ChimneyDefaultCfg, ${"1'b1" if has_narrow_out else "1'b0"}, ${"1'b1" if has_narrow_in else "1'b0"}) ),
+    .ChimneyCfgW         ( set_ports(ChimneyDefaultCfg, ${"1'b1" if has_wide_out else "1'b0"}, ${"1'b1" if has_wide_in else "1'b0"}) ),
+    .RouteCfg            ( RouteCfg ),
+    .AtopSupport         ( 1'b1 ),
+    .WideRwDecouple      ( WideRwDecouple ),
+    .VcImpl              ( VcImpl ),
+    .MaxAtomicTxns       ( 3 ),
+    .Sam                 ( Sam ),
+    .sam_rule_t          ( sam_rule_t ),
+    .id_t                ( id_t ),
+    .rob_idx_t           ( rob_idx_t ),
+    .hdr_t               ( hdr_t ),
+    .axi_narrow_in_req_t ( axi_narrow_req_t ),
+    .axi_narrow_in_rsp_t ( axi_narrow_resp_t ),
+    .axi_narrow_out_req_t( axi_narrow_req_t ),
+    .axi_narrow_out_rsp_t( axi_narrow_resp_t ),
+    .axi_wide_in_req_t   ( axi_wide_req_t ),
+    .axi_wide_in_rsp_t   ( axi_wide_resp_t ),
+    .axi_wide_out_req_t  ( axi_wide_req_t ),
+    .axi_wide_out_rsp_t  ( axi_wide_resp_t ),
+    .floo_req_t          ( floo_req_t ),
+    .floo_rsp_t          ( floo_rsp_t ),
+    .floo_wide_t         ( floo_wide_t )
+  ) i_chimney_${c_name} (
+    .clk_i               ( ${host_clk} ),
+    .rst_ni              ( host_pwr_on_rst_n ),
+    .id_i                ( ${c_name}_id ),
+    .test_enable_i       ( test_mode_i ),
+    .route_table_i       ( '0 ),
+    .sram_cfg_i          ( '0 ),
+    .axi_narrow_in_req_i ( ${c_name}_narrow_in_req ),
+    .axi_narrow_in_rsp_o ( ${c_name}_narrow_in_rsp ),
+    .axi_narrow_out_req_o( ${c_name}_narrow_out_req ),
+    .axi_narrow_out_rsp_i( ${c_name}_narrow_out_rsp ),
+    .axi_wide_in_req_i   ( ${c_name}_wide_in_req ),
+    .axi_wide_in_rsp_o   ( ${c_name}_wide_in_rsp ),
+    .axi_wide_out_req_o  ( ${c_name}_wide_out_req ),
+    .axi_wide_out_rsp_i  ( ${c_name}_wide_out_rsp ),
+    .floo_req_o          ( ${c_name}_floo_req_o ),
+    .floo_rsp_o          ( ${c_name}_floo_rsp_o ),
+    .floo_wide_o         ( ${c_name}_floo_wide_o ),
+    .floo_req_i          ( ${c_name}_floo_req_i ),
+    .floo_rsp_i          ( ${c_name}_floo_rsp_i ),
+    .floo_wide_i         ( ${c_name}_floo_wide_i )
+  );
+
+  % if is_isle:
+   % if has_slaves:
+  assign ${c_name}_wide_in_req = axi_req_i;
+  assign axi_resp_o = ${c_name}_wide_in_rsp;
+  assign ${c_name}_narrow_in_req = '0;
+   % endif
+   % if has_masters:
+  floo_nw_join #(
+    .AxiCfgN         ( axi_cfg_swap_iw(AxiCfgN) ),
+    .AxiCfgW         ( axi_cfg_swap_iw(AxiCfgW) ),
+    .AxiCfgJoin      ( axi_cfg_swap_iw(floo_pkg::axi_join_cfg(AxiCfgN, AxiCfgW)) ),
+    .EnAtopAdapter   ( 1'b0 ), 
+    .AtopUserAsId    ( 1'b1 ), 
+    .axi_narrow_req_t( axi_narrow_req_t ),
+    .axi_narrow_rsp_t( axi_narrow_resp_t ),
+    .axi_wide_req_t  ( axi_wide_req_t ),
+    .axi_wide_rsp_t  ( axi_wide_resp_t ),
+    .axi_req_t       ( axi_req_t ),
+    .axi_rsp_t       ( axi_resp_t )
+  ) i_join_${c_name} (
+    .clk_i           ( ${host_clk} ),
+    .rst_ni          ( host_pwr_on_rst_n ),
+    .test_enable_i   ( test_mode_i ),
+    .axi_narrow_req_i( ${c_name}_narrow_out_req ),
+    .axi_narrow_rsp_o( ${c_name}_narrow_out_rsp ),
+    .axi_wide_req_i  ( ${c_name}_wide_out_req ),
+    .axi_wide_rsp_o  ( ${c_name}_wide_out_rsp ),
+    .axi_req_o       ( axi_req_o ),
+    .axi_rsp_i       ( axi_resp_i )
+  );
+   % endif
+  % else:
+   % if "narrow" in info["slaves"]:
+  assign ${c_name}_narrow_in_req = axi_narrow_req_i;
+  assign axi_narrow_resp_o = ${c_name}_narrow_in_rsp;
+   % else:
+  assign ${c_name}_narrow_in_req = '0;
+   % endif
+   % if "wide" in info["slaves"]:
+  assign ${c_name}_wide_in_req = axi_wide_req_i;
+  assign axi_wide_resp_o = ${c_name}_wide_in_rsp;
+   % else:
+  assign ${c_name}_wide_in_req = '0;
+   % endif
+   % if "narrow" in info["masters"]:
+  assign axi_narrow_req_o = ${c_name}_narrow_out_req;
+  assign ${c_name}_narrow_out_rsp = axi_narrow_resp_i;
+   % else:
+  assign ${c_name}_narrow_out_rsp = '0;
+   % endif
+   % if "wide" in info["masters"]:
+  assign axi_wide_req_o = ${c_name}_wide_out_req;
+  assign ${c_name}_wide_out_rsp = axi_wide_resp_i;
+   % else:
+  assign ${c_name}_wide_out_rsp = '0;
+   % endif
+  % endif
+ % endfor
+% endif
+
+endmodule : ${top_level_module_name}

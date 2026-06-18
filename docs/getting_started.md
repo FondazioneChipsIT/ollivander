@@ -108,7 +108,28 @@ dependencies:
 
 ---
 
-## 5. Validation, Generation and Simulation
+## 5. Build Modes (Standalone vs Macro)
+
+Before generating, you should decide how your architecture will be used by setting the `build_mode` in your `prometheus.yaml`:
+
+*   **Standalone (`build_mode: "standalone"`)**: The default behavior. Ollivander generates a complete System-on-Chip top-level, wrapping it with the padframe (if defined) and exposing physical I/O pins (e.g., UART, SPI, JTAG). This is ready for physical synthesis or full-chip simulation.
+*   **Macro (`build_mode: "macro"`)**: Generates your architecture as a reusable IP block (a Macro). Instead of physical I/O pins and padframes, it exposes standard AXI Master/Slave interfaces at its boundaries, allowing you to easily instantiate this entire subsystem inside a larger "Parent" SoC.
+
+Example for Macro mode:
+```yaml
+project:
+  name: "prometheus"
+  build_mode: "macro"
+  macro_settings:
+    export_type: "isle" # Exposes a standard AXI interface
+    slaves:
+      - bus_type: "standard"
+        target: "host"
+```
+
+---
+
+## 6. Validation, Generation and Simulation
 
 Open the `Makefile` you copied in Step 4 and ensure the variables (`SOC_YAML`, `ENV_YAML`) match your actual filenames. 
 
@@ -135,7 +156,7 @@ For a clean and definitive build, always rely on the full `make generate` comman
 
 ---
 
-## 6. Software Development and Simulation
+## 7. Software Development and Simulation
 
 If you configured the `software_stack` and `testbench` sections in your YAML, Ollivander bridges the gap between hardware and software by automatically generating a memory-mapped Linker Script (`link.ld`) and a starter C firmware.
 

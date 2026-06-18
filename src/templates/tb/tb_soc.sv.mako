@@ -22,14 +22,24 @@ module tb_${config.project.name}();
   // Clock and Reset definitions
   // ===========================================================================
   logic pwr_on_rst_ni;
-  logic [${config.clock_tree.generators - 1}:0] domain_clk_i;
-  logic [${config.clock_tree.generators - 1}:0] fll_lock_i;
   logic test_mode_i;
   logic [1:0] boot_mode_i;
+  logic rtc_i;
+% if config.clock_tree.generators > 0:
+  logic [${config.clock_tree.generators - 1}:0] domain_clk_i;
+  logic [${config.clock_tree.generators - 1}:0] clk_gen_lock_i;
+% else:
+  logic clk_i;
+  logic rst_ni;
+% endif
+% if config.topology.type == "noc":
+  logic clk_rst_bypass_i;
+% endif
 
   // ===========================================================================
   // Clock Generation
   // ===========================================================================
+% if config.clock_tree.generators > 0:
   // Dynamically generates the required number of clock sources (FLLs) 
   // based on the SoC's clock tree configuration.
   for (genvar i = 0; i < ${config.clock_tree.generators}; i++) begin: gen_clocks
@@ -38,35 +48,63 @@ module tb_${config.project.name}();
       forever #5 domain_clk_i[i] = ~domain_clk_i[i];
     end
   end
+% else:
+  initial begin
+    clk_i = 1'b0;
+    forever #5 clk_i = ~clk_i;
+  end
+% endif
+  initial begin
+    rtc_i = 1'b0;
+    forever #500 rtc_i = ~rtc_i;
+  end
 
   // ===========================================================================
   // Reset Generation
   // ===========================================================================
   // Standard Power-On Reset (POR) sequence.
   // It holds the reset low, applies clocks, and then releases it.
-  // It also fakes the FLL lock signals to allow the internal glitch-free clock 
-  // multiplexers to seamlessly switch to the target frequencies.
   initial begin
     pwr_on_rst_ni = 1'b0;
     test_mode_i   = 1'b0;
     boot_mode_i   = 2'b0;
-    fll_lock_i    = '0;
+% if config.clock_tree.generators > 0:
+    clk_gen_lock_i = '0;
+% else:
+    rst_ni        = 1'b0;
+% endif
+% if config.topology.type == "noc":
+    clk_rst_bypass_i = 1'b0;
+% endif
     #100;
     pwr_on_rst_ni = 1'b1;
+% if config.clock_tree.generators > 0:
     #1000;
-    fll_lock_i = '1; // Assert FLL lock after reset is stable
+    clk_gen_lock_i = '1; // Assert FLL lock after reset is stable
+% else:
+    rst_ni        = 1'b1;
+% endif
   end
 
   // ===========================================================================
   // DUT Instantiation
   // ===========================================================================
   // Instantiates the absolute Top-Level of the generated SoC.
-  ${config.project.name} dut (
-    .domain_clk_i  (domain_clk_i),
-    .fll_lock_i    (fll_lock_i),
+  ${top_level_module_name} dut (
     .pwr_on_rst_ni (pwr_on_rst_ni),
     .test_mode_i   (test_mode_i),
-    .boot_mode_i   (boot_mode_i)
+    .boot_mode_i   (boot_mode_i),
+    .rtc_i         (rtc_i)
+% if config.clock_tree.generators > 0:
+    ,.domain_clk_i  (domain_clk_i)
+    ,.${'fll_lock_i' if config.topology.type == "noc" else 'clk_gen_lock_i'} (clk_gen_lock_i)
+% else:
+    ,.clk_i         (clk_i)
+    ,.rst_ni        (rst_ni)
+% endif
+% if config.topology.type == "noc":
+    ,.clk_rst_bypass_i (clk_rst_bypass_i)
+% endif
   );
 
   // ===========================================================================

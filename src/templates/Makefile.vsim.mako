@@ -13,7 +13,7 @@
 # ==============================================================================
 
 OUT_DIR  ?= ${rel_outdir_path}
-TOP_MOD  ?= ${config.project.name}
+TOP_MOD  ?= ${top_level_module_name}
 VSIM     ?= vsim
 BENDER   ?= bender
 PYTHON   ?= python3
@@ -96,7 +96,7 @@ fast-check: prep-sim
 	@echo "\n[MAKE] Compiling fast RTL (packages and stubs) with QuestaSim..."
 	$(VSIM) -c -do "source $(OUT_DIR)/compile_vsim_fast.tcl; quit"
 	@echo "\n[MAKE] Elaborating top-level with Unresolved Blackboxes..."
-	$(VSIM) -c -do "if {[catch {vopt -suppress 13314,2912,2241 +bbox_u ${config.project.name} -o ${config.project.name}_fast_check}]} {quit -code 1}; quit"
+	$(VSIM) -c -do "if {[catch {vopt -suppress 13314,2912,2241 +bbox_u ${top_level_module_name} -o ${top_level_module_name}_fast_check}]} {quit -code 1}; quit"
 	@echo "\n[SUCCESS] Fast architecture check passed!"
 
 run-sim:

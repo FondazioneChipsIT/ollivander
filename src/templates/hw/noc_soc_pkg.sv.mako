@@ -96,11 +96,16 @@ package ${pkg};
       g_data_w = narrow_net.data_width if narrow_net else 64
       g_user_w = 10
       g_id_w   = 4
+      
+  wide_net = config.topology.noc_settings.networks.get('wide') if config.topology.noc_settings and config.topology.noc_settings.networks else None
 %>
   localparam int unsigned AxiAddrWidth     = ${g_addr_w};
   localparam int unsigned AxiDataWidth     = ${g_data_w};
   localparam int unsigned AxiUserWidth     = ${g_user_w};
   localparam int unsigned AxiIdWidth       = ${g_id_w};
+  % if wide_net:
+  localparam int unsigned AxiWideDataWidth = ${wide_net.data_width};
+  % endif
   
   localparam int unsigned ExtSlvIdWidth    = AxiIdWidth + $clog2(${len(axi_masters)} > 1 ? ${len(axi_masters)} : 2);
   localparam int unsigned LlcIdWidth       = ExtSlvIdWidth + 1; // Margin for LLC bypass bit
@@ -151,6 +156,16 @@ package ${pkg};
 
   `AXI_TYPEDEF_ALL(soc_axi, soc_axi_addr_t, soc_axi_mst_id_t, soc_axi_data_t, soc_axi_strb_t, soc_axi_user_t)
   `AXI_TYPEDEF_ALL(soc_axi_slv, soc_axi_addr_t, soc_axi_slv_id_t, soc_axi_data_t, soc_axi_strb_t, soc_axi_user_t)
+
+  // Aliases for explicit narrow network mapping
+  typedef soc_axi_req_t  soc_axi_narrow_req_t;
+  typedef soc_axi_resp_t soc_axi_narrow_resp_t;
+
+  % if wide_net:
+  typedef logic [AxiWideDataWidth-1:0]   soc_axi_wide_data_t;
+  typedef logic [AxiWideDataWidth/8-1:0] soc_axi_wide_strb_t;
+  `AXI_TYPEDEF_ALL(soc_axi_wide, soc_axi_addr_t, soc_axi_mst_id_t, soc_axi_wide_data_t, soc_axi_wide_strb_t, soc_axi_user_t)
+  % endif
 
   // =========================================================================
   // 0b. NOC AXI WIDTHS

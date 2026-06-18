@@ -30,11 +30,24 @@ software_stack: ...      # 10. Firmware compilation setup (Optional)
 ### 2.1 Project (`project`)
 Basic metadata used to name the generated packages and top-level modules.
 
-| Field         | Type   | Description                                                                     |
-| :------------ | :----- | :------------------------------------------------------------------------------ |
-| `name`        | String | The name of the project (e.g., `carfield`). Dictates the top-level module name. |
-| `description` | String | Brief description of the SoC.                                                   |
-| `author`      | String | Author or organization name.                                                    |
+| Field            | Type   | Description                                                                      |
+| :--------------- | :----- | :------------------------------------------------------------------------------- |
+| `name`           | String | The name of the project (e.g., `carfield`). Dictates the top-level module name.  |
+| `description`    | String | Brief description of the SoC.                                                    |
+| `author`         | String | Author or organization name.                                                     |
+| `build_mode`     | String | *Optional*. `"standalone"` (default) or `"macro"`. If `"macro"`, generates a     |
+|                  |        | reusable IP block instead of a complete SoC.                                     |
+| `macro_settings` | Object | *Optional*. Configuration for macro generation. Evaluated only if                |
+|                  |        | `build_mode` is `"macro"`.                                                       |
+
+**Macro Settings (`macro_settings`)**:
+Defines the interfaces exported at the top-level boundaries when the SoC is generated as a macro.
+*   `export_type`: String. `"isle"` (default, exposes a single unified standard AXI interface) or `"subtile"` (exposes the native narrow and wide networks separately). Note: `"subtile"` is only valid for `"noc"` topologies.
+*   `masters` / `slaves`: List of objects defining the AXI interfaces exported by the macro.
+
+**Macro Export Object**:
+*   `bus_type`: String. `"standard"`, `"narrow"`, or `"wide"`.
+*   `target`: String. The internal connection target. For NoC topology, it is the boundary router's coordinate and side (e.g., `"[9,3].East"`). For Crossbar topology, it is typically `"host"`.
 
 ### 2.2 Topology (`topology`)
 Defines the global interconnect architecture. Determines which templates are used for generation.
@@ -57,26 +70,27 @@ Defines the global interconnect architecture. Determines which templates are use
 ### 2.3 System Settings (`system_settings`)
 Microarchitectural definitions for system-wide coherence.
 
-| Field          | Type   | Description                                                                         |
-| :------------- | :----- | :---------------------------------------------------------------------------------- |
-| `user_mapping` | Object | Maps AXI `user` bits: `amo_msb`, `amo_lsb`, `ecc_err_bit`.                          |
-| `llc`          | Object | L2 Cache limits: `max_read_txns`, `max_write_txns`, `amo_num_cuts`, `amo_post_cut`. |
-| `reg_bus`      | Object | RegBus limits: `max_read_txns`, `max_write_txns`, `amo_num_cuts`, `amo_post_cut`.   |
+| Field          | Type   | Description                                                                        |
+| :------------- | :----- | :--------------------------------------------------------------------------------- |
+| `user_mapping` | Object | Maps AXI `user` bits: `amo_msb`, `amo_lsb`, `ecc_err_bit`.                         |
+| `llc`          | Object | L2 Cache limits: `max_read_txns`, `max_write_txns`, `amo_num_cuts`, `amo_post_cut` |
+| `reg_bus`      | Object | RegBus limits: `max_read_txns`, `max_write_txns`, `amo_num_cuts`, `amo_post_cut`   |
 
 ### 2.4 Clock Tree (`clock_tree`)
 Defines the hardware clock distribution network, generating glitch-free muxes and dividers.
 
-| Field     | Type    | Description                                                                                             |
-| :-------- | :------ | :------------------------------------------------------------------------------------------------------ |
-| `flls`    | Integer | Total number of analog Frequency Locked Loops (FLLs) available. Setting to `0` means FLLs are external. |
-| `domains` | List    | List of clock domain objects.                                                                           |
+| Field       | Type    | Description                                                                          |
+| :---------- | :------ | :----------------------------------------------------------------------------------- |
+| `generators`| Integer | Total number of Clock Generators available. Setting to `0` means clocks are          |
+|             |         | external.                                                                            |
+| `domains`   | List    | List of clock domain objects.                                                        |
 
 **Domain Object**:
 *   `name`: String. Name of the clock domain (e.g., `periph`).
 *   `is_real_time`: Boolean. If `true`, the domain bypasses software control (always-on, cannot be gated).
-*   `source_fll`: Integer. Hardwired FLL index. Critical for the host clock to ensure it ticks at boot and avoids deadlocks.
+*   `source_gen`: Integer. Hardwired Clock Generator index. Critical for the host clock to ensure it ticks at boot and avoids deadlocks.
 *   `static_div`: Integer. Static, non-programmable division factor (e.g., `100` for an RTC).
-*   `has_mux`: Boolean. Generates a software-controllable glitch-free multiplexer to switch between FLLs.
+*   `has_mux`: Boolean. Generates a software-controllable glitch-free multiplexer to switch between clock generators.
 *   `has_divider`: Boolean. Generates a software-controllable integer divider with glitch-free gating.
 *   `has_debug_divider`: Boolean. Generates a parallel, slower clock branch specifically for JTAG and Debug Module Interfaces.
 *   `default_div`: Integer. Default division factor applied at power-on reset (default `1`).
@@ -84,33 +98,37 @@ Defines the hardware clock distribution network, generating glitch-free muxes an
 ### 2.5 System Controller (`system_controller`)
 Instructs Ollivander to generate a unified Control and Status Register (CSR) block via PeakRDL.
 
-| Field                 | Type    | Description                                                                            |
-| :-------------------- | :------ | :------------------------------------------------------------------------------------- |
-| `name`                | String  | Name of the PCR block (e.g., `sys_ctrl`).                                              |
-| `base_addr`           | Int/Hex | Memory-mapped base address.                                                            |
-| `size`                | Int/Hex | Size of the memory region.                                                             |
-| `scratch_registers`   | Integer | Number of generic R/W scratch registers.                                               |
-| `version_registers`   | Integer | Number of read-only version registers.                                                 |
-| `jedec_id`            | Int/Hex | Value for the JEDEC IDCODE register.                                                   |
-| `fll_status_regs`     | Boolean | Exposes FLL lock inputs as read-only registers.                                        |
-| `external_registers`  | List    | External RegBus blocks to route (`name`, `base_addr`, `size`).                         |
-| `auto_control_groups` | List    | Auto-generates arrays of clock gates/resets for NoC components (e.g., `cluster_ctrl`). |
+| Field                 | Type    | Description                                                                |
+| :-------------------- | :------ | :------------------------------------------------------------------------- |
+| `name`                | String  | Name of the PCR block (e.g., `sys_ctrl`).                                  |
+| `base_addr`           | Int/Hex | Memory-mapped base address.                                                |
+| `size`                | Int/Hex | Size of the memory region.                                                 |
+| `scratch_registers`   | Integer | Number of generic R/W scratch registers.                                   |
+| `version_registers`   | Integer | Number of read-only version registers.                                     |
+| `jedec_id`            | Int/Hex | Value for the JEDEC IDCODE register.                                       |
+| `clk_gen_status_regs` | Boolean | Exposes Clock Generator lock inputs as read-only registers.                |
+| `external_registers`  | List    | External RegBus blocks to route (`name`, `base_addr`, `size`).             |
+| `auto_control_groups` | List    | Auto-generates arrays of clock gates/resets for NoC components (e.g.,      |
+|                       |         | `cluster_ctrl`).                                                           |
 
 ### 2.6 Padframe (`padframe`)
 Delegates the physical pad ring definition to **Padrick**, while Ollivander automatically handles the top-level RegBus, CDC adapters, and signal wiring in the Chip Wrapper Engine.
 
-| Field          | Type    | Description                                                                                   |
-| :------------- | :------ | :-------------------------------------------------------------------------------------------- |
-| `name`         | String  | Name of the padframe module (e.g., `carfield_padframe`).                                      |
-| `description`  | String  | *Optional*. Brief description of the padframe.                                                |
-| `base_addr`    | Int/Hex | Memory-mapped base address for the Padrick-generated Pinmux CSRs.                             |
-| `size`         | Int/Hex | *Optional*. Size of the memory region (default: `0x1000`).                                    |
-| `sync_domain`  | Boolean | *Optional*. `true` = Host Clock, `false` = Uses async CDC adapter for the configuration bus   |
-|                |         | (default: `false`).                                                                           |
-| `domains`      | List    | A list of power/voltage domains containing the physical pad definitions.                      |
-| `padrick_cfg`  | String  | *Optional*. Path to a custom Padrick `config_top.yml` (overrides the `domains` list).         |
-| `header_file`  | String  | *Optional*. Path to a text file for the RTL header (auto-generates standard license if        |
-|                |         | omitted).                                                                                     |
+*Note: This section is completely ignored (and chip wrapper generation is skipped) if `project.build_mode` is set to `"macro"`.*
+
+| Field          | Type    | Description                                                                       |
+| :------------- | :------ | :-------------------------------------------------------------------------------- |
+| `name`         | String  | Name of the padframe module (e.g., `carfield_padframe`).                          |
+| `description`  | String  | *Optional*. Brief description of the padframe.                                    |
+| `base_addr`    | Int/Hex | Memory-mapped base address for the Padrick-generated Pinmux CSRs.                 |
+| `size`         | Int/Hex | *Optional*. Size of the memory region (default: `0x1000`).                        |
+| `sync_domain`  | Boolean | *Optional*. `true` = Host Clock, `false` = Uses async CDC adapter for the         |
+|                |         | configuration bus (default: `false`).                                             |
+|`domains`       | List    | A list of power/voltage domains containing the physical pad definitions.          |
+| `padrick_cfg`  | String  | *Optional*. Path to a custom Padrick `config_top.yml` (overrides the `domains`    |
+|                |         | list).                                                                            |
+| `header_file`  | String  | *Optional*. Path to a text file for the RTL header (auto-generates standard       |
+|                |         | license if omitted).                                                              |
 
 **Domain Object (`domains` list):**
 Used to partition pads into multiple power or I/O domains (e.g., 1.8V vs 3.3V).
@@ -124,28 +142,31 @@ Used to partition pads into multiple power or I/O domains (e.g., 1.8V vs 3.3V).
 
 The `host` block and the items in the `components` list share the **exact same schema**. They represent the hardware IPs (Isles/Tiles) stitched together by Ollivander.
 
-| Field               | Type    | Description                                                                              |
-| :------------------ | :------ | :--------------------------------------------------------------------------------------- |
-| `name`              | String  | **Required**. Unique instance name in the SoC. Used to prefix generated wires and CSRs.  |
-| `type`              | String  | **Required**. Must match the exact filename of the SystemVerilog wrapper (e.g.,          |
-|                     |         | `cheshire_isle`).                                                                        |
-| `clock_domain`      | String  | **Required**. Assigns the component's `clk_i` to a domain in the `clock_tree`.           |
-| `reset_domain`      | String  | *Optional*. Derived automatically from `clock_domain` if omitted.                        |
-| `base_addr`         | Int/Hex | *Optional*. Base address in the memory map. (Mainly used for APB sub-components; AXI     |
-|                     |         | slaves declare it in `interfaces`).                                                      |
-| `size`              | Int/Hex | *Optional*. Size of the memory region.                                                   |
-| `export_interfaces` | List    | *Optional*. Raw I/O pins to route directly to the SoC top-level (e.g.,                   |
-|                     |         | `["uart", "jtag"]`).                                                                     |
-| `interfaces`        | Object  | *Optional*. Standardized bus connections (AXI Master/Slave, RegBus, NoC routing).        |
-| `system_config`     | Object  | *Optional*. Links the component to the System Controller (isolation, fetch enable,       |
-|                     |         | status flags).                                                                           |
-| `interrupts`        | Object  | *Optional*. Defines IRQ routing logic.                                                   |
-| `dedicated_clock_div`| Object | *Optional*. Auto-generates an independent clock divider specifically for this IP (e.g.,  |
-|                     |         | for Ethernet RGMII).                                                                     |
-| `parameters`        | Object  | *Optional*. Overrides `parameter` values in the SV hardware wrapper.                     |
-| `placement`         | Object  | **Required in NoC**. Defines X/Y coordinates on the mesh.                                |
-| `components`        | List    | *Optional*. Nested components (e.g., Timers/Watchdogs instantiated inside an APB         |
-|                     |         | Subsystem wrapper).                                                                      |
+| Field               | Type    | Description                                                                  |
+| :------------------ | :------ | :--------------------------------------------------------------------------- |
+| `name`              | String  | **Required**. Unique instance name in the SoC. Used to prefix generated      |
+|                     |         | wires and CSRs.                                                              |
+| `type`              | String  | **Required**. Must match the exact filename of the SystemVerilog wrapper     |
+|                     |         | (e.g., `cheshire_isle`).                                                     |
+| `clock_domain`      | String  | **Required**. Assigns the component's `clk_i` to a domain in the             |
+|                     |         | `clock_tree`.                                                                |
+| `reset_domain`      | String  | *Optional*. Derived automatically from `clock_domain` if omitted.            |
+| `base_addr`         | Int/Hex | *Optional*. Base address in the memory map. (Mainly used for APB             |
+|                     |         | sub-components; AXI slaves declare it in `interfaces`).                      |
+| `size`              | Int/Hex | *Optional*. Size of the memory region.                                       |
+| `export_interfaces` | List    | *Optional*. Raw I/O pins to route directly to the SoC top-level (e.g.,       |
+|                     |         | `["uart", "jtag"`).                                                          |
+| `interfaces`        | Object  | *Optional*. Standardized bus connections (AXI Master/Slave, RegBus, NoC      |
+|                     |         | routing).                                                                    |
+| `system_config`     | Object  | *Optional*. Links the component to the System Controller (isolation, fetch   |
+|                     |         | enable, status flags).                                                       |
+| `interrupts`        | Object  | *Optional*. Defines IRQ routing logic.                                       |
+| `dedicated_clock_div`| Object | *Optional*. Auto-generates an independent clock divider specifically for     |
+|                     |         | this IP (e.g., for Ethernet RGMII).                                          |
+| `parameters`        | Object  | *Optional*. Overrides `parameter` values in the SV hardware wrapper.         |
+| `placement`         | Object  | **Required in NoC**. Defines X/Y coordinates on the mesh.                    |
+| `components`        | List    | *Optional*. Nested components (e.g., Timers/Watchdogs instantiated inside an |
+|                     |         | APB Subsystem wrapper).                                                      |
 
 ### 3.1 Interfaces (`interfaces`)
 *   `axi_master`: Boolean (`true` / `false`).
@@ -224,9 +245,10 @@ Maps the component to the logical 2D FlooNoC mesh grid.
 
 Instructs the simulation environment on how to initialize the SoC. Since Ollivander targets bare-metal validation, the most common action is preloading compiled software binaries directly into the hardware memory arrays before the processor comes out of reset.
 
-| Field              | Type | Description                                                                                 |
-| :----------------- | :--- | :------------------------------------------------------------------------------------------ |
-| `preload_memories` | List | A list of memory arrays to be initialized in the SystemVerilog testbench using `$readmemh`. |
+| Field              | Type | Description                                                                      |
+| :----------------- | :--- | :------------------------------------------------------------------------------- |
+| `preload_memories` | List | A list of memory arrays to be initialized in the SystemVerilog testbench using   |
+|                    |      | `$readmemh`.                                                                     |
 
 **Memory Preload Object**
 *   `instance`: String. The hierarchical RTL path to the memory array instance inside the top-level.
@@ -248,12 +270,13 @@ testbench:
 
 Defines the parameters for automated bare-metal C firmware generation and compilation. Ollivander uses these settings to dynamically construct a **Linker Script** (`link.ld`) that aligns exactly with the physical memory map defined in the `components` section, preventing hard-to-debug memory faults.
 
-| Field         | Type   | Description                                                                                               |
-| :------------ | :----- | :-------------------------------------------------------------------------------------------------------- |
-| `toolchain`   | String | The GCC toolchain prefix (e.g., `"riscv64-unknown-elf-"`).                                                |
-| `boot_memory` | String | **Required**. The `name` of the memory component (from the `components` list) where the `.text`, `.data`, | 
-|               |        | and `.bss` sections will be placed. Ollivander will automatically fetch its `base_addr` and `size`.       |
-| `test_app`    | Object | Configuration for the automatically generated test application.                                           |
+| Field         | Type   | Description                                                                         |
+| :------------ | :----- | :---------------------------------------------------------------------------------- |
+| `toolchain`   | String | The GCC toolchain prefix (e.g., `"riscv64-unknown-elf-"`).                          |
+| `boot_memory` | String | **Required**. The `name` of the memory component (from the `components` list) where |
+|               |        | the boot`.text`, `.data`, and `.bss` sections will be placed. Ollivander will       |
+|               |        | automatically fetch its `base_addr` and `size`.                                     |
+| `test_app`    | Object | Configuration for the automatically generated test application.                     |
 
 **Test App Object**:
 *   `name`: String. The base name used for the output files (`<name>.elf`, `<name>.hex`).

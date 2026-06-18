@@ -76,6 +76,16 @@ Ollivander dynamically parses the Tile's header to map parameters from the YAML:
 *   **`parameter` (Configurable):** Ollivander will override these at instantiation time based on the YAML configuration.
 *   **`localparam` (Fixed Constraint):** Hardcoded IP constraints. Ollivander will strictly validate that the global YAML configuration does not violate them.
 
+### 5.1 NoC Struct Parameter Types (Strict Type Equivalence for Portability)
+Because Custom Tiles natively interact with the NoC router, the quickest integration method is to hardcode the import of the local NoC package (e.g., `import floo_gwaihir_noc_pkg::*;`) inside the wrapper to access the `floo_req_t` and `id_t` structs.
+
+However, if you are designing a **truly reusable** Custom Tile meant to be instantiated across different SoCs (or exported within different Macros), hardcoding the package will cause strict type equivalence errors during compilation. To make the Custom Tile fully portable, you should expose the NoC structs as `parameter type` in the module header:
+*   `floo_req_t`, `floo_rsp_t`, `floo_wide_t`
+*   `id_t`
+*   `sam_rule_t` (if handling address mapping directly)
+
+*(Note: Because Ollivander currently auto-injects AXI types but not NoC types into Custom Tiles, you must explicitly map these NoC types in the `parameters` block of your YAML configuration if you choose to parameterize them).*
+
 *Note: Because Custom Tiles natively instantiate the NoC router, they must often rely on the auto-generated NoC configuration package (e.g., `AxiCfgN`, `AxiCfgW`, `RouteCfg`) provided by FlooGen, rather than relying solely on scalar parameters.*
 
 ---
