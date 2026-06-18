@@ -185,6 +185,8 @@ module ${top_level_module_name}
 % endif
 % if config.project.build_mode == "macro":
   ,
+  // Macro Base Address for hardware address translation
+  parameter logic [63:0] MACRO_BASE_ADDR = 64'h0,
   // Macro Types
   parameter type axi_req_t  = ${pkg}::soc_axi_req_t,
   parameter type axi_resp_t = ${pkg}::soc_axi_resp_t
@@ -224,14 +226,14 @@ module ${top_level_module_name}
         width_str = f"[{num_ext_async_slaves-1}:0]" if num_ext_async_slaves > 1 else ""
         top_ports.append(f"output logic     {width_str} ext_reg_async_slv_req_o")
         top_ports.append(f"input  logic     {width_str} ext_reg_async_slv_ack_i")
-        top_ports.append(f"output soc_reg_req_t {width_str} ext_reg_async_slv_data_o")
+        top_ports.append(f"output {pkg}::soc_reg_req_t {width_str} ext_reg_async_slv_data_o")
         top_ports.append(f"input  logic     {width_str} ext_reg_async_slv_req_i")
         top_ports.append(f"output logic     {width_str} ext_reg_async_slv_ack_o")
-        top_ports.append(f"input  soc_reg_rsp_t {width_str} ext_reg_async_slv_data_i")
+        top_ports.append(f"input  {pkg}::soc_reg_rsp_t {width_str} ext_reg_async_slv_data_i")
 
     for comp in ext_sync_slaves:
-        top_ports.append(f"output soc_reg_req_t {comp.name}_reg_req_o")
-        top_ports.append(f"input  soc_reg_rsp_t {comp.name}_reg_rsp_i")
+        top_ports.append(f"output {pkg}::soc_reg_req_t {comp.name}_reg_req_o")
+        top_ports.append(f"input  {pkg}::soc_reg_rsp_t {comp.name}_reg_rsp_i")
 
     from core.interfaces import get_interface_ports
 
@@ -321,17 +323,17 @@ ${clock_and_reset_tree(config, p_name)}
   // The System Controller houses the Power, Clock, and Reset (PCR) registers.
   // It controls the dynamic clock gating and reset state of every peripheral.
   
-  soc_reg_req_t pcrs_req;
-  soc_reg_rsp_t pcrs_rsp;
-  soc_reg_req_t pcrs_req_cut;
-  soc_reg_rsp_t pcrs_rsp_cut;
+  ${pkg}::soc_reg_req_t pcrs_req;
+  ${pkg}::soc_reg_rsp_t pcrs_rsp;
+  ${pkg}::soc_reg_req_t pcrs_req_cut;
+  ${pkg}::soc_reg_rsp_t pcrs_rsp_cut;
   
   // Pipeline cut for timing closure on the central system registers.
   // Because the PCRs fan out to the entire chip, this bus is heavily loaded.
   // Adding a register slice here drastically improves physical synthesis timing.
   reg_cut #(
-    .req_t ( soc_reg_req_t ),
-    .rsp_t ( soc_reg_rsp_t )
+    .req_t ( ${pkg}::soc_reg_req_t ),
+    .rsp_t ( ${pkg}::soc_reg_rsp_t )
   ) i_sys_ctrl_reg_cut (
     .clk_i     ( host_clk ),
     .rst_ni    ( host_pwr_on_rst_n ),
@@ -352,8 +354,8 @@ ${clock_and_reset_tree(config, p_name)}
   sys_apb_resp_t pcrs_apb_rsp;
 
   reg_to_apb #(
-    .reg_req_t ( soc_reg_req_t ),
-    .reg_rsp_t ( soc_reg_rsp_t ),
+    .reg_req_t ( ${pkg}::soc_reg_req_t ),
+    .reg_rsp_t ( ${pkg}::soc_reg_rsp_t ),
     .apb_req_t ( sys_apb_req_t ),
     .apb_rsp_t ( sys_apb_resp_t )
   ) i_sys_ctrl_reg_to_apb (
@@ -432,8 +434,8 @@ ${clock_and_reset_tree(config, p_name)}
 % endfor
 
   // Synchronous Slaves (Host -> Components)
-  soc_axi_slv_req_t  [`IOMSB(${pkg}::NumAxiSlavesSync):0] xbar_sync_slv_req;
-  soc_axi_slv_resp_t [`IOMSB(${pkg}::NumAxiSlavesSync):0] xbar_sync_slv_rsp;
+  ${pkg}::soc_axi_slv_req_t  [`IOMSB(${pkg}::NumAxiSlavesSync):0] xbar_sync_slv_req;
+  ${pkg}::soc_axi_slv_resp_t [`IOMSB(${pkg}::NumAxiSlavesSync):0] xbar_sync_slv_rsp;
 
   // Masters (Components -> Host)
 % for sig, slv_w, mst_w in channels:
@@ -441,8 +443,8 @@ ${clock_and_reset_tree(config, p_name)}
 % endfor
 
   // Synchronous Masters (Components -> Host)
-  soc_axi_req_t  [`IOMSB(${pkg}::NumAxiMastersSync):0] xbar_sync_mst_req;
-  soc_axi_resp_t [`IOMSB(${pkg}::NumAxiMastersSync):0] xbar_sync_mst_rsp;
+  ${pkg}::soc_axi_req_t  [`IOMSB(${pkg}::NumAxiMastersSync):0] xbar_sync_mst_req;
+  ${pkg}::soc_axi_resp_t [`IOMSB(${pkg}::NumAxiMastersSync):0] xbar_sync_mst_rsp;
 
   // Dedicated LLC Wires (Host <-> LLC Peripheral)
 % for sig, slv_w, mst_w in channels:
@@ -452,19 +454,19 @@ ${clock_and_reset_tree(config, p_name)}
   logic [${pkg}::${llc_w}-1:0] async_axi_llc_${sig};
 % endfor
 
-  soc_reg_req_t [${pkg}::NumTotalRegSlaves-1:0] sys_reg_req;
-  soc_reg_rsp_t [${pkg}::NumTotalRegSlaves-1:0] sys_reg_rsp;
+  ${pkg}::soc_reg_req_t [${pkg}::NumTotalRegSlaves-1:0] sys_reg_req;
+  ${pkg}::soc_reg_rsp_t [${pkg}::NumTotalRegSlaves-1:0] sys_reg_rsp;
   
   // Asynchronous RegBus Slaves
   logic [${pkg}::NumAsyncRegSlaves-1:0] async_reg_req_out;
   logic [${pkg}::NumAsyncRegSlaves-1:0] async_reg_ack_in;
-  soc_reg_req_t [${pkg}::NumAsyncRegSlaves-1:0] async_reg_data_out;
+  ${pkg}::soc_reg_req_t [${pkg}::NumAsyncRegSlaves-1:0] async_reg_data_out;
   logic [${pkg}::NumAsyncRegSlaves-1:0] async_reg_req_in;
   logic [${pkg}::NumAsyncRegSlaves-1:0] async_reg_ack_out;
-  soc_reg_rsp_t [${pkg}::NumAsyncRegSlaves-1:0] async_reg_data_in;
+  ${pkg}::soc_reg_rsp_t [${pkg}::NumAsyncRegSlaves-1:0] async_reg_data_in;
 
-  assign pcrs_req = sys_reg_req[RegBusSlvIdx_SysCtrl];
-  assign sys_reg_rsp[RegBusSlvIdx_SysCtrl] = pcrs_rsp;
+  assign pcrs_req = sys_reg_req[${pkg}::RegBusSlvIdx_SysCtrl];
+  assign sys_reg_rsp[${pkg}::RegBusSlvIdx_SysCtrl] = pcrs_rsp;
 
   // --- External RegBus Slaves (Export to Top-Level) ---
   // Exports RegBus ports to the top-level boundary to control external 
@@ -472,7 +474,7 @@ ${clock_and_reset_tree(config, p_name)}
 % if ext_sync_slaves:
   // Synchronous External Slaves
   % for comp in ext_sync_slaves:
-  <% idx = f"RegBusSlvIdx_{camel_case(comp.name)}" %>
+  <% idx = f"{pkg}::RegBusSlvIdx_{camel_case(comp.name)}" %>
   assign ${comp.name}_reg_req_o = sys_reg_req[${idx}];
   assign sys_reg_rsp[${idx}] = ${comp.name}_reg_rsp_i;
   % endfor
@@ -483,7 +485,7 @@ ${clock_and_reset_tree(config, p_name)}
   <% ext_async_idx = 0 %>
   % for comp in ext_async_slaves:
     <% 
-      idx = f"RegBusSlvIdx_{camel_case(comp.name)}"
+      idx = f"{pkg}::RegBusSlvIdx_{camel_case(comp.name)}"
       async_idx = f"({idx} - {pkg}::NumSyncRegSlaves)"
       ext_slice = f"[{ext_async_idx}]" if num_ext_async_slaves > 1 else ""
     %>
@@ -500,7 +502,11 @@ ${clock_and_reset_tree(config, p_name)}
 % if config.project.build_mode == "macro" and config.project.macro_settings:
  % if config.project.macro_settings.slaves:
   // Macro slave interface -> Host's sync master slot
-  assign xbar_sync_mst_req[${pkg}::NumAxiMastersSync - 1] = axi_req_i;
+  always_comb begin
+    xbar_sync_mst_req[${pkg}::NumAxiMastersSync - 1] = axi_req_i;
+    xbar_sync_mst_req[${pkg}::NumAxiMastersSync - 1].aw.addr = axi_req_i.aw.addr - MACRO_BASE_ADDR;
+    xbar_sync_mst_req[${pkg}::NumAxiMastersSync - 1].ar.addr = axi_req_i.ar.addr - MACRO_BASE_ADDR;
+  end
   assign axi_resp_o = xbar_sync_mst_rsp[${pkg}::NumAxiMastersSync - 1];
  % endif
  % if config.project.macro_settings.masters:
@@ -624,7 +630,7 @@ ${clock_and_reset_tree(config, p_name)}
     .ResetValue(1'b0)
   ) i_sync_${c.name}_${irq_name} (
     .clk_i    ( ${c_clk} ),
-    .rst_ni   ( ${'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'pwr_on_rsts_n[DomainIdx_{fmt_rst(c_rst)}]'} ),
+    .rst_ni   ( ${'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'pwr_on_rsts_n[{pkg}::DomainIdx_{fmt_rst(c_rst)}]'} ),
     .serial_i ( intr_${c.name}_${irq_name}_async[i] ),
     .serial_o ( intr_${c.name}_${irq_name}_sync[i] )
   );
@@ -635,7 +641,7 @@ ${clock_and_reset_tree(config, p_name)}
     .ResetValue(1'b0)
   ) i_sync_${c.name}_${irq_name} (
     .clk_i    ( ${c_clk} ),
-    .rst_ni   ( ${'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'pwr_on_rsts_n[DomainIdx_{fmt_rst(c_rst)}]'} ),
+    .rst_ni   ( ${'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'pwr_on_rsts_n[{pkg}::DomainIdx_{fmt_rst(c_rst)}]'} ),
     .serial_i ( intr_${c.name}_${irq_name}_async ),
     .serial_o ( intr_${c.name}_${irq_name}_sync )
   );
@@ -778,6 +784,17 @@ ${clock_and_reset_tree(config, p_name)}
           param_dict[p] = f"{pkg}::soc_reg_req_t"
       elif p in ['reg_rsp_t', 'sync_reg_in_rsp_t', 'sync_reg_out_rsp_t', 'async_reg_out_rsp_t']: 
           param_dict[p] = f"{pkg}::soc_reg_rsp_t"
+          
+      elif p == 'MACRO_BASE_ADDR':
+          b_addr = 0
+          if comp.interfaces and 'axi_slave' in comp.interfaces:
+              slvs = comp.interfaces['axi_slave']
+              if isinstance(slvs, list) and len(slvs) > 0:
+                  b_addr = slvs[0].get('base_addr', 0)
+          elif getattr(comp, 'base_addr', None) is not None:
+              b_addr = comp.base_addr
+          b_val = int(b_addr, 16) if isinstance(b_addr, str) else b_addr
+          param_dict[p] = f"64'h{b_val:X}"
 
       # --- CDC Width Mappings ---
       elif p.startswith('AsyncAxiLlc'):
@@ -832,11 +849,11 @@ ${clock_and_reset_tree(config, p_name)}
   port_list = []
   port_list.append(f".clk_i         ( {c_clk} )")
   
-  rst_wire = 'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'rsts_n[DomainIdx_{fmt_rst(c_rst)}]'
+  rst_wire = 'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'rsts_n[{pkg}::DomainIdx_{fmt_rst(c_rst)}]'
   port_list.append(f".rst_ni        ( {rst_wire} )")
   
   if c_info.get('has_pwr_on_rst'):
-      por_wire = 'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'pwr_on_rsts_n[DomainIdx_{fmt_rst(c_rst)}]'
+      por_wire = 'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'pwr_on_rsts_n[{pkg}::DomainIdx_{fmt_rst(c_rst)}]'
       port_list.append(f".pwr_on_rst_ni ( {por_wire} )")
       
   if c_info.get('has_ref_clk'): port_list.append(".ref_clk_i     ( rt_clk )")

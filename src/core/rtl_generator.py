@@ -242,6 +242,7 @@ class RTLGenerator:
                     if rel_isle_name not in self.generated_module_files:
                         self.generated_module_files.append(rel_isle_name)
                     try:
+                        peakrdl_pragma = ""
                         content = existing_isle.read_text(encoding='utf-8')
                         self.required_local_files.update(self.req_pattern.findall(content))
                         for match in self.dep_pattern.finditer(content):
@@ -251,6 +252,16 @@ class RTLGenerator:
                             if match.group(3): self.project_dependencies[dep_name]['rev'] = match.group(3)
                             if match.group(4): self.project_dependencies[dep_name]['version'] = match.group(4)
                         
+                        # Extract PEAKRDL pragma to pass to the wrapper
+                        peakrdl_match = re.search(r'(?://|##)\s*PEAKRDL:\s*source="([^"]+)"(?:.*?map="([^"]+)")?', content)
+                        if peakrdl_match:
+                            source = peakrdl_match.group(1)
+                            map_name = peakrdl_match.group(2)
+                            if map_name:
+                                peakrdl_pragma = f'// PEAKRDL: source="{source}" map="{map_name}"'
+                            else:
+                                peakrdl_pragma = f'// PEAKRDL: source="{source}"'
+                        
                         content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.name}_soc_pkg', content)
                         content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', content)
                         content = re.sub(rf'\bmodule\s+{isle_type}\b', f'module {self.soc_config.project.name}_{isle_type}', content)
@@ -258,6 +269,7 @@ class RTLGenerator:
                         write_if_changed(isle_out_file, content)
                     except Exception as e:
                         print(f"\n[WARNING] Failed to stage {existing_isle.name}:\n{e}")
+                        peakrdl_pragma = ""
 
                     # Update component type to the generated tile type so subsequent phases use the wrapper.
                     c.type = tile_type
@@ -270,7 +282,7 @@ class RTLGenerator:
                     print(f"  -> Rendering Tile {tpl_path.name} into {out_file.name}")
                     try:
                         template = Template(filename=str(tpl_path), lookup=self.template_lookup)
-                        rendered_code = template.render(comp=c, config=self.soc_config, search_paths=self.env.search_paths, original_type=isle_type, require_file=self.require_file_helper, require_bender=self.require_bender_helper)
+                        rendered_code = template.render(comp=c, config=self.soc_config, search_paths=self.env.search_paths, original_type=isle_type, peakrdl_pragma=peakrdl_pragma, require_file=self.require_file_helper, require_bender=self.require_bender_helper)
                         self.required_local_files.update(self.req_pattern.findall(rendered_code))
                         if out_file.suffix == '.sv':
                             rendered_code = auto_import_sv_packages(rendered_code)
@@ -842,7 +854,7 @@ class RTLGenerator:
                 if self.soc_config.system_controller:
                     macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_sys_regs.sv"')
     
-                macro_pragmas.append(f'// PEAKRDL: source="{self.soc_config.project.name}_memory_map.rdl" map="{self.soc_config.project.name}_map"')
+                macro_pragmas.append(f'// PEAKRDL: source="{self.soc_config.project.name}_memory_map.rdl" map="{self.soc_config.project.name}_soc_map"')
     
                 pragma_str = "\n".join(macro_pragmas)
                 content = content.replace("// OLLIVANDER_MACRO_PRAGMAS_PLACEHOLDER", pragma_str)

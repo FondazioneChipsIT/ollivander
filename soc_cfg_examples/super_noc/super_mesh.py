@@ -1,0 +1,243 @@
+# ==============================================================================
+# OLLIVANDER UNIFIED SoC ARCHITECTURE - PYTHON CONFIGURATION
+# ==============================================================================
+# This is a pure Python native configuration file for the Super Mesh SoC.
+# It leverages Pydantic models from soc_schema.py to provide type-hinting,
+# autocompletion, and programmatic generation of the NoC grid.
+# ==============================================================================
+
+from core.soc_schema import (
+    OllivanderConfig, Project, Topology, NoCSettings, NoCNetwork,
+    SystemSettings, UserMapping, LlcMicroarch, RegBusMicroarch,
+    ClockTree, ClockDomain, SystemController, AutoControlGroup,
+    ExternalRegister, Component
+)
+
+# ------------------------------------------------------------------------------
+# 1. CONSTANTS & ADDRESS MAP
+# Using Python allows us to define the memory map using variables, formulas, 
+# and base addresses. This completely eliminates hardcoded magic numbers 
+# and makes address space modifications extremely safe and trivial!
+# ------------------------------------------------------------------------------
+BASE_CRUX_MACRO = 0x20000000
+BASE_CLUSTERS   = 0xB0000000   # Moved beyond Crux's 0xA8000000 footprint
+BASE_SPM_NARROW = 0xC0000000
+BASE_SPM_WIDE   = 0xC0100000
+BASE_L2         = 0xD0000000
+BASE_MESH_MACRO = 0x100000000  # Start at 4GB (Safe in 48-bit AXI)
+BASE_DRAM       = 0x800000000  # Start at 32GB
+
+# ------------------------------------------------------------------------------
+# 2. CONFIGURATION OBJECT EXPORT
+# This 'config' variable is exactly what Ollivander's engine looks for when 
+# parsing this script. We construct it using the strongly-typed Pydantic classes 
+# imported above, which gives us IDE autocompletion and early validation.
+# ------------------------------------------------------------------------------
+config = OllivanderConfig(
+    # --- PROJECT METADATA ---
+    # Defines the global SoC name and how it will be built.
+    # 'standalone' means Ollivander will generate a complete, bootable top-level.
+    project=Project(
+        name="super_mesh",
+        description="Massive platform integrating the Mesh and Crux Macros",
+        author="Ollivander Generator",
+        build_mode="standalone"
+    ),
+    
+    # --- TOPOLOGY & INTERCONNECT ---
+    # We define a Network-on-Chip (NoC) architecture using FlooNoC.
+    topology=Topology(
+        type="noc",
+        noc_settings=NoCSettings(
+            type="floo_noc",
+            routing_algorithm="XY",
+            networks={
+                # FlooNoC supports multiple parallel physical networks to segregate traffic:
+                # - "narrow" (64-bit) for register accesses and lightweight traffic.
+                # - "wide" (512-bit) for heavy DMA and cache-line transfers.
+                "narrow": NoCNetwork(data_width=64, addr_width=48),
+                "wide": NoCNetwork(data_width=512, addr_width=48)
+            },
+            default_tile="dummy_tile"
+        )
+    ),
+    
+    # --- SYSTEM MICROARCHITECTURE SETTINGS ---
+    # Defines global parameters to ensure system-wide coherence, such as AXI 'user' 
+    # bit mapping and FIFO sizing for Atomics (AMOs).
+    system_settings=SystemSettings(
+        user_mapping=UserMapping(amo_msb=2, amo_lsb=0, ecc_err_bit=4),
+        llc=LlcMicroarch(max_read_txns=32, max_write_txns=32, amo_num_cuts=1, amo_post_cut=True),
+        reg_bus=RegBusMicroarch(max_read_txns=8, max_write_txns=8, amo_num_cuts=1, amo_post_cut=True)
+    ),
+    
+    # --- CLOCK & RESET TREE ---
+    # 'generators: 0' means we don't instantiate internal PLLs/FLLs; clocks 
+    # will be supplied directly from the external chip pads.
+    clock_tree=ClockTree(
+        generators=0,
+        domains=[
+            ClockDomain(
+                name="system",
+                description="Main synchronous clock domain for the entire NoC",
+                is_real_time=False,
+                has_mux=False,
+                has_divider=False,
+                has_debug_divider=False
+            )
+        ]
+    ),
+    
+    # --- GLOBAL SYSTEM CONTROLLER & REGISTERS ---
+    # Automatically generates the SystemRDL and SystemVerilog for the central
+    # configuration registers (PCRs).
+    system_controller=SystemController(
+        name="gw_soc_regs",
+        description="Main system control and status registers",
+        base_addr=0x18003000,
+        size=0x1000,
+        scratch_registers=2,
+        version_registers=1,
+        jedec_id=0x00000000,
+        clk_gen_status_regs=False,
+        external_registers=[
+            ExternalRegister(name="fll", base_addr=0x18001000),
+            ExternalRegister(name="gw_chip_regs", base_addr=0x18002000)
+        ],
+        # Auto Control Groups elegantly pack clock-gating and reset isolation signals 
+        # for massive arrays of identical tiles into a single register array.
+        auto_control_groups=[
+            AutoControlGroup(name="cluster_ctrl", type="clk_rst_control", target_component_type="cluster_subtile"),
+            AutoControlGroup(name="mem_tile_ctrl", type="clk_rst_control", target_component_type="sram_isle")
+        ]
+    ),
+    
+    # --- HOST SYSTEM (Manager) ---
+    # The main application processor (e.g., Cheshire) that boots the SoC.
+    # It's placed at coordinate X=9, Y=3. It uses 'joined' mode, meaning Ollivander 
+    # will automatically instantiate a NoC Join adapter to merge the narrow and 
+    # wide networks into its single native AXI port.
+    host=Component(
+        name="manager",
+        description="Main application processor (Cheshire host)",
+        type="cheshire_isle",
+        clock_domain="system",
+        placement={"logical": {"x": 9, "y": 3}},
+        export_interfaces=["gpio", "slink", "uart", "spi", "i2c"],
+        interfaces={
+            "axi_master": True,
+            "noc_networks": {"master": ["narrow"], "slave": ["narrow", "wide"], "noc_mode": "joined"},
+            "axi_slave": [
+                {"name": "internal_rom_ram", "base_addr": 0x00000000, "size": 0x18000000}, # 384 MB
+                {"name": "external_dram", "base_addr": BASE_DRAM, "size": 0x1800000000}
+            ]
+        },
+        features={"error_slaves": ["async_axi_llc"], "terminate_ports": ["async_axi_in", "async_axi_out"]},
+        parameters={"Vga": False}
+    ),
+    
+    # --- SYSTEM COMPONENTS (Compute, Memories, Peripherals) ---
+    # Here we instantiate all the IPs in the system, mapping them to the 2D mesh.
+    components=[
+        # --- SHARED L2 MEMORY ---
+        Component(
+            name="l2_shared_memory",
+            description="Level 2 shared SRAM memory",
+            type="sram_isle",
+            clock_domain="system",
+            # Python allows us to pass complex lists easily. 
+            # Here we place 8 memory banks split across two disjoint physical columns.
+            placement={"logical": [
+                {"box": {"x_start": 0, "x_end": 0, "y_start": 0, "y_end": 3}}, # West column
+                {"box": {"x_start": 8, "x_end": 8, "y_start": 0, "y_end": 3}}  # East column
+            ]},
+            interfaces={
+                "noc_networks": {"slave": ["narrow", "wide"], "noc_mode": "joined"},
+                "axi_slave": [{"name": "l2_spm_global", "base_addr": BASE_L2, "size_per_instance": 0x00100000}]
+            },
+            parameters={"AxiUserAtop": True, "SramDataWidth": 128, "SramNumWords": 1024, "MemSize": 0x00100000}
+        ),
+        
+        # --- NESTED CROSSBAR MACRO ---
+        # This instantiates an entire Crux SoC (which is internally crossbar-based)
+        # as a single node in our NoC! Because it uses standard 'isle' AXI ports,
+        # Ollivander automatically provides the 'joined' adapter for the NoC.
+        Component(
+            name="crux_subsystem",
+            description="Nested Crux Heterogeneous Subsystem Macro (Crossbar-based IP)",
+            type="crux_isle", # Uses 'isle' standard AXI ports
+            clock_domain="system",
+            placement={"logical": {"x": 1, "y": 1}},
+            interfaces={
+                "axi_master": True,
+                "noc_networks": {"slave": ["narrow", "wide"], "noc_mode": "joined"}, # Ollivander joins the nets for it
+                "axi_slave": [{"name": "crux_mem_map", "base_addr": BASE_CRUX_MACRO, "size": 0x88000000}] # Give it the full 2.1GB it needs
+            }
+        ),
+        
+        # --- NESTED NOC MACROS ---
+        # This instantiates 8 complete Mesh Subsystems! Because they were exported
+        # as 'subtile' from their own project, they natively expose dual AXI ports
+        # and plug directly into our narrow/wide NoC networks ('dual' mode) without
+        # requiring a Join adapter.
+        Component(
+            name="ai_mesh_macro",
+            description="Nested AI Mesh Subsystem Macro (NoC-native IP)",
+            type="mesh_subtile", # Uses 'subtile' dual NoC ports
+            clock_domain="system",
+            placement={"logical": {"box": {"x_start": 2, "x_end": 3, "y_start": 0, "y_end": 3}}}, # 8 instances!
+            interfaces={
+                "axi_master": True,
+                "noc_networks": {"master": ["narrow", "wide"], "slave": ["narrow", "wide"], "noc_mode": "dual"},
+                "axi_slave": [{"name": "mesh_mem_map", "base_addr": BASE_MESH_MACRO, "size_per_instance": 0x40000000}] # 1 GB per instance
+            }
+        ),
+        
+        # --- COMPUTE CLUSTERS ---
+        Component(
+            name="compute_clusters",
+            description="AI and Machine Learning compute clusters",
+            type="cluster_subtile",
+            clock_domain="system",
+            # A 'box' defines a 2D array. X[4..7] x Y[0..3] creates exactly 16 cluster instances.
+            placement={"logical": {"box": {"x_start": 4, "x_end": 7, "y_start": 0, "y_end": 3}}}, # 16 instances!
+            export_interfaces=["debug_req"],
+            interfaces={
+                "axi_master": True,
+                "noc_networks": {"master": ["narrow", "wide"], "slave": ["narrow", "wide"], "noc_mode": "dual"},
+                "axi_slave": [{"name": "cluster_tcdm_and_periph", "base_addr": BASE_CLUSTERS, "size_per_instance": 0x00040000}]
+            },
+            features={"multicast_target": True},
+            parameters={"UseHWPE": True}
+        ),
+        
+        # --- SCRATCHPAD MEMORIES ---
+        # Independent narrow and wide endpoints explicitly placed on specific NoC networks.
+        Component(
+            name="top_spm_narrow",
+            type="spm_isle",
+            clock_domain="system",
+            placement={"logical": {"x": 9, "y": 2}},
+            interfaces={"noc_networks": {"slave": ["narrow"]}, "axi_slave": [{"name": "spm_narrow", "base_addr": BASE_SPM_NARROW, "size": 0x00040000}]},
+            parameters={"SpmWordsPerBank": 2048, "SpmDataWidth": 64}
+        ),
+        Component(
+            name="top_spm_wide",
+            type="spm_isle",
+            clock_domain="system",
+            placement={"logical": {"x": 9, "y": 1}},
+            interfaces={"noc_networks": {"slave": ["wide"]}, "axi_slave": [{"name": "spm_wide", "base_addr": BASE_SPM_WIDE, "size": 0x00040000}]},
+            parameters={"SpmWordsPerBank": 1024, "SpmDataWidth": 128}
+        )
+    ],
+    
+    # --- SOFTWARE STACK & FIRMWARE ---
+    # Defines the toolchain and target memory for automated bare-metal C compilation.
+    # Ollivander uses this to automatically generate a memory-mapped Linker Script
+    # aligned to the physical memory map.
+    software_stack={
+        "toolchain": "riscv64-unknown-elf-",
+        "boot_memory": "l2_shared_memory",
+        "test_app": {"name": "hello_world", "auto_generate_c": True}
+    }
+)

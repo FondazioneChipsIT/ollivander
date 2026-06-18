@@ -49,7 +49,7 @@
   
   # Determine RouteCfg based on multicast feature, using explicit scopes
   use_mcast = comp.features and comp.features.get('multicast_target')
-  route_cfg = "RouteCfg" if use_mcast else "RouteCfgNoMcast"
+  route_cfg = "RouteCfg"
   
   # Determine the underlying IP to instantiate (restoring the original _subtile or _isle suffix)
   _orig_type = context.get('original_type', c_type.replace('_tile', '_isle'))
@@ -191,6 +191,10 @@ ${license()}\
 // Universal Tile Wrapper for ${c_type}
 // Topology: Network-on-Chip (FlooNoC)
 //
+% if context.get('peakrdl_pragma'):
+${context.get('peakrdl_pragma')}
+//
+% endif
 // BENDER: name="axi"
 // BENDER: name="floo_noc"
 % if is_host and config.system_controller:
@@ -231,18 +235,18 @@ module ${p_name}_${c_type}
   input  logic test_mode_i,
 
   // Chimney Logical Coordinates (X, Y mapped to a flat ID)
-  input  id_t  id_i,
+  input  floo_${p_name}_noc_pkg::id_t  id_i,
 
   // =======================================================================
   // ROUTER PORTS (Always 4 Cardinal Directions)
   // =======================================================================
   // These ports connect this tile to its 4 adjacent neighbors in the 2D mesh.
-  output floo_req_t  [West:North] floo_req_o,
-  input  floo_rsp_t  [West:North] floo_rsp_i,
-  output floo_wide_t [West:North] floo_wide_o,
-  input  floo_req_t  [West:North] floo_req_i,
-  output floo_rsp_t  [West:North] floo_rsp_o,
-  input  floo_wide_t [West:North] floo_wide_i
+  output floo_${p_name}_noc_pkg::floo_req_t  [West:North] floo_req_o,
+  input  floo_${p_name}_noc_pkg::floo_rsp_t  [West:North] floo_rsp_i,
+  output floo_${p_name}_noc_pkg::floo_wide_t [West:North] floo_wide_o,
+  input  floo_${p_name}_noc_pkg::floo_req_t  [West:North] floo_req_i,
+  output floo_${p_name}_noc_pkg::floo_rsp_t  [West:North] floo_rsp_o,
+  input  floo_${p_name}_noc_pkg::floo_wide_t [West:North] floo_wide_i
 
   // =======================================================================
   // COMPONENT-SPECIFIC I/Os and INTERRUPTS (Extracted from ${isle_name})
@@ -270,8 +274,10 @@ module ${p_name}_${c_type}
 
 % if is_host and config.system_controller:
 <%
-  reg_rsp_type = isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t")
-  reg_req_type = isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t")
+  reg_rsp_type = isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t").strip()
+  reg_req_type = isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t").strip()
+  if "::" not in reg_rsp_type: reg_rsp_type = f"{p_name}_soc_pkg::{reg_rsp_type}"
+  if "::" not in reg_req_type: reg_req_type = f"{p_name}_soc_pkg::{reg_req_type}"
 %>
   ,
   // System Controller Hardware Interfaces (Exported to Top-Level)
@@ -330,35 +336,35 @@ module ${p_name}_${c_type}
   // The Router is the physical 2D crossbar switch node. It forwards incoming 
   // packets to adjacent tiles via the 4 Cardinal ports (North, South, East, West),
   // and delivers local packets to the Isle via the 'Eject' port (Chimney).
-  floo_req_t  [Eject:North] router_floo_req_out, router_floo_req_in;
-  floo_rsp_t  [Eject:North] router_floo_rsp_out, router_floo_rsp_in;
-  floo_wide_t [Eject:North] router_floo_wide_in, router_floo_wide_out;
+  floo_${p_name}_noc_pkg::floo_req_t  [Eject:North] router_floo_req_out, router_floo_req_in;
+  floo_${p_name}_noc_pkg::floo_rsp_t  [Eject:North] router_floo_rsp_out, router_floo_rsp_in;
+  floo_${p_name}_noc_pkg::floo_wide_t [Eject:North] router_floo_wide_in, router_floo_wide_out;
 
 % if has_offload:
-  red_wide_req_t offload_wide_req_out;
-  red_wide_rsp_t offload_wide_rsp_in;
+  floo_${p_name}_noc_pkg::red_wide_req_t offload_wide_req_out;
+  floo_${p_name}_noc_pkg::red_wide_rsp_t offload_wide_rsp_in;
 % endif
 
   floo_nw_router #(
-    .AxiCfgN       ( AxiCfgN ),
-    .AxiCfgW       ( AxiCfgW ),
-    .RouteAlgo     ( ${route_cfg}.RouteAlgo ),
+    .AxiCfgN       ( floo_${p_name}_noc_pkg::AxiCfgN ),
+    .AxiCfgW       ( floo_${p_name}_noc_pkg::AxiCfgW ),
+    .RouteAlgo     ( floo_${p_name}_noc_pkg::${route_cfg}.RouteAlgo ),
     .NumRoutes     ( 5 ), // 4 Cardinals + 1 Eject
     .InFifoDepth   ( 2 ),
     .OutFifoDepth  ( 2 ),
-    .id_t          ( id_t ),
-    .hdr_t         ( hdr_t ),
-    .floo_req_t    ( floo_req_t ),
-    .floo_rsp_t    ( floo_rsp_t ),
-    .floo_wide_t   ( floo_wide_t ),
+    .id_t          ( floo_${p_name}_noc_pkg::id_t ),
+    .hdr_t         ( floo_${p_name}_noc_pkg::hdr_t ),
+    .floo_req_t    ( floo_${p_name}_noc_pkg::floo_req_t ),
+    .floo_rsp_t    ( floo_${p_name}_noc_pkg::floo_rsp_t ),
+    .floo_wide_t   ( floo_${p_name}_noc_pkg::floo_wide_t ),
 % if use_mcast:
-    .red_wide_req_t( red_wide_req_t ),
-    .red_wide_rsp_t( red_wide_rsp_t ),
+    .red_wide_req_t( floo_${p_name}_noc_pkg::red_wide_req_t ),
+    .red_wide_rsp_t( floo_${p_name}_noc_pkg::red_wide_rsp_t ),
 % endif
-    .WideRwDecouple( WideRwDecouple ),
-    .VcImpl        ( VcImpl )
+    .WideRwDecouple( floo_${p_name}_noc_pkg::WideRwDecouple ),
+    .VcImpl        ( floo_${p_name}_noc_pkg::VcImpl )
 % if use_mcast:
-    , .CollectiveCfg ( ${route_cfg}.CollectiveCfg )
+    , .CollectiveCfg ( floo_${p_name}_noc_pkg::${route_cfg}.CollectiveCfg )
 % endif
   ) i_router (
     .clk_i          ( noc_clk ),
@@ -398,50 +404,50 @@ module ${p_name}_${c_type}
   // mapped AXI4 protocol used by the internal IP (Isle) into the flit-based, 
   // packet-switched protocol used by the FlooNoC Router, and vice-versa.
   
-  axi_narrow_in_req_t  narrow_in_req;
-  axi_narrow_in_rsp_t  narrow_in_rsp;
-  axi_narrow_out_req_t narrow_out_req;
-  axi_narrow_out_rsp_t narrow_out_rsp;
-  axi_wide_in_req_t    wide_in_req;
-  axi_wide_in_rsp_t    wide_in_rsp;
-  axi_wide_out_req_t   wide_out_req;
-  axi_wide_out_rsp_t   wide_out_rsp;
+  floo_${p_name}_noc_pkg::axi_narrow_in_req_t  narrow_in_req;
+  floo_${p_name}_noc_pkg::axi_narrow_in_rsp_t  narrow_in_rsp;
+  floo_${p_name}_noc_pkg::axi_narrow_out_req_t narrow_out_req;
+  floo_${p_name}_noc_pkg::axi_narrow_out_rsp_t narrow_out_rsp;
+  floo_${p_name}_noc_pkg::axi_wide_in_req_t    wide_in_req;
+  floo_${p_name}_noc_pkg::axi_wide_in_rsp_t    wide_in_rsp;
+  floo_${p_name}_noc_pkg::axi_wide_out_req_t   wide_out_req;
+  floo_${p_name}_noc_pkg::axi_wide_out_rsp_t   wide_out_rsp;
 
   floo_nw_chimney #(
-    .AxiCfgN             ( AxiCfgN ),
-    .AxiCfgW             ( AxiCfgW ),
-    .ChimneyCfgN         ( set_ports(ChimneyDefaultCfg, ${"1'b1" if has_slave_narrow else "1'b0"}, ${"1'b1" if has_master_narrow else "1'b0"}) ),
-    .ChimneyCfgW         ( set_ports(ChimneyDefaultCfg, ${"1'b1" if has_slave_wide else "1'b0"}, ${"1'b1" if has_master_wide else "1'b0"}) ),
-    .RouteCfg            ( ${route_cfg} ),
+    .AxiCfgN             ( floo_${p_name}_noc_pkg::AxiCfgN ),
+    .AxiCfgW             ( floo_${p_name}_noc_pkg::AxiCfgW ),
+    .ChimneyCfgN         ( floo_pkg::set_ports(floo_pkg::ChimneyDefaultCfg, ${"1'b1" if has_slave_narrow else "1'b0"}, ${"1'b1" if has_master_narrow else "1'b0"}) ),
+    .ChimneyCfgW         ( floo_pkg::set_ports(floo_pkg::ChimneyDefaultCfg, ${"1'b1" if has_slave_wide else "1'b0"}, ${"1'b1" if has_master_wide else "1'b0"}) ),
+    .RouteCfg            ( floo_${p_name}_noc_pkg::${route_cfg} ),
     .AtopSupport         ( 1'b1 ),
-    .WideRwDecouple      ( WideRwDecouple ),
-    .VcImpl              ( VcImpl ),
+    .WideRwDecouple      ( floo_${p_name}_noc_pkg::WideRwDecouple ),
+    .VcImpl              ( floo_${p_name}_noc_pkg::VcImpl ),
     .MaxAtomicTxns       ( ${"3" if has_master else "1"} ),
 % if use_mcast:
-    .Sam                 ( CollectiveSam ),
-    .sam_rule_t          ( collective_sam_rule_t ),
-    .sam_idx_t           ( collective_idx_t ),
-    .mask_sel_t          ( collective_mask_sel_t ),
-    .user_narrow_struct_t( collective_axi_narrow_in_user_t ),
-    .user_wide_struct_t  ( collective_axi_wide_in_user_t ),
+    .Sam                 ( floo_${p_name}_noc_pkg::CollectiveSam ),
+    .sam_rule_t          ( floo_${p_name}_noc_pkg::collective_sam_rule_t ),
+    .sam_idx_t           ( floo_${p_name}_noc_pkg::collective_idx_t ),
+    .mask_sel_t          ( floo_${p_name}_noc_pkg::collective_mask_sel_t ),
+    .user_narrow_struct_t( floo_${p_name}_noc_pkg::collective_axi_narrow_in_user_t ),
+    .user_wide_struct_t  ( floo_${p_name}_noc_pkg::collective_axi_wide_in_user_t ),
 % else:
-    .Sam                 ( Sam ),
-    .sam_rule_t          ( sam_rule_t ),
+    .Sam                 ( floo_${p_name}_noc_pkg::Sam ),
+    .sam_rule_t          ( floo_${p_name}_noc_pkg::sam_rule_t ),
 % endif
-    .id_t                ( id_t ),
-    .rob_idx_t           ( rob_idx_t ),
-    .hdr_t               ( hdr_t ),
-    .axi_narrow_in_req_t ( axi_narrow_in_req_t ),
-    .axi_narrow_in_rsp_t ( axi_narrow_in_rsp_t ),
-    .axi_narrow_out_req_t( axi_narrow_out_req_t ),
-    .axi_narrow_out_rsp_t( axi_narrow_out_rsp_t ),
-    .axi_wide_in_req_t   ( axi_wide_in_req_t ),
-    .axi_wide_in_rsp_t   ( axi_wide_in_rsp_t ),
-    .axi_wide_out_req_t  ( axi_wide_out_req_t ),
-    .axi_wide_out_rsp_t  ( axi_wide_out_rsp_t ),
-    .floo_req_t          ( floo_req_t ),
-    .floo_rsp_t          ( floo_rsp_t ),
-    .floo_wide_t         ( floo_wide_t )
+    .id_t                ( floo_${p_name}_noc_pkg::id_t ),
+    .rob_idx_t           ( floo_${p_name}_noc_pkg::rob_idx_t ),
+    .hdr_t               ( floo_${p_name}_noc_pkg::hdr_t ),
+    .axi_narrow_in_req_t ( floo_${p_name}_noc_pkg::axi_narrow_in_req_t ),
+    .axi_narrow_in_rsp_t ( floo_${p_name}_noc_pkg::axi_narrow_in_rsp_t ),
+    .axi_narrow_out_req_t( floo_${p_name}_noc_pkg::axi_narrow_out_req_t ),
+    .axi_narrow_out_rsp_t( floo_${p_name}_noc_pkg::axi_narrow_out_rsp_t ),
+    .axi_wide_in_req_t   ( floo_${p_name}_noc_pkg::axi_wide_in_req_t ),
+    .axi_wide_in_rsp_t   ( floo_${p_name}_noc_pkg::axi_wide_in_rsp_t ),
+    .axi_wide_out_req_t  ( floo_${p_name}_noc_pkg::axi_wide_out_req_t ),
+    .axi_wide_out_rsp_t  ( floo_${p_name}_noc_pkg::axi_wide_out_rsp_t ),
+    .floo_req_t          ( floo_${p_name}_noc_pkg::floo_req_t ),
+    .floo_rsp_t          ( floo_${p_name}_noc_pkg::floo_rsp_t ),
+    .floo_wide_t         ( floo_${p_name}_noc_pkg::floo_wide_t )
   ) i_chimney (
     .clk_i               ( noc_clk ),
     .rst_ni              ( noc_rst_n ),
@@ -559,27 +565,27 @@ module ${p_name}_${c_type}
   // It arbitrates and merges the two disparate traffic streams into a single, 
   // unified AXI interface for the IP.
 % if use_join:
-  localparam axi_cfg_t AxiCfgJoin = floo_pkg::axi_join_cfg(AxiCfgN, AxiCfgW);
+  localparam floo_pkg::axi_cfg_t AxiCfgJoin = floo_pkg::axi_join_cfg(floo_${p_name}_noc_pkg::AxiCfgN, floo_${p_name}_noc_pkg::AxiCfgW);
 
   typedef logic [AxiCfgJoin.OutIdWidth-1:0] nw_join_id_t;
   typedef logic [AxiCfgJoin.UserWidth-1:0]  nw_join_user_t;
 
-  `AXI_TYPEDEF_ALL_CT(axi_nw_join, axi_nw_join_req_t, axi_nw_join_rsp_t, axi_wide_out_addr_t,
-                      nw_join_id_t, axi_wide_out_data_t, axi_wide_out_strb_t, nw_join_user_t)
+  `AXI_TYPEDEF_ALL_CT(axi_nw_join, axi_nw_join_req_t, axi_nw_join_rsp_t, floo_${p_name}_noc_pkg::axi_wide_out_addr_t,
+                      nw_join_id_t, floo_${p_name}_noc_pkg::axi_wide_out_data_t, floo_${p_name}_noc_pkg::axi_wide_out_strb_t, nw_join_user_t)
 
   axi_nw_join_req_t join_req;
   axi_nw_join_rsp_t join_rsp;
   
   floo_nw_join #(
-    .AxiCfgN         ( axi_cfg_swap_iw(AxiCfgN) ),
-    .AxiCfgW         ( axi_cfg_swap_iw(AxiCfgW) ),
-    .AxiCfgJoin      ( axi_cfg_swap_iw(AxiCfgJoin) ),
+    .AxiCfgN         ( floo_pkg::axi_cfg_swap_iw(floo_${p_name}_noc_pkg::AxiCfgN) ),
+    .AxiCfgW         ( floo_pkg::axi_cfg_swap_iw(floo_${p_name}_noc_pkg::AxiCfgW) ),
+    .AxiCfgJoin      ( floo_pkg::axi_cfg_swap_iw(AxiCfgJoin) ),
     .EnAtopAdapter   ( 1'b0 ), // Assuming ATOP is handled by the Isle
     .AtopUserAsId    ( 1'b1 ), // Enforces ID preservation for ATOPs
-    .axi_narrow_req_t( axi_narrow_out_req_t ),
-    .axi_narrow_rsp_t( axi_narrow_out_rsp_t ),
-    .axi_wide_req_t  ( axi_wide_out_req_t ),
-    .axi_wide_rsp_t  ( axi_wide_out_rsp_t ),
+    .axi_narrow_req_t( floo_${p_name}_noc_pkg::axi_narrow_out_req_t ),
+    .axi_narrow_rsp_t( floo_${p_name}_noc_pkg::axi_narrow_out_rsp_t ),
+    .axi_wide_req_t  ( floo_${p_name}_noc_pkg::axi_wide_out_req_t ),
+    .axi_wide_rsp_t  ( floo_${p_name}_noc_pkg::axi_wide_out_rsp_t ),
     .axi_req_t       ( axi_nw_join_req_t ),
     .axi_rsp_t       ( axi_nw_join_rsp_t )
   ) i_join (
@@ -604,8 +610,10 @@ module ${p_name}_${c_type}
   // the PeakRDL System Controller. This allows the Host to access its 
   // core CSRs locally without a full NoC roundtrip.
   <%
-    reg_rsp_type = isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t")
-    reg_req_type = isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t")
+    reg_rsp_type = isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t").strip()
+    reg_req_type = isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t").strip()
+    if "::" not in reg_rsp_type: reg_rsp_type = f"{p_name}_soc_pkg::{reg_rsp_type}"
+    if "::" not in reg_req_type: reg_req_type = f"{p_name}_soc_pkg::{reg_req_type}"
     base_rsp_type = reg_rsp_type.split('[')[0].strip()
     base_req_type = reg_req_type.split('[')[0].strip()
   %>

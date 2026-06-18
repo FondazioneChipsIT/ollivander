@@ -25,8 +25,8 @@ prometheus_soc/
 │   └── padframes/           <-- Custom Padframe technology catalogs (Optional)
 │       └── tech/
 │           └── my_custom_io.yml
-├── prometheus_env.yaml      <-- Environment bridge file
-├── prometheus.yaml          <-- Your SoC specification (SSoT)
+├── prometheus_env.yaml      <-- Environment bridge file (YAML)
+├── prometheus.yaml          <-- Your SoC specification (YAML or .py script)
 └── Makefile                 <-- Project automation
 ```
 
@@ -110,7 +110,7 @@ dependencies:
 
 ## 5. Build Modes (Standalone vs Macro)
 
-Before generating, you should decide how your architecture will be used by setting the `build_mode` in your `prometheus.yaml`:
+Before generating, you should decide how your architecture will be used by setting the `build_mode` in your `prometheus.yaml` (or .py):
 
 *   **Standalone (`build_mode: "standalone"`)**: The default behavior. Ollivander generates a complete System-on-Chip top-level, wrapping it with the padframe (if defined) and exposing physical I/O pins (e.g., UART, SPI, JTAG). This is ready for physical synthesis or full-chip simulation.
 *   **Macro (`build_mode: "macro"`)**: Generates your architecture as a reusable IP block (a Macro). Instead of physical I/O pins and padframes, it exposes standard AXI Master/Slave interfaces at its boundaries, allowing you to easily instantiate this entire subsystem inside a larger "Parent" SoC.

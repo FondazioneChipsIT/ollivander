@@ -1,14 +1,16 @@
-# Ollivander SoC Generator: YAML Configuration Guide
+# Ollivander SoC Generator: YAML & Python Configuration Guide
 
-The YAML configuration file is the **Single Source of Truth (SSoT)** for the Ollivander SoC Generator. It defines the topology, clock domains, system parameters, and the hardware components instantiated in the system.
+The configuration file is the **Single Source of Truth (SSoT)** for the Ollivander SoC Generator. It defines the topology, clock domains, system parameters, and the hardware components instantiated in the system. 
 
-Ollivander uses a "Hardware-First" validation engine (`soc_schema.py`) to parse this file and guarantee that the requested configuration is physically compatible with the underlying SystemVerilog modules.
+You can write this configuration using either **YAML** (static, easy to read) or **native Python** (`.py`). Using Python (Configuration-as-Code) allows you to use variables for the memory map, loops for placing NoC clusters, and benefits from IDE autocompletion via Pydantic models.
+
+Ollivander uses a "Hardware-First" validation engine (`soc_schema.py`) to parse these files and guarantee that the requested configuration is physically compatible with the underlying SystemVerilog modules.
 
 ---
 
 ## 1. Root Structure
 
-A valid Ollivander YAML configuration must contain the following top-level blocks:
+A valid Ollivander configuration must contain the following top-level blocks. If using Python, these are instantiated as a `config` variable of type `OllivanderConfig`:
 
 ```yaml
 project: ...             # 1. Project metadata

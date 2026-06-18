@@ -17,8 +17,19 @@ ${license()}\
 `include "${config.project.name}_regs.rdl"
 
 // 2. Include External Components RDLs
-// Discovered dynamically during the SystemVerilog parsing phase.
-% for c in [config.host] + (config.components or []):
+<%
+    # Flatten the hierarchy recursively to include all nested components
+    all_comps = []
+    def flatten_comps(comp_list):
+        for c in comp_list:
+            all_comps.append(c)
+            if getattr(c, 'components', None):
+                flatten_comps(c.components)
+    
+    flatten_comps([config.host] + (config.components or []))
+%>
+// Discovered dynamically from all top-level and nested components.
+% for c in all_comps:
     <% c_info = comp_info.get(c.name, {}) %>
     % if c_info.get('rdl_file'):
 `include "${c_info['rdl_file']}"
@@ -34,19 +45,89 @@ addrmap ${config.project.name}_soc_map {
     // System Controller (Power, Clock, and Reset Registers)
     ${config.project.name}_sys_regs sys_ctrl @ ${hex(config.system_controller.base_addr) if isinstance(config.system_controller.base_addr, int) else config.system_controller.base_addr};
 
+% if config.system_controller and config.system_controller.external_registers:
+    // External Registers (Exported to Top-Level via RegBus)
+ % for ext_reg in config.system_controller.external_registers:
+    <% 
+        s_size = getattr(ext_reg, 'size', None) or 0x1000
+        s_size_val = int(s_size, 16) if isinstance(s_size, str) else s_size
+        mem_entries = max(1, s_size_val // 4)
+    %>
+    external mem { name = "${ext_reg.name} Opaque Region"; mementries = ${mem_entries}; memwidth = 32; } ${ext_reg.name} @ ${hex(ext_reg.base_addr) if isinstance(ext_reg.base_addr, int) else ext_reg.base_addr};
+ % endfor
+% endif
+
     // Hardware IPs Memory Maps
-% for c in [config.host] + (config.components or []):
+<%def name="generate_map(comps, parent_base=0)">
+% for c in comps:
     <% 
         c_info = comp_info.get(c.name, {}) 
-        base_addr = 0
+        has_rdl = bool(c_info.get('rdl_map'))
+        
+        # Calcola il numero di istanze hardware basandosi sul placement NoC
+        num_inst = 1
+        if getattr(c, 'placement', None) and 'logical' in c.placement:
+            log = c.placement['logical']
+            items = log if isinstance(log, list) else [log]
+            num_inst = 0
+            for item in items:
+                if 'box' in item:
+                    b = item['box']
+                    num_inst += (b['x_end'] - b['x_start'] + 1) * (b['y_end'] - b['y_start'] + 1)
+                else:
+                    num_inst += 1
+            num_inst = max(num_inst, 1)
+        
+        slaves = []
         if c.interfaces:
             for if_type in ['regbus_slave', 'axi_slave', 'apb_slave', 'llc_port']:
                 if if_type in c.interfaces and isinstance(c.interfaces[if_type], list):
-                    base_addr = c.interfaces[if_type][0].get('base_addr', 0)
-                    break
+                    for item in c.interfaces[if_type]:
+                        s_size = item.get('size') or item.get('size_per_instance') or 4
+                        s_stride = item.get('size_per_instance') or s_size
+                        slaves.append((if_type, item.get('base_addr'), s_size, s_stride, item.get('name', if_type.split('_')[0])))
+        elif getattr(c, 'base_addr', None) is not None:
+            # Nested components often define base_addr directly without an interfaces block
+            slaves.append(('apb_slave', c.base_addr, getattr(c, 'size', 4), getattr(c, 'size', 4), 'regs'))
+            
+        rdl_mapped = False
+        has_children = bool(getattr(c, 'components', None))
     %>
-    % if c_info.get('rdl_map'):
-    ${c_info['rdl_map']} ${c.name} @ ${hex(base_addr) if isinstance(base_addr, int) else base_addr};
-    % endif
+    % for i, (if_type, b_addr, s_size, s_stride, slv_name) in enumerate(slaves):
+        <% 
+            if b_addr is None: continue
+            inst_name = c.name if len(slaves) == 1 else f"{c.name}_{slv_name}"
+            
+            b_addr_val = int(b_addr, 16) if isinstance(b_addr, str) else b_addr
+            offset = b_addr_val - parent_base
+            
+            # Calculate memory entries for opaque blocks (assuming 32-bit/4-byte words)
+            s_size_val = int(s_size, 16) if isinstance(s_size, str) else s_size
+            s_stride_val = int(s_stride, 16) if isinstance(s_stride, str) else s_stride
+            mem_entries = max(1, s_size_val // 4)
+            
+            array_str = f"[{num_inst}]" if num_inst > 1 else ""
+            stride_str = f" += {hex(s_stride_val)}" if num_inst > 1 else ""
+            
+            use_rdl = False
+            if has_rdl and not rdl_mapped:
+                if if_type in ['regbus_slave', 'apb_slave'] or not any(t in ['regbus_slave', 'apb_slave'] for t, _, _, _, _ in slaves):
+                    use_rdl = True
+                    rdl_mapped = True
+        %>
+        % if use_rdl:
+    ${c_info['rdl_map']} ${inst_name}${array_str} @ ${hex(offset)}${stride_str};
+        % elif has_children:
+    addrmap {
+        name = "${c.name} Subsystem";
+        ${generate_map(c.components, b_addr_val)}
+    } ${inst_name}${array_str} @ ${hex(offset)}${stride_str};
+        % else:
+    external mem { name = "Opaque Memory Region"; mementries = ${mem_entries}; memwidth = 32; } ${inst_name}${array_str} @ ${hex(offset)}${stride_str};
+        % endif
+    % endfor
 % endfor
+</%def>
+
+${generate_map([config.host] + (config.components or []))}
 };

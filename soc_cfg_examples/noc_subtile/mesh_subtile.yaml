@@ -91,7 +91,7 @@ clock_tree:
 system_controller:
   description: "Main system control and status registers (PCRs)"
   name: "gw_soc_regs"
-  base_addr: 0x18003000       # Memory mapped base address
+  base_addr: 0x20000000       # Memory mapped base address
   size: 0x00001000            # Size of the memory region
   scratch_registers: 2        # Number of generic GENERIC_SCRATCHx registers
   version_registers: 1        # Number of VERSIONx registers
@@ -102,9 +102,9 @@ system_controller:
   # Ollivander maps these in the RDL (conditionally) and exports the RegBus at the top-level.
   external_registers:
     - name: "fll"
-      base_addr: 0x18001000
+      base_addr: 0x20001000
     - name: "gw_chip_regs"
-      base_addr: 0x18002000
+      base_addr: 0x20002000
       
   # Auto Control Groups are a powerful feature for NoC arrays.
   # Instead of generating a separate CSR for each tile instance, it groups them by 
@@ -139,10 +139,7 @@ host:
     axi_slave:
       - name: "internal_rom_ram"
         base_addr: 0x00000000
-        size: 0x20000000      # 512 MB
-      - name: "external_dram"
-        base_addr: 0x80000000
-        size: 0x1800000000    # Off-chip DDR
+        size: 0x18000000      # 384 MB reserved for internal ROM/RAM/CLINT/PLIC
   features:
     # Automatically instantiates dummy AXI slaves returning DECERR for these unconnected ports
     error_slaves: ["async_axi_llc"]
@@ -179,7 +176,7 @@ components:
         noc_mode: "dual"
       axi_slave:
         - name: "cluster_tcdm_and_periph"
-          base_addr: 0x20000000
+          base_addr: 0x21000000
           size_per_instance: 0x00040000 # 256 kB per cluster
     features: 
       multicast_target: true  
@@ -203,7 +200,7 @@ components:
         noc_mode: "joined"
       axi_slave:
         - name: "l2_spm_global"
-          base_addr: 0x70000000
+          base_addr: 0x22000000
           size_per_instance: 0x00100000 # 1 MB per tile
     parameters:
       AxiUserAtop: true # Hardware atomics enabled
@@ -223,7 +220,7 @@ components:
         slave: ["narrow"]
       axi_slave:
         - name: "spm_narrow_buffer"
-          base_addr: 0x60000000
+          base_addr: 0x23000000
           size: 0x00040000
     parameters:
       SpmWordsPerBank: 2048
@@ -241,7 +238,7 @@ components:
         slave: ["wide"]
       axi_slave:
         - name: "spm_wide_buffer"
-          base_addr: 0x60040000
+          base_addr: 0x23100000
           size: 0x00040000
     parameters:
       SpmWordsPerBank: 1024

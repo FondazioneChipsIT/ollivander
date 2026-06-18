@@ -130,6 +130,8 @@ module ${top_level_module_name}
 % endif
 % if config.project.build_mode == "macro" and config.project.macro_settings:
   ,
+  // Macro Base Address for hardware address translation
+  parameter logic [63:0] MACRO_BASE_ADDR = 64'h0,
   // Macro Types for Parent SoC Integration
   parameter type axi_req_t  = ${pkg}::soc_axi_req_t,
   parameter type axi_resp_t = ${pkg}::soc_axi_resp_t,
@@ -303,8 +305,8 @@ ${"," if all_extra_ports else ""}
   num_reg_slvs = len(ext_regs) + 1
 %>
 % if ext_regs:
-  soc_reg_req_t [${num_reg_slvs-1}:0] host_reg_req;
-  soc_reg_rsp_t [${num_reg_slvs-1}:0] host_reg_rsp;
+  ${pkg}::soc_reg_req_t [${num_reg_slvs-1}:0] host_reg_req;
+  ${pkg}::soc_reg_rsp_t [${num_reg_slvs-1}:0] host_reg_rsp;
   
   // Connect external register slaves to the Host's RegBus array.
   // Index 0 is reserved for the internal System Controller PCRs.
@@ -326,9 +328,9 @@ ${clock_and_reset_tree(config, p_name)}
   // =========================================================================
   // These multi-dimensional arrays represent the physical packet-switched links 
   // between adjacent routers in the grid.
-  floo_req_t  [${max_x}:0][${max_y}:0][West:North] tile_req_o, tile_req_i;
-  floo_rsp_t  [${max_x}:0][${max_y}:0][West:North] tile_rsp_o, tile_rsp_i;
-  floo_wide_t [${max_x}:0][${max_y}:0][West:North] tile_wide_o, tile_wide_i;
+  ${npkg}::floo_req_t  [${max_x}:0][${max_y}:0][West:North] tile_req_o, tile_req_i;
+  ${npkg}::floo_rsp_t  [${max_x}:0][${max_y}:0][West:North] tile_rsp_o, tile_rsp_i;
+  ${npkg}::floo_wide_t [${max_x}:0][${max_y}:0][West:North] tile_wide_o, tile_wide_i;
 
   // MESH WIRING GENERATION
   // Generates the bidirectional links connecting adjacent routers. Edge ports 
@@ -555,21 +557,22 @@ ${clock_and_reset_tree(config, p_name)}
     # 1. Standard AXI/System parameters
     supported = c_info.get("supported_params", [])
     for p in supported:
-        if p in ['AxiAddrWidth', 'AxiDataWidth', 'AxiUserWidth', 'LogDepth']:
+        if p in ['AxiAddrWidth', 'AxiDataWidth', 'AxiUserWidth']:
             param_dict[p] = p
+        elif p == 'LogDepth': param_dict[p] = f"{pkg}::LogDepth"
         elif p == 'AxiMaxReadTxns': param_dict[p] = f"{pkg}::LlcMaxReadTxns" if 'l2' in c.name else f"{pkg}::RegMaxReadTxns"
         elif p == 'AxiMaxWriteTxns': param_dict[p] = f"{pkg}::LlcMaxWriteTxns" if 'l2' in c.name else f"{pkg}::RegMaxWriteTxns"
         elif p == 'AxiUserAmoMsb': param_dict[p] = f"{pkg}::AxiUserAmoMsb"
         elif p == 'AxiUserAmoLsb': param_dict[p] = f"{pkg}::AxiUserAmoLsb"
         elif p == 'AxiUserEccErrBit': param_dict[p] = f"{pkg}::AxiUserEccErrBit"
         elif p == 'AxiAmoNumCuts': param_dict[p] = f"{pkg}::LlcAmoNumCuts" if 'l2' in c.name else f"{pkg}::RegAmoNumCuts"
-        elif p == 'AxiInIdWidth': param_dict[p] = 'AxiSlvIdWidth'
+        elif p == 'AxiInIdWidth': param_dict[p] = f"{pkg}::ExtSlvIdWidth"
         elif p == 'AxiOutIdWidth': param_dict[p] = 'AxiIdWidth'
         elif p == 'AxiIdWidth':
             interfaces = c.interfaces or {}
             has_slave = 'axi_slave' in interfaces or 'llc_port' in interfaces
             has_master = 'axi_master' in interfaces
-            if has_slave and not has_master: param_dict[p] = 'AxiSlvIdWidth'
+            if has_slave and not has_master: param_dict[p] = f"{pkg}::ExtSlvIdWidth"
             else: param_dict[p] = 'AxiIdWidth'
   
         # --- Type Mappings ---
@@ -597,6 +600,14 @@ ${clock_and_reset_tree(config, p_name)}
             param_dict[p] = f"{pkg}::soc_reg_req_t"
         elif p in ['reg_rsp_t', 'sync_reg_in_rsp_t', 'sync_reg_out_rsp_t', 'async_reg_out_rsp_t']: 
             param_dict[p] = f"{pkg}::soc_reg_rsp_t"
+            
+        elif p == 'MACRO_BASE_ADDR':
+            b_val = int(base_addr, 16) if isinstance(base_addr, str) else base_addr
+            s_val = int(size_per_inst, 16) if isinstance(size_per_inst, str) else size_per_inst
+            if s_val and inst_idx > 0:
+                param_dict[p] = f"64'h{b_val:X} + ({inst_idx} * 64'h{s_val:X})"
+            else:
+                param_dict[p] = f"64'h{b_val:X}"
   
         # --- CDC Width Mappings ---
         elif p.startswith('AsyncAxiLlc'):
@@ -607,19 +618,19 @@ ${clock_and_reset_tree(config, p_name)}
             elif p == 'AsyncAxiLlcRWidth': param_dict[p] = f'{pkg}::LlcRWidth'
         elif p in ['AsyncAxiInAwWidth', 'AxiSlvAwWidth', 'AsyncAxiOutAwWidth', 'AxiMstAwWidth']:
             if 'llc_port' in (c.interfaces or {}): param_dict[p] = f'{pkg}::LlcAwWidth'
-            else: param_dict[p] = 'NoCAxiAwWidth'
+            else: param_dict[p] = f'{pkg}::NoCAxiAwWidth'
         elif p in ['AsyncAxiInWWidth', 'AxiSlvWWidth', 'AsyncAxiOutWWidth', 'AxiMstWWidth']:
             if 'llc_port' in (c.interfaces or {}): param_dict[p] = f'{pkg}::LlcWWidth'
-            else: param_dict[p] = 'NoCAxiWWidth'
+            else: param_dict[p] = f'{pkg}::NoCAxiWWidth'
         elif p in ['AsyncAxiInBWidth', 'AxiSlvBWidth', 'AsyncAxiOutBWidth', 'AxiMstBWidth']:
             if 'llc_port' in (c.interfaces or {}): param_dict[p] = f'{pkg}::LlcBWidth'
-            else: param_dict[p] = 'NoCAxiBWidth'
+            else: param_dict[p] = f'{pkg}::NoCAxiBWidth'
         elif p in ['AsyncAxiInArWidth', 'AxiSlvArWidth', 'AsyncAxiOutArWidth', 'AxiMstArWidth']:
             if 'llc_port' in (c.interfaces or {}): param_dict[p] = f'{pkg}::LlcArWidth'
-            else: param_dict[p] = 'NoCAxiArWidth'
+            else: param_dict[p] = f'{pkg}::NoCAxiArWidth'
         elif p in ['AsyncAxiInRWidth', 'AxiSlvRWidth', 'AsyncAxiOutRWidth', 'AxiMstRWidth']:
             if 'llc_port' in (c.interfaces or {}): param_dict[p] = f'{pkg}::LlcRWidth'
-            else: param_dict[p] = 'NoCAxiRWidth'
+            else: param_dict[p] = f'{pkg}::NoCAxiRWidth'
             
         elif p in ['AsyncAxiOutAwWidth', 'AxiMstAwWidth']: param_dict[p] = f'{pkg}::NoCAxiAwWidth'
         elif p in ['AsyncAxiOutWWidth', 'AxiMstWWidth']: param_dict[p] = f'{pkg}::NoCAxiWWidth'
@@ -635,6 +646,8 @@ ${clock_and_reset_tree(config, p_name)}
         for p_k, p_v in c.parameters.items():
             if isinstance(p_v, bool):
                 param_dict[p_k] = "1'b1" if p_v else "1'b0"
+            elif isinstance(p_v, str):
+                param_dict[p_k] = p_v.replace("{inst_idx}", str(inst_idx))
             else:
                 param_dict[p_k] = p_v
         
@@ -672,7 +685,7 @@ ${clock_and_reset_tree(config, p_name)}
     
     c_name = f"border_{tx}_{ty}_{tdir}"
   %>
-  id_t ${c_name}_id;
+  ${npkg}::id_t ${c_name}_id;
   assign ${c_name}_id.x = ${tx} ${'- 1' if tdir == 'West' else '+ 1' if tdir == 'East' else ''};
   assign ${c_name}_id.y = ${ty} ${'- 1' if tdir == 'South' else '+ 1' if tdir == 'North' else ''};
   
@@ -685,9 +698,9 @@ ${clock_and_reset_tree(config, p_name)}
   axi_wide_req_t     ${c_name}_wide_out_req;
   axi_wide_resp_t    ${c_name}_wide_out_rsp;
   
-  floo_req_t  ${c_name}_floo_req_o, ${c_name}_floo_req_i;
-  floo_rsp_t  ${c_name}_floo_rsp_o, ${c_name}_floo_rsp_i;
-  floo_wide_t ${c_name}_floo_wide_o, ${c_name}_floo_wide_i;
+  ${npkg}::floo_req_t  ${c_name}_floo_req_o, ${c_name}_floo_req_i;
+  ${npkg}::floo_rsp_t  ${c_name}_floo_rsp_o, ${c_name}_floo_rsp_i;
+  ${npkg}::floo_wide_t ${c_name}_floo_wide_o, ${c_name}_floo_wide_i;
   
   assign tile_req_i[${tx}][${ty}][${tdir}] = ${c_name}_floo_req_o;
   assign ${c_name}_floo_req_i = tile_req_o[${tx}][${ty}][${tdir}];
@@ -699,20 +712,20 @@ ${clock_and_reset_tree(config, p_name)}
   assign ${c_name}_floo_wide_i = tile_wide_o[${tx}][${ty}][${tdir}];
   
   floo_nw_chimney #(
-    .AxiCfgN             ( AxiCfgN ),
-    .AxiCfgW             ( AxiCfgW ),
-    .ChimneyCfgN         ( set_ports(ChimneyDefaultCfg, ${"1'b1" if has_narrow_out else "1'b0"}, ${"1'b1" if has_narrow_in else "1'b0"}) ),
-    .ChimneyCfgW         ( set_ports(ChimneyDefaultCfg, ${"1'b1" if has_wide_out else "1'b0"}, ${"1'b1" if has_wide_in else "1'b0"}) ),
-    .RouteCfg            ( RouteCfg ),
+    .AxiCfgN             ( ${npkg}::AxiCfgN ),
+    .AxiCfgW             ( ${npkg}::AxiCfgW ),
+    .ChimneyCfgN         ( floo_pkg::set_ports(floo_pkg::ChimneyDefaultCfg, ${"1'b1" if has_narrow_out else "1'b0"}, ${"1'b1" if has_narrow_in else "1'b0"}) ),
+    .ChimneyCfgW         ( floo_pkg::set_ports(floo_pkg::ChimneyDefaultCfg, ${"1'b1" if has_wide_out else "1'b0"}, ${"1'b1" if has_wide_in else "1'b0"}) ),
+    .RouteCfg            ( ${npkg}::RouteCfg ),
     .AtopSupport         ( 1'b1 ),
-    .WideRwDecouple      ( WideRwDecouple ),
-    .VcImpl              ( VcImpl ),
+    .WideRwDecouple      ( ${npkg}::WideRwDecouple ),
+    .VcImpl              ( ${npkg}::VcImpl ),
     .MaxAtomicTxns       ( 3 ),
-    .Sam                 ( Sam ),
-    .sam_rule_t          ( sam_rule_t ),
-    .id_t                ( id_t ),
-    .rob_idx_t           ( rob_idx_t ),
-    .hdr_t               ( hdr_t ),
+    .Sam                 ( ${npkg}::Sam ),
+    .sam_rule_t          ( ${npkg}::sam_rule_t ),
+    .id_t                ( ${npkg}::id_t ),
+    .rob_idx_t           ( ${npkg}::rob_idx_t ),
+    .hdr_t               ( ${npkg}::hdr_t ),
     .axi_narrow_in_req_t ( axi_narrow_req_t ),
     .axi_narrow_in_rsp_t ( axi_narrow_resp_t ),
     .axi_narrow_out_req_t( axi_narrow_req_t ),
@@ -721,9 +734,9 @@ ${clock_and_reset_tree(config, p_name)}
     .axi_wide_in_rsp_t   ( axi_wide_resp_t ),
     .axi_wide_out_req_t  ( axi_wide_req_t ),
     .axi_wide_out_rsp_t  ( axi_wide_resp_t ),
-    .floo_req_t          ( floo_req_t ),
-    .floo_rsp_t          ( floo_rsp_t ),
-    .floo_wide_t         ( floo_wide_t )
+    .floo_req_t          ( ${npkg}::floo_req_t ),
+    .floo_rsp_t          ( ${npkg}::floo_rsp_t ),
+    .floo_wide_t         ( ${npkg}::floo_wide_t )
   ) i_chimney_${c_name} (
     .clk_i               ( ${host_clk} ),
     .rst_ni              ( host_pwr_on_rst_n ),
@@ -749,15 +762,19 @@ ${clock_and_reset_tree(config, p_name)}
 
   % if is_isle:
    % if has_slaves:
-  assign ${c_name}_wide_in_req = axi_req_i;
+  always_comb begin
+    ${c_name}_wide_in_req = axi_req_i;
+    ${c_name}_wide_in_req.aw.addr = axi_req_i.aw.addr - MACRO_BASE_ADDR;
+    ${c_name}_wide_in_req.ar.addr = axi_req_i.ar.addr - MACRO_BASE_ADDR;
+  end
   assign axi_resp_o = ${c_name}_wide_in_rsp;
   assign ${c_name}_narrow_in_req = '0;
    % endif
    % if has_masters:
   floo_nw_join #(
-    .AxiCfgN         ( axi_cfg_swap_iw(AxiCfgN) ),
-    .AxiCfgW         ( axi_cfg_swap_iw(AxiCfgW) ),
-    .AxiCfgJoin      ( axi_cfg_swap_iw(floo_pkg::axi_join_cfg(AxiCfgN, AxiCfgW)) ),
+    .AxiCfgN         ( floo_pkg::axi_cfg_swap_iw(${npkg}::AxiCfgN) ),
+    .AxiCfgW         ( floo_pkg::axi_cfg_swap_iw(${npkg}::AxiCfgW) ),
+    .AxiCfgJoin      ( floo_pkg::axi_cfg_swap_iw(floo_pkg::axi_join_cfg(${npkg}::AxiCfgN, ${npkg}::AxiCfgW)) ),
     .EnAtopAdapter   ( 1'b0 ), 
     .AtopUserAsId    ( 1'b1 ), 
     .axi_narrow_req_t( axi_narrow_req_t ),
@@ -780,13 +797,21 @@ ${clock_and_reset_tree(config, p_name)}
    % endif
   % else:
    % if "narrow" in info["slaves"]:
-  assign ${c_name}_narrow_in_req = axi_narrow_req_i;
+  always_comb begin
+    ${c_name}_narrow_in_req = axi_narrow_req_i;
+    ${c_name}_narrow_in_req.aw.addr = axi_narrow_req_i.aw.addr - MACRO_BASE_ADDR;
+    ${c_name}_narrow_in_req.ar.addr = axi_narrow_req_i.ar.addr - MACRO_BASE_ADDR;
+  end
   assign axi_narrow_resp_o = ${c_name}_narrow_in_rsp;
    % else:
   assign ${c_name}_narrow_in_req = '0;
    % endif
    % if "wide" in info["slaves"]:
-  assign ${c_name}_wide_in_req = axi_wide_req_i;
+  always_comb begin
+    ${c_name}_wide_in_req = axi_wide_req_i;
+    ${c_name}_wide_in_req.aw.addr = axi_wide_req_i.aw.addr - MACRO_BASE_ADDR;
+    ${c_name}_wide_in_req.ar.addr = axi_wide_req_i.ar.addr - MACRO_BASE_ADDR;
+  end
   assign axi_wide_resp_o = ${c_name}_wide_in_rsp;
    % else:
   assign ${c_name}_wide_in_req = '0;

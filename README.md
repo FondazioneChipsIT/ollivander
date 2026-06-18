@@ -20,7 +20,7 @@
 
 # Ollivander SoC Generator
 
-**Ollivander** is a highly automated, hardware-first, heterogeneous Multi-Core System-on-Chip (SoC) generator. It is designed to take a high-level YAML specification of an architecture and automatically generate the complete, synthesis-ready SystemVerilog top-level (or reusable Macro IPs), interconnects, clock/reset trees, and software register maps.
+**Ollivander** is a highly automated, hardware-first, heterogeneous Multi-Core System-on-Chip (SoC) generator. It is designed to take a high-level YAML or native Python specification of an architecture and automatically generate the complete, synthesis-ready SystemVerilog top-level (or reusable Macro IPs), interconnects, clock/reset trees, and software register maps.
 
 ---
 
@@ -93,6 +93,7 @@ To close the gap between hardware generation and bare-metal validation, Ollivand
 
 ## 4. Key Automated Features
 
+*   **Configuration-as-Code (Python)**: Alongside YAML, define massive, highly-parameterized SoC topologies programmatically using native Python scripts and Pydantic models. Perfect for algorithmic NoC cluster placement and Address Map computations.
 *   **Standalone vs Macro Build Modes**: Generate a complete, standalone Chip (including physical padframes and physical I/O) or export your architecture as a reusable **Macro IP**. Macros expose standard AXI boundaries, allowing you to easily instantiate complex Ollivander subsystems inside larger Parent SoCs.
 *   **Intelligent Clock & Reset Trees**: Automatically generates software-controllable glitch-free muxes and integer dividers for every defined clock domain, complete with 4-phase CDC handshakes for the configuration registers.
 *   **Automatic CDC for Interrupts**: Analyzes the clock domains of interrupt sources and destinations. If they differ, it automatically injects multi-stage synchronizers or edge-to-level propagators.
