@@ -120,7 +120,13 @@ def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_
     if not soc_config.system_controller:
         return
         
-    rdl_file = reg_dir / f"{soc_config.project.name}_regs.rdl"
+    top_level_module_name = soc_config.project.name
+    if soc_config.project.build_mode == "macro":
+        if getattr(soc_config.project, 'macro_settings', None):
+            suffix = soc_config.project.macro_settings.export_type
+            top_level_module_name = f"{soc_config.project.name}_{suffix}"
+            
+    rdl_file = reg_dir / f"{top_level_module_name}_regs.rdl"
     if not rdl_file.is_file():
         return
         
@@ -185,28 +191,28 @@ def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_
             subprocess.run(cmd_sv, check=True, capture_output=True, text=True)
             print("  [SUCCESS] System Controller register RTL generated.")
 
-            memory_map_file = reg_dir / f"{soc_config.project.name}_memory_map.rdl"
+            memory_map_file = reg_dir / f"{top_level_module_name}_memory_map.rdl"
             if memory_map_file.is_file():
                 rdl_source = memory_map_file
             else:
                 rdl_source = rdl_file
 
             # Generate the C Defines Header for software driver development
-            c_header_file = sw_dir / f"{soc_config.project.name}_regs.h"
+            c_header_file = sw_dir / f"{top_level_module_name}_regs.h"
             cmd_c = [peakrdl_exe, "c-header", str(rdl_source)] + include_args + ["-o", str(c_header_file), "-i", "-b", "ltoh"]
             subprocess.run(cmd_c, check=True, capture_output=True, text=True)
             print(f"  [SUCCESS] System Controller C header generated ({c_header_file.name}).")
             
             # Generate the SV Raw Header for Testbench usage (macros for register addresses)
-            sv_header_file = hw_dir / f"{soc_config.project.name}_regs.svh"
+            sv_header_file = hw_dir / f"{top_level_module_name}_regs.svh"
             cmd_svh = [peakrdl_exe, "raw-header", str(rdl_source)] + include_args + ["-o", str(sv_header_file), "--format", "svh", "--no-prefix"]
             # We don't enforce check=True here because 'peakrdl-rawheader' is a third-party plugin 
             # that might not be installed in all environments.
             subprocess.run(cmd_svh, capture_output=True, text=True)
 
             # Generate the C Raw Header for alternative firmware usage
-            c_raw_header_file = sw_dir / f"{soc_config.project.name}_raw_regs.h"
-            cmd_c_raw = [peakrdl_exe, "raw-header", str(rdl_source)] + include_args + ["-o", str(c_raw_header_file), "--base_name", f"{soc_config.project.name}_raw_regs", "--format", "c"]
+            c_raw_header_file = sw_dir / f"{top_level_module_name}_raw_regs.h"
+            cmd_c_raw = [peakrdl_exe, "raw-header", str(rdl_source)] + include_args + ["-o", str(c_raw_header_file), "--base_name", f"{top_level_module_name}_raw_regs", "--format", "c"]
             subprocess.run(cmd_c_raw, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
             print(f"\n[ERROR] PeakRDL failed:\n{e.stderr}\n{e.stdout}")

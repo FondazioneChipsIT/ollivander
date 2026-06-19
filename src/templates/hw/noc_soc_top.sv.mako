@@ -2,7 +2,7 @@
   import re
   p_name = config.project.name
   pkg    = f"{p_name}_soc_pkg"
-  rpkg   = f"{p_name}_sys_regs_pkg"
+  rpkg   = f"{top_level_module_name}_sys_regs_pkg"
   npkg   = f"floo_{p_name}_noc_pkg"
   host_clk = config.host.clock_domain or "system_clk"
   
@@ -285,8 +285,8 @@ ${"," if all_extra_ports else ""}
   // =========================================================================
   // 1. SYSTEM REGISTERS
   // =========================================================================
-  ${p_name}_sys_regs_pkg::${p_name}_sys_regs__out_t sys_regs_hwif_out;
-  ${p_name}_sys_regs_pkg::${p_name}_sys_regs__in_t  sys_regs_hwif_in;
+  ${top_level_module_name}_sys_regs_pkg::${top_level_module_name}_sys_regs__out_t sys_regs_hwif_out;
+  ${top_level_module_name}_sys_regs_pkg::${top_level_module_name}_sys_regs__in_t  sys_regs_hwif_in;
 
 % if config.system_controller and config.system_controller.clk_gen_status_regs:
   assign sys_regs_hwif_in.clk_gen_lock.clk_gen_lock.next  = clk_gen_lock_i;

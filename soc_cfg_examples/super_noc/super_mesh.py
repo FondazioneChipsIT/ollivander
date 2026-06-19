@@ -158,20 +158,18 @@ config = OllivanderConfig(
             parameters={"AxiUserAtop": True, "SramDataWidth": 128, "SramNumWords": 1024, "MemSize": 0x00100000}
         ),
         
-        # --- NESTED CROSSBAR MACRO ---
-        # This instantiates an entire Crux SoC (which is internally crossbar-based)
-        # as a single node in our NoC! Because it uses standard 'isle' AXI ports,
-        # Ollivander automatically provides the 'joined' adapter for the NoC.
+        # --- NESTED MESH MACRO ---
+        # This instantiates a Mesh Isle Macro
         Component(
-            name="crux_subsystem",
-            description="Nested Crux Heterogeneous Subsystem Macro (Crossbar-based IP)",
-            type="crux_isle", # Uses 'isle' standard AXI ports
+            name="mesh_subsystem",
+            description="Nested Mesh Subsystem Macro",
+            type="mesh_isle", # Uses 'isle' standard AXI ports
             clock_domain="system",
             placement={"logical": {"x": 1, "y": 1}},
             interfaces={
                 "axi_master": True,
                 "noc_networks": {"slave": ["narrow", "wide"], "noc_mode": "joined"}, # Ollivander joins the nets for it
-                "axi_slave": [{"name": "crux_mem_map", "base_addr": BASE_CRUX_MACRO, "size": 0x88000000}] # Give it the full 2.1GB it needs
+                "axi_slave": [{"name": "mesh_isle_mem_map", "base_addr": BASE_CRUX_MACRO, "size": 0x88000000}]
             }
         ),
         

@@ -10,7 +10,7 @@
 // components instantiated in the SoC configuration.
 // =========================================================================
 
-addrmap ${config.project.name}_sys_regs {
+addrmap ${top_level_module_name}_sys_regs {
     name = "${config.project.name} System Controller";
     desc = "System Control and Status Registers";
 

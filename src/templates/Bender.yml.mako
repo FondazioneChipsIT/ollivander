@@ -38,7 +38,7 @@ sources:
   # --- System Packages ---
   # Global parameters and types must be compiled first to be visible everywhere.
   - ${rel_hw_dir}/${config.project.name}_soc_pkg.sv
-  - ${rel_hw_dir}/${config.project.name}_sys_regs_pkg.sv
+  - ${rel_hw_dir}/${top_level_module_name}_sys_regs_pkg.sv
 % if config.topology.type == "noc":
   - ${rel_hw_dir}/floo_${config.project.name}_noc_pkg.sv
 % endif
@@ -53,7 +53,7 @@ sources:
 % endif
   - ${rel_hw_dir}/${config.project.name}_rstgen.sv
 % if config.system_controller:
-  - ${rel_hw_dir}/${config.project.name}_sys_regs.sv
+  - ${rel_hw_dir}/${top_level_module_name}_sys_regs.sv
 % endif
 
   # --- Component Wrappers ---

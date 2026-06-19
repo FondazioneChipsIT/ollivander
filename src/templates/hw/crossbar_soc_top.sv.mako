@@ -12,7 +12,7 @@
 
   p_name = config.project.name
   pkg    = f"{p_name}_soc_pkg"
-  rpkg   = f"{p_name}_sys_regs_pkg"
+  rpkg   = f"{top_level_module_name}_sys_regs_pkg"
   host_clk = config.host.clock_domain or "system_clk"
       
   import re
@@ -298,8 +298,8 @@ module ${top_level_module_name}
 );
 
   // SoC Registers interfaces
-  ${p_name}_sys_regs_pkg::${p_name}_sys_regs__out_t sys_regs_hwif_out;
-  ${p_name}_sys_regs_pkg::${p_name}_sys_regs__in_t  sys_regs_hwif_in;
+  ${top_level_module_name}_sys_regs_pkg::${top_level_module_name}_sys_regs__out_t sys_regs_hwif_out;
+  ${top_level_module_name}_sys_regs_pkg::${top_level_module_name}_sys_regs__in_t  sys_regs_hwif_in;
 
   // Global reset lines (driven by clock_and_reset_tree)
   logic host_pwr_on_rst_n;
@@ -367,7 +367,7 @@ ${clock_and_reset_tree(config, p_name)}
     .apb_rsp_i ( pcrs_apb_rsp )
   );
 
-  ${p_name}_sys_regs i_sys_ctrl_regs (
+  ${top_level_module_name}_sys_regs i_sys_ctrl_regs (
     .clk            ( host_clk ),
     .arst_n         ( host_pwr_on_rst_n ), // Async active-low reset
     .s_apb_paddr    ( pcrs_apb_req.paddr ),

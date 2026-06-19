@@ -33,6 +33,11 @@ class RTLGenerator:
         self.required_local_files = set()
         self.project_dependencies = {}
         
+        # Compute top_level_module_name once to be used across all generations
+        self.top_level_module_name = self.soc_config.project.name
+        if self.soc_config.project.build_mode == "macro" and self.soc_config.project.macro_settings:
+            self.top_level_module_name = f"{self.soc_config.project.name}_{self.soc_config.project.macro_settings.export_type}"
+
         # Regex patterns to extract dependency pragmas directly from SV or Template files.
         # This allows templates to be fully modular and self-declare what they need.
         self.req_pattern = re.compile(r'(?://|##)\s*OLLIVANDER:\s*require="([^"]+)"')
@@ -282,7 +287,7 @@ class RTLGenerator:
                     print(f"  -> Rendering Tile {tpl_path.name} into {out_file.name}")
                     try:
                         template = Template(filename=str(tpl_path), lookup=self.template_lookup)
-                        rendered_code = template.render(comp=c, config=self.soc_config, search_paths=self.env.search_paths, original_type=isle_type, peakrdl_pragma=peakrdl_pragma, require_file=self.require_file_helper, require_bender=self.require_bender_helper)
+                        rendered_code = template.render(comp=c, config=self.soc_config, search_paths=self.env.search_paths, original_type=isle_type, peakrdl_pragma=peakrdl_pragma, require_file=self.require_file_helper, require_bender=self.require_bender_helper, top_level_module_name=self.top_level_module_name)
                         self.required_local_files.update(self.req_pattern.findall(rendered_code))
                         if out_file.suffix == '.sv':
                             rendered_code = auto_import_sv_packages(rendered_code)
@@ -578,13 +583,8 @@ class RTLGenerator:
         
         pad_domains = self._get_pad_domains()
 
-        top_level_module_name = self.soc_config.project.name
-        top_level_filename = f"{self.soc_config.project.name}.sv"
-        if self.soc_config.project.build_mode == "macro":
-            if self.soc_config.project.macro_settings:
-                suffix = self.soc_config.project.macro_settings.export_type
-                top_level_module_name = f"{self.soc_config.project.name}_{suffix}"
-                top_level_filename = f"{top_level_module_name}.sv"
+        top_level_module_name = self.top_level_module_name
+        top_level_filename = f"{top_level_module_name}.sv"
 
 
         macro_pragmas = []
@@ -629,8 +629,8 @@ class RTLGenerator:
 
         if self.soc_config.topology.type == "crossbar":
             templates_to_render = {
-                "reg/soc_regs.rdl.mako": reg_dir / f"{self.soc_config.project.name}_regs.rdl",
-                "reg/soc_memory_map.rdl.mako": reg_dir / f"{self.soc_config.project.name}_memory_map.rdl",
+                "reg/soc_regs.rdl.mako": reg_dir / f"{top_level_module_name}_regs.rdl",
+                "reg/soc_memory_map.rdl.mako": reg_dir / f"{top_level_module_name}_memory_map.rdl",
                 "hw/crossbar_soc_pkg.sv.mako": hw_dir / f"{self.soc_config.project.name}_soc_pkg.sv",
                 "hw/crossbar_soc_top.sv.mako": hw_dir / top_level_filename,
                 "hw/infrastructure/soc_rstgen.sv.mako": hw_dir / f"{self.soc_config.project.name}_rstgen.sv",
@@ -645,8 +645,8 @@ class RTLGenerator:
                 "hw/noc_soc_top.sv.mako": hw_dir / top_level_filename,
                 "hw/tiles/dummy_tile.sv.mako": hw_dir / f"{self.soc_config.project.name}_dummy_tile.sv",
                 "hw/infrastructure/soc_rstgen.sv.mako": hw_dir / f"{self.soc_config.project.name}_rstgen.sv",
-                "reg/soc_regs.rdl.mako": reg_dir / f"{self.soc_config.project.name}_regs.rdl",
-                "reg/soc_memory_map.rdl.mako": reg_dir / f"{self.soc_config.project.name}_memory_map.rdl",
+                "reg/soc_regs.rdl.mako": reg_dir / f"{top_level_module_name}_regs.rdl",
+                "reg/soc_memory_map.rdl.mako": reg_dir / f"{top_level_module_name}_memory_map.rdl",
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
                 "cfg/floogen_cfg.yml.mako": cfg_dir / f"{self.soc_config.project.name}_floogen.yml",
                 "doc/noc_map.csv.mako": doc_dir / f"{self.soc_config.project.name}_noc_map.csv",
@@ -680,9 +680,9 @@ class RTLGenerator:
                 if out_file.name.endswith('.sv'):
                     rendered_code = auto_import_sv_packages(rendered_code)
                     
-                if "hwif_in" in rendered_code and f"import {self.soc_config.project.name}_sys_regs_pkg::*;" not in rendered_code:
+                if "hwif_in" in rendered_code and f"import {top_level_module_name}_sys_regs_pkg::*;" not in rendered_code:
                     rendered_code = re.sub(rf'import {self.soc_config.project.name}_soc_pkg::\*;', 
-                                           rf'import {self.soc_config.project.name}_soc_pkg::*;\n  import {self.soc_config.project.name}_sys_regs_pkg::*;', 
+                                           rf'import {self.soc_config.project.name}_soc_pkg::*;\n  import {top_level_module_name}_sys_regs_pkg::*;', 
                                            rendered_code)
 
                 # Extract dynamic pragmas from the fully rendered code.
@@ -751,7 +751,17 @@ class RTLGenerator:
                 print(f"[WARNING] Required file '{req_file}' not found in component paths.")
                 staged_local_files.add(req_file)
 
-        template_kwargs["external_local_files"] = sorted(external_local_files)
+        def sv_dependency_sort(files):
+            def get_rank(f):
+                fname = Path(f).name
+                if fname.endswith('_soc_pkg.sv'): return 0
+                if fname.endswith('_sys_regs_pkg.sv'): return 1
+                if fname.endswith('_noc_pkg.sv'): return 2
+                if fname.endswith('_pkg.sv'): return 3
+                return 4
+            return sorted(files, key=lambda f: (get_rank(f), f))
+
+        template_kwargs["external_local_files"] = sv_dependency_sort(external_local_files)
 
         # Resolve all collected Bender dependencies against the environment registry.
         # If a dependency was declared in a pragma without git/rev/version details,
@@ -835,11 +845,11 @@ class RTLGenerator:
                     macro_pragmas.append(f'// OLLIVANDER: require="floo_{self.soc_config.project.name}_noc_pkg.sv"')
                 macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_soc_pkg.sv"')
                 if self.soc_config.system_controller:
-                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_sys_regs_pkg.sv"')
+                    macro_pragmas.append(f'// OLLIVANDER: require="{top_level_module_name}_sys_regs_pkg.sv"')
     
-                for f in sorted(external_local_files):
+                for f in sv_dependency_sort(external_local_files):
                     fname = Path(f).name
-                    if fname not in [f"floo_{self.soc_config.project.name}_noc_pkg.sv", f"{self.soc_config.project.name}_soc_pkg.sv", f"{self.soc_config.project.name}_sys_regs_pkg.sv"]:
+                    if fname not in [f"floo_{self.soc_config.project.name}_noc_pkg.sv", f"{self.soc_config.project.name}_soc_pkg.sv", f"{top_level_module_name}_sys_regs_pkg.sv"]:
                         macro_pragmas.append(f'// OLLIVANDER: require="{fname}"')
     
                 for f in sorted(self.generated_module_files):
@@ -852,9 +862,9 @@ class RTLGenerator:
                     macro_pragmas.append('// OLLIVANDER: require="olli_clk_gen.sv"')
                 macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_rstgen.sv"')
                 if self.soc_config.system_controller:
-                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_sys_regs.sv"')
+                    macro_pragmas.append(f'// OLLIVANDER: require="{top_level_module_name}_sys_regs.sv"')
     
-                macro_pragmas.append(f'// PEAKRDL: source="{self.soc_config.project.name}_memory_map.rdl" map="{self.soc_config.project.name}_soc_map"')
+                macro_pragmas.append(f'// PEAKRDL: source="{top_level_module_name}_memory_map.rdl" map="{top_level_module_name}_soc_map"')
     
                 pragma_str = "\n".join(macro_pragmas)
                 content = content.replace("// OLLIVANDER_MACRO_PRAGMAS_PLACEHOLDER", pragma_str)

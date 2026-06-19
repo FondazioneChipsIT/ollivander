@@ -12,7 +12,7 @@
 // Include auto-generated SystemVerilog register macros from PeakRDL.
 // These macros provide the absolute physical addresses of the CSRs, 
 // making it extremely easy to write AXI/RegBus stimulus sequences.
-`include "${rel_hw_from_tb}/${config.project.name}_regs.svh"
+`include "${rel_hw_from_tb}/${top_level_module_name}_regs.svh"
 
 `timescale 1ns/1ps
 
