@@ -39,8 +39,12 @@ Thumbs.db
 # IDEs and Editors
 .vscode/
 .idea/
+.agents/
+*.code-workspace
 *.swp
 *.bak
 *~
 *.tmp
+
+# Others
 _ext_references/
