@@ -84,7 +84,7 @@ To ensure a clean, professional, and highly readable output, Ollivander invokes 
 
 ### Beyond Generation: Software Bridging & Testbench Preloading
 To close the gap between hardware generation and bare-metal validation, Ollivander can fully automate the software build and simulation setup. If defined in your YAML, it will:
-1. Generate a **Linker Script** (`link.ld`) perfectly synchronized with your SoC's physical memory map, eliminating manual offset errors.
+1. Generate a **Linker Script** (`linker.ld`) perfectly synchronized with your SoC's physical memory map, eliminating manual offset errors.
 2. Create a starter **`main.c` firmware skeleton** that automatically includes the generated hardware CSR headers.
 3. Compile the application into `.elf` and `.hex` binaries using the specified RISC-V toolchain.
 4. Configure the auto-generated SystemVerilog testbench (`_tb.sv`) to seamlessly preload your `.hex` binary into the correct physical SRAM instances using `$readmemh` before the host processor exits reset.

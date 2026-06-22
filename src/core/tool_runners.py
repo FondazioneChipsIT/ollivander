@@ -120,11 +120,7 @@ def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_
     if not soc_config.system_controller:
         return
         
-    top_level_module_name = soc_config.project.name
-    if soc_config.project.build_mode == "macro":
-        if getattr(soc_config.project, 'macro_settings', None):
-            suffix = soc_config.project.macro_settings.export_type
-            top_level_module_name = f"{soc_config.project.name}_{suffix}"
+    top_level_module_name = soc_config.project.top_level_module_name
             
     rdl_file = reg_dir / f"{top_level_module_name}_regs.rdl"
     if not rdl_file.is_file():

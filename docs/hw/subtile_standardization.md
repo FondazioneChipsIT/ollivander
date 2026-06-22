@@ -17,7 +17,7 @@ This document provides the definitive guide for hardware designers creating **Su
 
 ## 2. Parameter Interface (`parameter` vs `localparam`)
 Every Subtile MUST expose a standardized set of parameters to define bus geometries and microarchitectural behaviors. 
-Ollivander's parser (`soc_schema.py`) actively scans the module header:
+Ollivander's parser (`sv_parser.py`) actively scans the module header:
 
 *   **`parameter` (Configurable):** Ollivander will dynamically override these at instantiation time in the generated Tile wrapper based on the YAML configuration.
 *   **`localparam` (Fixed Constraint):** Hardcoded IP constraints (e.g., a memory that strictly requires a 64-bit data bus). Ollivander will strictly validate that the global YAML configuration does not violate them.

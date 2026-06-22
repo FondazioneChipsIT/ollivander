@@ -15,6 +15,18 @@ def fmt_reg(name): return name.replace('_clk', '').lower() if name else ""
 def fmt_rst(name): return name.replace('_rst', '').lower() if name else ""
 def camel_case(name): return ''.join(word.title() for word in name.split('_'))
 
+def strip_comments(content: str) -> str:
+    """
+    Removes single-line (//) and block (/* ... */) comments from SystemVerilog code,
+    safely ignoring comment-like patterns inside string literals.
+    """
+    return re.sub(
+        r'("[^"\\]*(?:\\.[^"\\]*)*")|(//[^\n]*)|(/\*.*?\*/)',
+        lambda m: m.group(1) if m.group(1) else '',
+        content,
+        flags=re.DOTALL
+    )
+
 def is_external(comp):
     """
     Checks if a component is marked as 'external' in the YAML. External components

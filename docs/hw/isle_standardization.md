@@ -16,7 +16,7 @@ This document provides the definitive guide for hardware designers looking to in
 
 ## 2. Parameter Interface (`parameter` vs `localparam`)
 Every Isle MUST expose a standardized set of parameters to define bus geometries and microarchitectural behaviors. 
-Ollivander's parser (`soc_schema.py`) actively scans the module header and treats `parameter` and `localparam` differently:
+Ollivander's parser (`sv_parser.py`) actively scans the module header and treats `parameter` and `localparam` differently:
 
 *   **`parameter` (Configurable):** Use this for values that the IP can adapt to dynamically. Ollivander will override these at instantiation time in the top-level based on the YAML configuration.
 *   **`localparam` (Fixed Constraint):** Use this in the module header for values that **cannot** be changed (e.g., a hardware IP that strictly requires a 64-bit data bus). Ollivander will add these to a `fixed_params` list, skip them during parameter assignment in the top-level, and **strictly validate** that the global YAML configuration does not violate them. If a violation occurs, the generator halts with an architectural error.

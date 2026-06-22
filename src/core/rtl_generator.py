@@ -10,9 +10,10 @@ from pathlib import Path
 from mako.template import Template
 
 from core.interfaces import get_interface_ports
-from core.soc_schema import get_isle_info
+from core.sv_parser import get_isle_info
 from core.wiring import build_connection_matrix
-from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_import_sv_packages, write_if_changed
+from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_import_sv_packages, write_if_changed, strip_comments
+
 
 class RTLGenerator:
     """
@@ -34,9 +35,7 @@ class RTLGenerator:
         self.project_dependencies = {}
         
         # Compute top_level_module_name once to be used across all generations
-        self.top_level_module_name = self.soc_config.project.name
-        if self.soc_config.project.build_mode == "macro" and self.soc_config.project.macro_settings:
-            self.top_level_module_name = f"{self.soc_config.project.name}_{self.soc_config.project.macro_settings.export_type}"
+        self.top_level_module_name = self.soc_config.project.top_level_module_name
 
         # Regex patterns to extract dependency pragmas directly from SV or Template files.
         # This allows templates to be fully modular and self-declare what they need.
@@ -903,8 +902,8 @@ class RTLGenerator:
             sys.exit(1)
             
         # 1. Parse Core RTL Ports
-        core_clean = re.sub(r'//.*', '', core_file.read_text(encoding='utf-8'))
-        core_clean = re.sub(r'/\*.*?\*/', '', core_clean, flags=re.DOTALL)
+        core_clean = strip_comments(core_file.read_text(encoding='utf-8'))
+
         
         port_pattern = re.compile(r'\b(input|output|inout)\b\s+(?:wire\s+|var\s+)?(logic(?:[\s\[\]0-9a-zA-Z_\-\+\*:]+)?)\s+([a-zA-Z0-9_]+)\s*(?:,|$|\))')
         core_ports = {}
@@ -920,8 +919,8 @@ class RTLGenerator:
             print(f"\n[WARNING] Padframe package '{pkg_filename}' missing in: {padframe_dir}")
             print("  -> Treating all core ports as unmapped to generate missing pads stub.")
         else:
-            pkg_clean = re.sub(r'//.*', '', pkg_file.read_text(encoding='utf-8'))
-            pkg_clean = re.sub(r'/\*.*?\*/', '', pkg_clean, flags=re.DOTALL)
+            pkg_clean = strip_comments(pkg_file.read_text(encoding='utf-8'))
+
         
         field_pattern = re.compile(r'^\s*(logic(?:[\s\[\]0-9a-zA-Z_\-\+\*:]+)?)\s+([a-zA-Z0-9_]+)\s*;', re.MULTILINE)
         padframe_fields = {}

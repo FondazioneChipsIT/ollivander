@@ -9,7 +9,7 @@
   # routing complexities.
 
   import re
-  from core.soc_schema import get_isle_info
+  from core.sv_parser import get_isle_info
   from core.interfaces import get_interface_ports
 
   c_name = comp.name

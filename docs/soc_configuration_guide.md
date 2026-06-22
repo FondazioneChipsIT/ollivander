@@ -4,7 +4,7 @@ The configuration file is the **Single Source of Truth (SSoT)** for the Ollivand
 
 You can write this configuration using either **YAML** (static, easy to read) or **native Python** (`.py`). Using Python (Configuration-as-Code) allows you to use variables for the memory map, loops for placing NoC clusters, and benefits from IDE autocompletion via Pydantic models.
 
-Ollivander uses a "Hardware-First" validation engine (`soc_schema.py`) to parse these files and guarantee that the requested configuration is physically compatible with the underlying SystemVerilog modules.
+Ollivander uses a "Hardware-First" validation engine (combining `soc_schema.py` for configuration schema checking and `sv_parser.py` for SystemVerilog AST parsing) to validate these configurations and guarantee that they are physically compatible with the underlying SystemVerilog modules.
 
 ---
 

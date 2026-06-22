@@ -5,6 +5,8 @@
 import sys
 import re
 from pathlib import Path
+from core.utils import strip_comments
+
 
 def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Path):
     """
@@ -40,7 +42,8 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
         try:
             content = f.read_text(encoding='utf-8', errors='ignore')
             # Strip strings and comments to avoid false positive matches
-            clean = re.sub(r'("[^"\\]*(?:\\.[^"\\]*)*")|(//[^\n]*)|(/\*.*?\*/)', lambda m: m.group(1) if m.group(1) else '', content, flags=re.DOTALL)
+            clean = strip_comments(content)
+
             
             # Track declared modules
             for m in re.finditer(r'\bmodule\s+([a-zA-Z_][a-zA-Z0-9_]*)\b', clean):
@@ -137,7 +140,8 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
         """
         try:
             content = Path(path).read_text(encoding='utf-8', errors='ignore')
-            clean_content = re.sub(r'("[^"\\]*(?:\\.[^"\\]*)*")|(//[^\n]*)|(/\*.*?\*/)', lambda m: m.group(1) if m.group(1) else '', content, flags=re.DOTALL)
+            clean_content = strip_comments(content)
+
             # Mask semicolons in import statements to prevent premature signature termination
             masked_content = re.sub(r'\bimport\s+[^;]+;', lambda m: m.group(0).replace(';', ' '), clean_content)
         except Exception:
@@ -239,7 +243,8 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
         try:
             # Read and sanitize file content
             c = p_path.read_text(encoding='utf-8', errors='ignore')
-            c_clean = re.sub(r'("[^"\\]*(?:\\.[^"\\]*)*")|(//[^\n]*)|(/\*.*?\*/)', lambda m: m.group(1) if m.group(1) else '', c, flags=re.DOTALL)
+            c_clean = strip_comments(c)
+
             c_clean = re.sub(r'"[^"]*"', '', c_clean) # Ignore string literals
             
             # Always keep files defining a package or an interface, even if they also contain a module
