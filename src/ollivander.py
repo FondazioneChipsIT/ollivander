@@ -92,6 +92,7 @@ def main():
     # clear precedence order for flexibility.
     
     env = setup_environment(args, base_dir)
+    env.config_file_path = config_path.resolve()
     env.outdir_path.mkdir(parents=True, exist_ok=True)
     bender_work = env.bender_dir / "bender_work"
     bender_work.mkdir(parents=True, exist_ok=True)

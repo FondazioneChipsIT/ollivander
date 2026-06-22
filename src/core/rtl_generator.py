@@ -372,7 +372,8 @@ class RTLGenerator:
         
         pad_domains = []
         for dom in domains_config:
-            pl_file = Path.cwd() / dom.pad_list
+            config_dir = self.env.config_file_path.parent if (hasattr(self.env, 'config_file_path') and self.env.config_file_path) else Path.cwd()
+            pl_file = config_dir / dom.pad_list
             if pl_file.is_file():
                 raw_list = yaml.safe_load(pl_file.read_text(encoding='utf-8')) or []
             else:
@@ -431,7 +432,8 @@ class RTLGenerator:
         domains_config = self.soc_config.padframe.domains or []
         
         for dom in domains_config:
-            pl_file = Path.cwd() / dom.pad_list
+            config_dir = self.env.config_file_path.parent if (hasattr(self.env, 'config_file_path') and self.env.config_file_path) else Path.cwd()
+            pl_file = config_dir / dom.pad_list
             if pl_file.is_file():
                 raw_list = yaml.safe_load(pl_file.read_text(encoding='utf-8')) or []
                 for pad in raw_list:

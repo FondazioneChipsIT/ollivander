@@ -200,7 +200,7 @@ def build_connection_matrix(soc_config, comp_info):
                     if isinstance(slvs, dict): 
                         slvs = [slvs]
                     num_ports = slvs[0].get('ports', 1) if isinstance(slvs, list) and len(slvs)>0 else 1
-                    base_idx = f"AxiSlvIdx_{camel_case(comp.name)}"
+                    base_idx = f"ollivander_soc_pkg::AxiSlvIdx_{camel_case(comp.name)}"
                     
                     is_sync = slvs[0].get('sync_domain', False)
                     
@@ -228,7 +228,7 @@ def build_connection_matrix(soc_config, comp_info):
                 # In a NoC topology, AXI master ports are internal to the Tile and connected
                 # to the Chimney. They are not wired up at the top-level.
                 if soc_config.topology.type != "noc":
-                    idx = f"AxiMstIdx_{camel_case(comp.name)}"
+                    idx = f"ollivander_soc_pkg::AxiMstIdx_{camel_case(comp.name)}"
                     for sig, d in mst_ports.items():
                         ports.append(f".async_axi_out_{sig}_{d} ( xbar_mst_{sig}[{idx}] )")
 
@@ -240,7 +240,7 @@ def build_connection_matrix(soc_config, comp_info):
             if isinstance(slvs, dict): 
                 slvs = [slvs]
             is_sync = slvs[0].get('sync_domain', True)
-            idx = f"RegBusSlvIdx_{camel_case(comp.name)}"
+            idx = f"ollivander_soc_pkg::RegBusSlvIdx_{camel_case(comp.name)}"
             
             if is_sync:
                 # Synchronous RegBus directly accesses the Host's sys_reg_req/rsp arrays.
@@ -259,7 +259,7 @@ def build_connection_matrix(soc_config, comp_info):
             
         # Connect the APB interface of the System Controller to the APB Subsystem
         if soc_config.system_controller and comp.name == soc_config.system_controller.name:
-            idx = f"RegBusSlvIdx_{camel_case(comp.name)}"
+            idx = f"ollivander_soc_pkg::RegBusSlvIdx_{camel_case(comp.name)}"
             ports.append(f".paddr_i   ( apb_slv_reqs[{idx}].paddr )")
             ports.append(f".psel_i    ( apb_slv_reqs[{idx}].psel )")
             ports.append(f".penable_i ( apb_slv_reqs[{idx}].penable )")
