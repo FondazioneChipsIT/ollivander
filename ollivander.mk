@@ -1,5 +1,10 @@
+# Copiright Fondazione Chips-IT
+# Licensed under the Apache License, Version 2.0, see LICENSE for details.
+# SPDX-License-Identifier: Apache-2.0
+#
+
 # ==============================================================================
-# OLLIVANDER SoC - MAIN WORKFLOW MAKEFILE (SAMPLE)
+# OLLIVANDER SoC - MAIN WORKFLOW MAKEFILE
 # ==============================================================================
 # Instructions:
 # 1. Copy this file to the root of your project and rename it to 'Makefile'.
@@ -8,13 +13,14 @@
 # 4. Run 'make generate' to build your SoC.
 
 # --- Project Configurations ---
-OLLIVANDER = tools/ollivander/src/ollivander.py
-SOC_YAML   = my_project.yaml
-ENV_YAML   = my_project_env.yaml
-OUT_DIR    = generated
-REQS_FILE  = tools/ollivander/requirements.txt
-VENV_DIR   = .venv
-PYTHON     = $(VENV_DIR)/bin/python
+VENV_DIR   := $(OLLIVANDER_ROOT)/.venv
+
+# --- User-definable variables ---
+SOC_YAML   ?= $(OLLIVANDER_ROOT)/soc_cfg_examples/crossbar/crux.yaml
+ENV_YAML   ?= $(OLLIVANDER_ROOT)/soc_cfg_examples/crossbar/crux_env.yaml
+OUT_DIR    ?= $(OLLIVANDER_ROOT)/generated
+REQS_FILE  := $(OLLIVANDER_ROOT)/requirements.txt
+PYTHON     ?= $(VENV_DIR)/bin/python
 HOST_PYTHON ?= python3.12
 
 # --- Tools ---
