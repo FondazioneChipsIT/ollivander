@@ -13,3 +13,4 @@ peakrdl-rawheader==0.2.4
 padrick==0.3.6
 pyEDAA.IPXACT==0.6.5
 pyslang==11.0.0
+xsdata==26.2

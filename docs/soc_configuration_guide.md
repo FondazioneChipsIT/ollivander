@@ -246,7 +246,7 @@ Maps the component to the logical 2D FlooNoC mesh grid.
         - box: { x_start: 8, x_end: 8, y_start: 0, y_end: 3 }
     ```
 
-    ## 4. Testbench (`testbench`)
+## 4. Testbench (`testbench`)
 
 Instructs the simulation environment on how to initialize the SoC. Since Ollivander targets bare-metal validation, the most common action is preloading compiled software binaries directly into the hardware memory arrays before the processor comes out of reset.
 

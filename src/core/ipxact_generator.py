@@ -4,16 +4,45 @@
 """
 IP-XACT IEEE 1685-2014 Component XML Description Generator.
 Extracts top-level port mappings, parameters, and memory map definitions 
-to produce standard compliant EDA metadata.
+to produce standard compliant EDA metadata using schema-compliant object bindings.
 """
 
 import re
-import xml.etree.ElementTree as ET
-from xml.dom import minidom
 from pathlib import Path
-from pyEDAA.IPXACT.Component import Component
+from pyEDAA.IPXACT.Component import Component as EDAAComponent
 from pyEDAA.IPXACT import IPXACTException
 from core.utils import simplify_port_ranges
+
+# Import generated xsdata IP-XACT classes
+from core.ipxact import (
+    Component,
+    BusInterfaces,
+    BusInterface,
+    ConfigurableLibraryRefType,
+    AbstractionTypes,
+    Model,
+    ModelType,
+    PortType,
+    Port,
+    PortWireType,
+    Vectors,
+    Vector,
+    FileSets,
+    FileSet,
+    File,
+    FileType,
+    SimpleFileType,
+    ComponentPortDirectionType,
+    ComponentInstantiationType,
+    FileSetRef,
+    Description,
+    Left,
+    Right,
+    StringUriexpression,
+    Group
+)
+from xsdata.formats.dataclass.serializers import XmlSerializer
+from xsdata.formats.dataclass.serializers.config import SerializerConfig
 
 
 def generate_ipxact(soc_config, env, generator, comp_info):
@@ -32,80 +61,106 @@ def generate_ipxact(soc_config, env, generator, comp_info):
     # 1. Extract ports
     ports = get_top_level_ports(soc_config, generator, comp_info)
     
-    # 2. Build XML using ElementTree
-    ns = 'http://www.accellera.org/XMLSchema/IPXACT/1685-2014'
-    xsi = 'http://www.w3.org/2001/XMLSchema-instance'
-    
-    ET.register_namespace('ipxact', ns)
-    ET.register_namespace('xsi', xsi)
-    
-    root = ET.Element(f'{{{ns}}}component')
-    root.set('xmlns:xsi', xsi)
-    root.set('xsi:schemaLocation', f'{ns} {ns}/index.xsd')
-    
-    # VLNV metadata
-    ET.SubElement(root, f'{{{ns}}}vendor').text = soc_config.project.vendor
-    ET.SubElement(root, f'{{{ns}}}library').text = soc_config.project.library
-    ET.SubElement(root, f'{{{ns}}}name').text = top_level_module_name
-    ET.SubElement(root, f'{{{ns}}}version').text = soc_config.project.version
+    # 2. Build Component model using xsdata
+    comp = Component(
+        vendor=soc_config.project.vendor,
+        library=soc_config.project.library,
+        name=top_level_module_name,
+        version=soc_config.project.version
+    )
     
     # Bus Interfaces
-    bus_interfaces = ET.SubElement(root, f'{{{ns}}}busInterfaces')
-    add_clock_reset_interfaces(bus_interfaces, ports, ns)
-    add_axi_interfaces(bus_interfaces, soc_config, ports, ns)
-    
+    bi_list = []
+    add_clock_reset_interfaces(bi_list, ports)
+    add_axi_interfaces(bi_list, soc_config, ports)
+    if bi_list:
+        comp.bus_interfaces = BusInterfaces(bus_interface=bi_list)
+        
     # Model
-    model = ET.SubElement(root, f'{{{ns}}}model')
+    env_id = Model.Views.View.EnvIdentifier(value="::")
+    view = Model.Views.View(
+        name="rtl",
+        env_identifier=[env_id],
+        component_instantiation_ref="inst-rtl"
+    )
+    views = Model.Views(view=[view])
     
-    # Views
-    views = ET.SubElement(model, f'{{{ns}}}views')
-    view = ET.SubElement(views, f'{{{ns}}}view')
-    ET.SubElement(view, f'{{{ns}}}name').text = "rtl"
-    ET.SubElement(view, f'{{{ns}}}envIdentifier').text = "::"
-    ET.SubElement(view, f'{{{ns}}}componentInstantiationRef').text = "inst-rtl"
+    fs_ref = FileSetRef(local_name="fs-rtl")
+    comp_inst = ComponentInstantiationType(
+        name="inst-rtl",
+        language="SystemVerilog",
+        module_name=top_level_module_name,
+        file_set_ref=[fs_ref]
+    )
+    instantiations = Model.Instantiations(component_instantiation=[comp_inst])
     
-    # Instantiations
-    instantiations = ET.SubElement(model, f'{{{ns}}}instantiations')
-    comp_inst = ET.SubElement(instantiations, f'{{{ns}}}componentInstantiation')
-    ET.SubElement(comp_inst, f'{{{ns}}}name').text = "inst-rtl"
-    ET.SubElement(comp_inst, f'{{{ns}}}language').text = "SystemVerilog"
-    ET.SubElement(comp_inst, f'{{{ns}}}moduleName').text = top_level_module_name
-    
-    fs_ref = ET.SubElement(comp_inst, f'{{{ns}}}fileSetRef')
-    ET.SubElement(fs_ref, f'{{{ns}}}localName').text = "fs-rtl"
-    
-    # Model Ports
-    model_ports = ET.SubElement(model, f'{{{ns}}}ports')
+    port_list = []
     for p in ports:
-        port_el = ET.SubElement(model_ports, f'{{{ns}}}port')
-        ET.SubElement(port_el, f'{{{ns}}}name').text = p["name"]
-        
-        wire = ET.SubElement(port_el, f'{{{ns}}}wire')
-        ET.SubElement(wire, f'{{{ns}}}direction').text = p["dir"]
-        
+        wire = None
         if p["left"] is not None and p["right"] is not None:
-            vectors = ET.SubElement(wire, f'{{{ns}}}vectors')
-            vector = ET.SubElement(vectors, f'{{{ns}}}vector')
-            ET.SubElement(vector, f'{{{ns}}}left').text = str(p["left"])
-            ET.SubElement(vector, f'{{{ns}}}right').text = str(p["right"])
+            vector = Vector(
+                left=Left(value=str(p["left"])),
+                right=Right(value=str(p["right"]))
+            )
+            vectors = Vectors(vector=[vector])
             
+            p_dir = p["dir"]
+            dir_enum = ComponentPortDirectionType.IN
+            if p_dir == "out":
+                dir_enum = ComponentPortDirectionType.OUT
+            elif p_dir == "inout":
+                dir_enum = ComponentPortDirectionType.INOUT
+                
+            wire = PortWireType(direction=dir_enum, vectors=vectors)
+        else:
+            p_dir = p["dir"]
+            dir_enum = ComponentPortDirectionType.IN
+            if p_dir == "out":
+                dir_enum = ComponentPortDirectionType.OUT
+            elif p_dir == "inout":
+                dir_enum = ComponentPortDirectionType.INOUT
+                
+            wire = PortWireType(direction=dir_enum)
+            
+        port_list.append(Port(name=p["name"], wire=wire))
+    ports_elem = Model.Ports(port=port_list)
+    
+    comp.model = Model(
+        views=views,
+        instantiations=instantiations,
+        ports=ports_elem
+    )
+    
     # File Sets
-    file_sets = ET.SubElement(root, f'{{{ns}}}fileSets')
-    file_set = ET.SubElement(file_sets, f'{{{ns}}}fileSet')
-    ET.SubElement(file_set, f'{{{ns}}}name').text = "fs-rtl"
+    file_type = FileType(value=SimpleFileType.SYSTEM_VERILOG_SOURCE)
+    file_obj = File(
+        name=StringUriexpression(value=f"../{top_level_module_name}.sv"),
+        file_type=[file_type]
+    )
+    file_set = FileSet(
+        name="fs-rtl",
+        file=[file_obj]
+    )
+    comp.file_sets = FileSets(file_set=[file_set])
     
-    # Top-Level SystemVerilog Source file (relative path to XML location)
-    file_el = ET.SubElement(file_set, f'{{{ns}}}file')
-    ET.SubElement(file_el, f'{{{ns}}}name').text = f"../{top_level_module_name}.sv"
-    ET.SubElement(file_el, f'{{{ns}}}fileType').text = "systemVerilogSource"
-    
-    ET.SubElement(root, f'{{{ns}}}description').text = soc_config.project.description or "Generated SoC top-level"
-    
-    # 3. Format and save pretty XML
-    xml_str = ET.tostring(root, encoding='utf-8')
-    parsed_xml = minidom.parseString(xml_str)
-    pretty_xml = parsed_xml.toprettyxml(indent="  ")
-    pretty_xml = pretty_xml.replace('<?xml version="1.0" ?>', '<?xml version="1.0" encoding="UTF-8" ?>')
+    if soc_config.project.description:
+        comp.description = Description(value=soc_config.project.description)
+    else:
+        comp.description = Description(value="Generated SoC top-level")
+        
+    # 3. Serialize and save XML
+    serializer_config = SerializerConfig(
+        pretty_print=True,
+        xml_declaration=True,
+        encoding="utf-8",
+        schema_location="http://www.accellera.org/XMLSchema/IPXACT/1685-2014 http://www.accellera.org/XMLSchema/IPXACT/1685-2014/index.xsd"
+    )
+    ns_map = {
+        "ipxact": "http://www.accellera.org/XMLSchema/IPXACT/1685-2014",
+        "xsi": "http://www.w3.org/2001/XMLSchema-instance"
+    }
+    serializer = XmlSerializer(config=serializer_config)
+    pretty_xml = serializer.render(comp, ns_map=ns_map)
     
     with open(xml_file_path, "w", encoding="utf-8") as f:
         f.write(pretty_xml)
@@ -113,11 +168,12 @@ def generate_ipxact(soc_config, env, generator, comp_info):
     # 4. Programmatic Validation
     print("  -> Running schema validation via pyEDAA.IPXACT...")
     try:
-        Component(xml_file_path, parse=True)
+        EDAAComponent(xml_file_path, parse=True)
         print("  [SUCCESS] IP-XACT XML validation passed successfully.")
     except IPXACTException as e:
         print(f"\n[ERROR] IP-XACT XML validation failed for {xml_file_path.name}:\n{e}")
         raise ValueError(f"IP-XACT XML Validation Failed: {e}")
+
 
 def get_top_level_ports(config, generator, comp_info):
     ports = []
@@ -228,10 +284,10 @@ def get_top_level_ports(config, generator, comp_info):
                         else:
                             top_port_name = p['top']
                             
-                    type_dim = decl[:name_match.start()].strip()
+                    decl_type_dim = decl[:name_match.start()].strip()
                     unpacked = name_match.group(2).strip()
                     
-                    dim_str = type_dim + " " + unpacked
+                    dim_str = decl_type_dim + " " + unpacked
                     m = re.search(r'\[\s*([^\]:]+)\s*:\s*([^\]]+)\s*\]', dim_str)
                     if m:
                         left = m.group(1).strip()
@@ -288,67 +344,89 @@ def get_top_level_ports(config, generator, comp_info):
             seen.add(p["name"])
     return deduped_ports
 
-def add_clock_reset_interfaces(bus_interfaces, ports, ns):
+
+def add_clock_reset_interfaces(bus_interfaces_list, ports):
     clk_ports = [p["name"] for p in ports if "clk" in p["name"] or "clock" in p["name"]]
     rst_ports = [p["name"] for p in ports if "rst" in p["name"] or "reset" in p["name"]]
     
     for clk in clk_ports:
-        bi = ET.SubElement(bus_interfaces, f'{{{ns}}}busInterface')
-        ET.SubElement(bi, f'{{{ns}}}name').text = f"intf_clk_{clk}"
+        logical_port = AbstractionTypes.AbstractionType.PortMaps.PortMap.LogicalPort(name="CLK")
+        physical_port = AbstractionTypes.AbstractionType.PortMaps.PortMap.PhysicalPort(name=clk)
+        port_map = AbstractionTypes.AbstractionType.PortMaps.PortMap(
+            logical_port=logical_port,
+            physical_port=physical_port
+        )
+        port_maps = AbstractionTypes.AbstractionType.PortMaps(port_map=[port_map])
         
-        bt = ET.SubElement(bi, f'{{{ns}}}busType')
-        bt.set('vendor', 'accellera.org')
-        bt.set('library', 'spirit')
-        bt.set('name', 'clock')
-        bt.set('version', '1.0')
+        abstraction_ref = ConfigurableLibraryRefType(
+            vendor="accellera.org",
+            library="spirit",
+            name="clock_rtl",
+            version="1.0"
+        )
+        abstraction_type = AbstractionTypes.AbstractionType(
+            abstraction_ref=abstraction_ref,
+            port_maps=port_maps
+        )
+        abstraction_types = AbstractionTypes(abstraction_type=[abstraction_type])
         
-        ats = ET.SubElement(bi, f'{{{ns}}}abstractionTypes')
-        at = ET.SubElement(ats, f'{{{ns}}}abstractionType')
-        ar = ET.SubElement(at, f'{{{ns}}}abstractionRef')
-        ar.set('vendor', 'accellera.org')
-        ar.set('library', 'spirit')
-        ar.set('name', 'clock_rtl')
-        ar.set('version', '1.0')
+        bus_type = ConfigurableLibraryRefType(
+            vendor="accellera.org",
+            library="spirit",
+            name="clock",
+            version="1.0"
+        )
         
-        pm = ET.SubElement(at, f'{{{ns}}}portMaps')
-        pmap = ET.SubElement(pm, f'{{{ns}}}portMap')
-        lp = ET.SubElement(pmap, f'{{{ns}}}logicalPort')
-        ET.SubElement(lp, f'{{{ns}}}name').text = "CLK"
-        pp = ET.SubElement(pmap, f'{{{ns}}}physicalPort')
-        ET.SubElement(pp, f'{{{ns}}}name').text = clk
+        system = BusInterface.System(group=Group(value="clock"))
         
-        sys = ET.SubElement(bi, f'{{{ns}}}system')
-        ET.SubElement(sys, f'{{{ns}}}group').text = "clock"
+        bi = BusInterface(
+            name=f"intf_clk_{clk}",
+            bus_type=bus_type,
+            abstraction_types=abstraction_types,
+            system=system
+        )
+        bus_interfaces_list.append(bi)
         
     for rst in rst_ports:
-        bi = ET.SubElement(bus_interfaces, f'{{{ns}}}busInterface')
-        ET.SubElement(bi, f'{{{ns}}}name').text = f"intf_rst_{rst}"
+        logical_port = AbstractionTypes.AbstractionType.PortMaps.PortMap.LogicalPort(name="RST")
+        physical_port = AbstractionTypes.AbstractionType.PortMaps.PortMap.PhysicalPort(name=rst)
+        port_map = AbstractionTypes.AbstractionType.PortMaps.PortMap(
+            logical_port=logical_port,
+            physical_port=physical_port
+        )
+        port_maps = AbstractionTypes.AbstractionType.PortMaps(port_map=[port_map])
         
-        bt = ET.SubElement(bi, f'{{{ns}}}busType')
-        bt.set('vendor', 'accellera.org')
-        bt.set('library', 'spirit')
-        bt.set('name', 'reset')
-        bt.set('version', '1.0')
+        abstraction_ref = ConfigurableLibraryRefType(
+            vendor="accellera.org",
+            library="spirit",
+            name="reset_rtl",
+            version="1.0"
+        )
+        abstraction_type = AbstractionTypes.AbstractionType(
+            abstraction_ref=abstraction_ref,
+            port_maps=port_maps
+        )
+        abstraction_types = AbstractionTypes(abstraction_type=[abstraction_type])
         
-        ats = ET.SubElement(bi, f'{{{ns}}}abstractionTypes')
-        at = ET.SubElement(ats, f'{{{ns}}}abstractionType')
-        ar = ET.SubElement(at, f'{{{ns}}}abstractionRef')
-        ar.set('vendor', 'accellera.org')
-        ar.set('library', 'spirit')
-        ar.set('name', 'reset_rtl')
-        ar.set('version', '1.0')
+        bus_type = ConfigurableLibraryRefType(
+            vendor="accellera.org",
+            library="spirit",
+            name="reset",
+            version="1.0"
+        )
         
-        pm = ET.SubElement(at, f'{{{ns}}}portMaps')
-        pmap = ET.SubElement(pm, f'{{{ns}}}portMap')
-        lp = ET.SubElement(pmap, f'{{{ns}}}logicalPort')
-        ET.SubElement(lp, f'{{{ns}}}name').text = "RST"
-        pp = ET.SubElement(pmap, f'{{{ns}}}physicalPort')
-        ET.SubElement(pp, f'{{{ns}}}name').text = rst
+        system = BusInterface.System(group=Group(value="reset"))
+        
+        bi = BusInterface(
+            name=f"intf_rst_{rst}",
+            bus_type=bus_type,
+            abstraction_types=abstraction_types,
+            system=system
+        )
+        bus_interfaces_list.append(bi)
 
-        sys = ET.SubElement(bi, f'{{{ns}}}system')
-        ET.SubElement(sys, f'{{{ns}}}group').text = "reset"
 
-def add_axi_interfaces(bus_interfaces, config, ports, ns):
+def add_axi_interfaces(bus_interfaces_list, config, ports):
     if not (config.project.build_mode == "macro" and config.project.macro_settings):
         return
         
@@ -356,41 +434,52 @@ def add_axi_interfaces(bus_interfaces, config, ports, ns):
     masters = config.project.macro_settings.masters or []
     
     def add_axi_intf(name, mode, req_port, resp_port):
-        bi = ET.SubElement(bus_interfaces, f'{{{ns}}}busInterface')
-        ET.SubElement(bi, f'{{{ns}}}name').text = name
+        lp1 = AbstractionTypes.AbstractionType.PortMaps.PortMap.LogicalPort(name="REQ")
+        pp1 = AbstractionTypes.AbstractionType.PortMaps.PortMap.PhysicalPort(name=req_port)
+        port_map1 = AbstractionTypes.AbstractionType.PortMaps.PortMap(
+            logical_port=lp1,
+            physical_port=pp1
+        )
         
-        bt = ET.SubElement(bi, f'{{{ns}}}busType')
-        bt.set('vendor', 'amba.com')
-        bt.set('library', 'AMBA4')
-        bt.set('name', 'AXI4')
-        bt.set('version', 'r1p0_0')
+        lp2 = AbstractionTypes.AbstractionType.PortMaps.PortMap.LogicalPort(name="RSP")
+        pp2 = AbstractionTypes.AbstractionType.PortMaps.PortMap.PhysicalPort(name=resp_port)
+        port_map2 = AbstractionTypes.AbstractionType.PortMaps.PortMap(
+            logical_port=lp2,
+            physical_port=pp2
+        )
         
-        ats = ET.SubElement(bi, f'{{{ns}}}abstractionTypes')
-        at = ET.SubElement(ats, f'{{{ns}}}abstractionType')
-        ar = ET.SubElement(at, f'{{{ns}}}abstractionRef')
-        ar.set('vendor', 'amba.com')
-        ar.set('library', 'AMBA4')
-        ar.set('name', 'AXI4_rtl')
-        ar.set('version', 'r1p0_0')
+        port_maps = AbstractionTypes.AbstractionType.PortMaps(port_map=[port_map1, port_map2])
         
-        pm = ET.SubElement(at, f'{{{ns}}}portMaps')
+        abstraction_ref = ConfigurableLibraryRefType(
+            vendor="amba.com",
+            library="AMBA4",
+            name="AXI4_rtl",
+            version="r1p0_0"
+        )
+        abstraction_type = AbstractionTypes.AbstractionType(
+            abstraction_ref=abstraction_ref,
+            port_maps=port_maps
+        )
+        abstraction_types = AbstractionTypes(abstraction_type=[abstraction_type])
         
-        pmap1 = ET.SubElement(pm, f'{{{ns}}}portMap')
-        lp1 = ET.SubElement(pmap1, f'{{{ns}}}logicalPort')
-        ET.SubElement(lp1, f'{{{ns}}}name').text = "REQ"
-        pp1 = ET.SubElement(pmap1, f'{{{ns}}}physicalPort')
-        ET.SubElement(pp1, f'{{{ns}}}name').text = req_port
+        bus_type = ConfigurableLibraryRefType(
+            vendor="amba.com",
+            library="AMBA4",
+            name="AXI4",
+            version="r1p0_0"
+        )
         
-        pmap2 = ET.SubElement(pm, f'{{{ns}}}portMap')
-        lp2 = ET.SubElement(pmap2, f'{{{ns}}}logicalPort')
-        ET.SubElement(lp2, f'{{{ns}}}name').text = "RSP"
-        pp2 = ET.SubElement(pmap2, f'{{{ns}}}physicalPort')
-        ET.SubElement(pp2, f'{{{ns}}}name').text = resp_port
-
-        if mode == "slave":
-            ET.SubElement(bi, f'{{{ns}}}slave')
-        else:
-            ET.SubElement(bi, f'{{{ns}}}master')
+        slave_mode = BusInterface.Slave() if mode == "slave" else None
+        master_mode = BusInterface.Master() if mode == "master" else None
+        
+        bi = BusInterface(
+            name=name,
+            bus_type=bus_type,
+            abstraction_types=abstraction_types,
+            slave=slave_mode,
+            master=master_mode
+        )
+        bus_interfaces_list.append(bi)
 
     if config.project.macro_settings.export_type == "custom" or config.project.macro_settings.export_type == "isle":
         if slaves:

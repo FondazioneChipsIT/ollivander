@@ -41,7 +41,7 @@ You don't even need to worry about having the correct version of Python installe
 
 ## 3. Step-by-Step Integration
 
-### Step 1: Initialize your repository
+### 3.1 Step 1: Initialize your repository
 Create your project folder and initialize Git.
 ```bash
 mkdir prometheus_soc
@@ -49,13 +49,13 @@ cd prometheus_soc
 git init
 ```
 
-### Step 2: Add Ollivander as a Submodule
+### 3.2 Step 2: Add Ollivander as a Submodule
 Add the Ollivander repository into a `tools/` directory.
 ```bash
 git submodule add https://github.com/FondazioneChipsIT/ollivander.git tools/ollivander
 ```
 
-### Step 3: "Freeze" the Version (Crucial)
+### 3.3 Step 3: "Freeze" the Version (Crucial)
 To ensure long-term reproducibility, checkout a specific tag, release, or commit hash. Do not track the `main` branch dynamically.
 ```bash
 cd tools/ollivander
@@ -70,7 +70,7 @@ When your colleagues clone the repository, they simply run:
 git clone --recursive https://github.com/your-org/prometheus_soc.git
 ```
 
-### Step 4: Setup the Makefile & Environment
+### 3.4 Step 4: Setup the Makefile & Environment
 Ollivander provides a ready-to-use Makefile template to automate your entire workflow, including environment setup and simulation.
 ```bash
 cp tools/ollivander/Makefile.sample Makefile
@@ -82,35 +82,136 @@ make setup
 
 ---
 
-## 4. Injecting Custom IPs
+## 4. The Environment Bridge File (`*_env.yml`)
 
-If you want to instantiate your own custom hardware block (e.g., an AES accelerator) inside the SoC, or provide custom Padframe technology catalogs to Padrick, you place your files inside your `hw_ips/` folder.
+The Environment Configuration file (e.g., `prometheus_env.yaml`) is the bridge between the SoC specification and the physical workstation layout. It defines where files are read from, where they are generated, and how third-party dependencies are retrieved and patched.
 
-You must never modify the files inside `tools/ollivander/components/`.
+Ollivander merges this project-specific environment file with the base configuration (`ollivander_config.yaml`). **Your custom settings always take precedence.**
 
-Instead, create the **Environment Bridge File** (`prometheus_env.yaml`):
+Below is a detailed guide on how to configure this file, along with complete examples for each section.
+
+### 4.1 Paths Configuration (`paths`)
+
+The `paths` block controls input lookup and generated output directories. Relative paths are resolved relative to the location of the environment YAML file itself.
 
 ```yaml
-# prometheus_env.yaml
 paths:
-  components:
-    - "hw_ips"  # Instructs Ollivander to search here for Isles/Tiles and padframes/tech/
-  rdl_includes:
-    - "custom_regs" # Optional: Custom SystemRDL files to override external IPs
+  # --- Output Directories ---
+  outdir: "generated"              # Base output directory
+  sub_hw: "hw"                     # SV RTL subdirectory (resolves to generated/hw)
+  sub_sw: "sw"                     # Firmware, linker scripts, and CSR headers (generated/sw)
+  sub_doc: "doc"                   # Mapping tables, design reports, and DRC outputs (generated/doc)
+  sub_cfg: "cfg"                   # Configuration manifests for FlooGen/Padrick (generated/cfg)
+  sub_reg: "reg"                   # SystemRDL and register specs (generated/reg)
+  sub_tb: "tb"                     # Testbench RTL and config (generated/tb)
+  bender_manifest: "{outdir}/Bender.yml" # Auto-generated compilation manifest
 
-# You can also register custom Git dependencies for Bender!
+  # --- Input Search Paths ---
+  templates:
+    - "custom_templates"           # Directories with custom *.mako templates (precedes src/templates)
+  components:
+    - "hw_ips"                     # Look for local custom isles, tiles, or padframe catalogs here
+  rdl_includes:
+    - "custom_regs"                # Search path for priority SystemRDL specs (overrides external registers)
+```
+
+### 4.2 Centralized Dependency Registry (`dependencies`)
+
+Ollivander uses **Bender** to manage external SystemVerilog dependencies. The `dependencies` registry defines where to fetch repositories, which targets to use, and how to compile or patch the source code.
+
+#### 4.2.1 Git Repository Resolution
+Specify either a semantic `version` or a specific commit/branch/tag using `rev`.
+```yaml
 dependencies:
-  aes_ip:
-    git: "https://github.com/my-org/aes_ip.git"
-    version: "1.0.0"
-    rdl_include_dirs: ["hw/regs"] # Optional: Instructs PeakRDL where to find the IP's registers
+  # Using a pinned semantic version
+  floo_noc:
+    git: "https://github.com/pulp-platform/floo_noc.git"
+    version: "0.2.1"
+
+  # Using a specific commit hash, branch, or tag
+  cva6:
+    git: "https://github.com/openhwgroup/cva6.git"
+    rev: "8fa2b1d" # Or a branch name like "dev"
+```
+
+#### 4.2.2 Specifying Compilation Targets (`bender_targets`)
+Bender handles ASIC/FPGA variants via targets. You can replace the default targets of a dependency:
+```yaml
+dependencies:
+  common_cells:
+    git: "https://github.com/pulp-platform/common_cells.git"
+    version: "1.31.1"
+    bender_targets:
+      - "fpga_synth"
+      - "simulation"
+```
+> [!IMPORTANT]
+> Defining `bender_targets` in your custom file will completely replace the targets defined in the base `ollivander_config.yaml`. To append targets, you must list both the defaults and your new additions.
+
+#### 4.2.3 Pre-Build Scripting & Commands (`pre_build_cmds` / `pre_build_script`)
+Some hardware components require pre-generation steps (e.g., generating register files or compiling intermediate tooling). Ollivander executes these immediately after downloading the dependency.
+- Use `{bender_work}` to reference the dependency's local checkout directory.
+- Use `{ollivander_dir}` to reference the generator's root directory.
+- Use macros like `$(PYTHON)` and `$(MAKE)` to invoke the correct environments.
+
+```yaml
+dependencies:
+  idma:
+    git: "https://github.com/pulp-platform/idma.git"
+    version: "0.6.5"
+    pre_build_cmds:
+      # Install required Python dependencies inside the isolated environment
+      - "$(PYTHON) -m pip install -q flatdict mako"
+      # Run the project's internal Makefile to generate hardware descriptions
+      - "$(MAKE) -C {bender_work}/idma idma_hw_all BENDER=\"$(BENDER)\""
+
+  custom_crypto:
+    git: "https://github.com/my-org/custom_crypto.git"
+    rev: "main"
+    # Execute a dedicated setup python script
+    pre_build_script: "{bender_work}/scripts/setup.py"
+```
+
+#### 4.2.4 On-the-fly Code Patching (`patches`)
+If an external IP contains a compilation error, a broken path, or requires a custom modification, you can specify text-replacement patches.
+```yaml
+dependencies:
+  opentitan:
+    git: "https://github.com/AlSaqr-platform/opentitan.git"
+    rev: "chips-it"
+    patches:
+      # Correct a bad file extension mapping inside Bender.yml
+      - file: "{bender_work}/opentitan/Bender.yml"
+        search: "prim_flop_macros.svh"
+        replace: "prim_flop_macros.sv"
+```
+
+#### 4.2.5 Custom Register Inclusion (`rdl_include_dirs`)
+To let PeakRDL know where to search for SystemRDL register specifications inside the dependency repository:
+```yaml
+dependencies:
+  uart_apb:
+    git: "https://github.com/pulp-platform/apb_uart.git"
+    version: "0.1.0"
+    rdl_include_dirs:
+      - "hw/regs" # PeakRDL will search here for .rdl files matching the IP name
 ```
 
 ---
 
-## 5. Build Modes (Standalone vs Macro)
+## 5. Injecting Custom IPs
 
-Before generating, you should decide how your architecture will be used by setting the `build_mode` in your `prometheus.yaml` (or .py):
+If you want to instantiate your own custom hardware block (e.g., an AES accelerator) inside the SoC, or provide custom Padframe technology catalogs to Padrick, place your files inside your `hw_ips/` folder.
+
+**Rule:** You must never modify the files inside `tools/ollivander/components/`.
+
+Instead, register the folder in your `paths.components` list of your environment file (as shown in [Section 4.1](#41-paths-configuration-paths)).
+
+---
+
+## 6. Build Modes (Standalone vs Macro)
+
+Before generating, decide how your architecture will be used by setting the `build_mode` in your `prometheus.yaml` (or `.py` script):
 
 *   **Standalone (`build_mode: "standalone"`)**: The default behavior. Ollivander generates a complete System-on-Chip top-level, wrapping it with the padframe (if defined) and exposing physical I/O pins (e.g., UART, SPI, JTAG). This is ready for physical synthesis or full-chip simulation.
 *   **Macro (`build_mode: "macro"`)**: Generates your architecture as a reusable IP block (a Macro). Instead of physical I/O pins and padframes, it exposes standard AXI Master/Slave interfaces at its boundaries, allowing you to easily instantiate this entire subsystem inside a larger "Parent" SoC.
@@ -129,44 +230,45 @@ project:
 
 ---
 
-## 6. Validation, Generation and Simulation
+## 7. Validation, Generation and Simulation
 
 Open the `Makefile` you copied in Step 4 and ensure the variables (`SOC_YAML`, `ENV_YAML`) match your actual filenames. 
 
-### Hardware Generation
-
+### 7.1 Hardware Generation
 To build your SoC and automatically compile the bare-metal software, run:
 ```bash
 make generate
 ```
 Ollivander will create the `generated/` directory containing your complete SoC RTL, the `Bender.yml` manifest in your project root, and a ready-to-use SystemVerilog testbench!
 
-### Iterative Development (fast-check)
-
+### 7.2 Iterative Development (fast-check)
 For rapid structural validation during iterative development, you can use the fast-check command: 
 ```bash
 make fast-check
 ```
-This command stubs all the external modules, in order to avoid their complete compilation.
-> ⚠️ Warning: The `fast-check` mode is intended primarily for the development of Ollivander itself. It performs "dirty" in-place operations on the source files of external libraries to resolve dependencies.
+This command stubs all the external modules, avoiding their complete compilation.
+
+> [!WARNING]
+> The `fast-check` mode is intended primarily for the development of Ollivander itself. It performs "dirty" in-place operations on the source files of external libraries to resolve dependencies.
 > * It requires that the RTL code has already been generated at least once.
 > * If you change the pointers to external libraries or add new components, this mode might fail or produce incorrect results.
+>
+> For a clean and definitive build, always rely on the full `make generate` command.
 
-For a clean and definitive build, always rely on the full `make generate` command.
-
-### IP-XACT Component Export & Validation
+### 7.3 IP-XACT Component Export & Validation
 In addition to the SystemVerilog RTL, Ollivander automatically generates an IEEE 1685-2014 compliant IP-XACT component description XML representing the digital core top-level (without padframe). This XML is saved to `generated/hw/ipxact/<project_name>.xml`.
 
 Every time you run `make generate`, Ollivander parses the written XML back and validates it against the official Accellera schema using `pyEDAA.IPXACT`. If schema validation fails, the generator raises an error and halts the build to ensure that only compliant metadata is produced.
 
 ---
 
-## 7. Software Development and Simulation
+## 8. Software Development and Simulation
 
-If you configured the `software_stack` and `testbench` sections in your YAML, Ollivander bridges the gap between hardware and software by automatically generating a memory-mapped Linker Script (`link.ld`) and a starter C firmware.
+If you configured the `software_stack` and `testbench` sections in your YAML, Ollivander bridges the gap between hardware and software by automatically generating a memory-mapped Linker Script (`linker.ld`) and a starter C firmware.
 
-### 6.1 Modifying the Firmware (`main.c`)
+### 8.1 Modifying the Firmware (`main.c`)
 When `auto_generate_c: true` is set, you will find a `main.c` file inside your output software directory (e.g., `generated/sw/main.c`). 
+
 This file is ready to be enriched with your custom application logic. It automatically includes the hardware abstraction headers generated by Ollivander:
 
 ```c
@@ -185,10 +287,10 @@ int main(void) {
 }
 ```
 
-> **Tip:** In a real-world scenario, you should place your custom `main.c` and software drivers in your source repository (e.g., `prometheus_soc/sw/`) and update your Makefile to compile from there, keeping the `generated/` directory purely as an output folder for build artifacts.
+> [!TIP]
+> In a real-world scenario, you should place your custom `main.c` and software drivers in your source repository (e.g., `prometheus_soc/sw/`) and update your Makefile to compile from there, keeping the `generated/` directory purely as an output folder for build artifacts.
 
-### 6.2 Running the Simulation
-
+### 8.2 Running the Simulation
 Once your `main.c` is ready, the Makefile handles the compilation of the `.elf` and `.hex` binaries. To compile the generated hardware, build the firmware, and run the simulation using QuestaSim:
 ```bash
 make build-sim

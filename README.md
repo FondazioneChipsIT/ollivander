@@ -107,6 +107,7 @@ To close the gap between hardware generation and bare-metal validation, Ollivand
 *   **Hardware-to-Software Synchronization**: Linker scripts and C-headers are dynamically generated directly from the hardware specification, guaranteeing that your bare-metal software always targets the correct memory map and peripheral base addresses.
 *   **Physical Chip Wrapping**: Fully automates the tedious and error-prone process of instantiating hundreds of physical I/O pads and routing them to the internal SoC logic.
 *   **IEEE 1685-2014 IP-XACT Generation**: Automatically exports standard-compliant XML component metadata descriptions for the digital core top-level, grouping ports into standard logical interfaces (clocks, resets, AXI4) and setting up view instantiations for seamless EDA tool integration.
+*   **NoC Design Rule Checking & Latency Reports**: Includes a built-in NoC Placement Checker (NPC) that validates manual tile coordinates, detects physical collision/overlap conflicts, and generates a latency/routing report with the Manhattan hop-count matrix.
 
 ---
 
