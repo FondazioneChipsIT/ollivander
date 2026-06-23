@@ -28,12 +28,17 @@
   # Scans all components for AXI slave interfaces. It unrolls multiple ports of 
   # the same component (e.g., a dual-port L2 Memory) into discrete routing targets 
   # for the central crossbar, categorizing them by synchronous/asynchronous domains.
+  comp_info_dict = context.get('comp_info', {}) or {}
   axi_slaves_async = []
   axi_slaves_sync = []
   for c in config.components:
       if c.interfaces and 'axi_slave' in c.interfaces:
           for slv in c.interfaces['axi_slave']:
               is_sync = slv.get('sync_domain', False)
+              c_info = comp_info_dict.get(c.name, {})
+              if c_info and "ports" in c_info:
+                  if not is_sync and "async_axi_in_aw_data_i" not in c_info["ports"]:
+                      is_sync = True
               ports = slv.get('ports', 1)
               for p in range(ports):
                   name_suffix = f"_{p}" if ports > 1 else ""
@@ -58,10 +63,20 @@
   # ============================================================================
   # 3. AXI MASTERS (CROSSBAR INITIATORS) EXTRACTION
   # ============================================================================
-  axi_masters = []
+  axi_masters_async = []
+  axi_masters_sync = []
   for c in config.components:
       if c.interfaces and c.interfaces.get('axi_master'):
-          axi_masters.append(c.name)
+          is_sync_mst = True
+          c_info = comp_info_dict.get(c.name, {})
+          if c_info and "ports" in c_info:
+              if "async_axi_out_aw_data_o" in c_info["ports"]:
+                  is_sync_mst = False
+          if is_sync_mst:
+              axi_masters_sync.append(c.name)
+          else:
+              axi_masters_async.append(c.name)
+  axi_masters = axi_masters_async + axi_masters_sync
           
   # ============================================================================
   # 4. REGBUS SLAVES (PERIPHERAL TARGETS) EXTRACTION
@@ -199,6 +214,7 @@ package ${pkg};
   // components to specific ports of the central multidimensional AXI crossbar.
   localparam int unsigned NumAxiMasters = ${len(axi_masters)};
   localparam int unsigned NumAxiMastersSync = ${config.host.parameters.get('AxiNumMstSync', 0)};
+  localparam int unsigned NumAxiMastersAsync = NumAxiMasters - NumAxiMastersSync;
   typedef enum int {
 % for mst in axi_masters:
     AxiMstIdx_${camel_case(mst)} = ${loop.index}${"," if not loop.last else ""}

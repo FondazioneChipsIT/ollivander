@@ -31,6 +31,7 @@ from core.tool_runners import run_floogen, run_peakrdl, run_verible, run_pre_bui
 from core.reporter import print_generation_report
 from core.rtl_generator import RTLGenerator
 from core.ipxact_generator import generate_ipxact
+from core.noc_placement_checker import run_noc_placement_check
 
 def main():
     # =========================================================================
@@ -289,6 +290,10 @@ def main():
     # "Hardware-First" correctness check.
     try:
         validate_soc_components(soc_config, search_paths, exclude_dir, generator.original_isle_types)
+        if soc_config.topology.type == "noc":
+            print("[*] Running NoC Placement Checker (NPC) and Latency Estimator...")
+            run_noc_placement_check(soc_config, env)
+            print("  [SUCCESS] NoC placement validated. Report generated successfully.")
     except ValueError as e:
         print("\n[ERROR] SoC Hardware Validation Failed!")
         print("=" * 70)

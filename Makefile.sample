@@ -18,6 +18,8 @@ PYTHON     = $(VENV_DIR)/bin/python
 HOST_PYTHON ?= python3.12
 
 # --- Tools ---
+VERIBLE_VERSION ?= v0.0-4080-ga0a8d8eb
+
 OS := $(shell uname -s)
 ARCH := $(shell uname -m)
 
@@ -58,8 +60,8 @@ setup:
 		echo "\n[ERROR] Neither 'uv' nor 'pip' is available in your PATH."; \
 		exit 1; \
 	fi
-	@echo "\n[MAKE] Fetching latest Verible release for $(VERIBLE_PLATFORM)..."
-	@URL=$$(curl -s https://api.github.com/repos/chipsalliance/verible/releases/latest | grep browser_download_url | grep $(VERIBLE_PLATFORM) | cut -d '"' -f 4); \
+	@echo "\n[MAKE] Fetching Verible release $(VERIBLE_VERSION) for $(VERIBLE_PLATFORM)..."
+	@URL=$$(curl -s https://api.github.com/repos/chipsalliance/verible/releases/tags/$(VERIBLE_VERSION) | grep browser_download_url | grep $(VERIBLE_PLATFORM) | cut -d '"' -f 4); \
 	if [ -z "$$URL" ]; then \
 		echo "\n[ERROR] Could not find Verible release for $(VERIBLE_PLATFORM)!"; \
 		exit 1; \

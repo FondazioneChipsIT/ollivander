@@ -16,6 +16,8 @@
   host_clk = config.host.clock_domain or "system_clk"
       
   import re
+  from core.utils import simplify_port_ranges
+
   # Resolves SystemVerilog dimensions by substituting 'parameter' names with their
   # actual integer values defined in the component's YAML configuration or the 
   # module's default 'fixed_params', evaluating simple math expressions if needed.
@@ -207,8 +209,7 @@ module ${top_level_module_name}
   input  logic rtc_i,
   input  logic [1:0] boot_mode_i\
 <%
-    top_ports = []
-    comp_extra_conns = {}
+    top_ports_list = list(top_ports)
     
     ext_async_slaves = []
     ext_sync_slaves = []
@@ -224,76 +225,32 @@ module ${top_level_module_name}
 
     if num_ext_async_slaves > 0:
         width_str = f"[{num_ext_async_slaves-1}:0]" if num_ext_async_slaves > 1 else ""
-        top_ports.append(f"output logic     {width_str} ext_reg_async_slv_req_o")
-        top_ports.append(f"input  logic     {width_str} ext_reg_async_slv_ack_i")
-        top_ports.append(f"output {pkg}::soc_reg_req_t {width_str} ext_reg_async_slv_data_o")
-        top_ports.append(f"input  logic     {width_str} ext_reg_async_slv_req_i")
-        top_ports.append(f"output logic     {width_str} ext_reg_async_slv_ack_o")
-        top_ports.append(f"input  {pkg}::soc_reg_rsp_t {width_str} ext_reg_async_slv_data_i")
+        top_ports_list.append(f"output logic     {width_str} ext_reg_async_slv_req_o")
+        top_ports_list.append(f"input  logic     {width_str} ext_reg_async_slv_ack_i")
+        top_ports_list.append(f"output {pkg}::soc_reg_req_t {width_str} ext_reg_async_slv_data_o")
+        top_ports_list.append(f"input  logic     {width_str} ext_reg_async_slv_req_i")
+        top_ports_list.append(f"output logic     {width_str} ext_reg_async_slv_ack_o")
+        top_ports_list.append(f"input  {pkg}::soc_reg_rsp_t {width_str} ext_reg_async_slv_data_i")
 
     for comp in ext_sync_slaves:
-        top_ports.append(f"output {pkg}::soc_reg_req_t {comp.name}_reg_req_o")
-        top_ports.append(f"input  {pkg}::soc_reg_rsp_t {comp.name}_reg_rsp_i")
-
-    from core.interfaces import get_interface_ports
-
-    for comp in [config.host] + config.components:
-        comp_extra_conns.setdefault(comp.name, [])
-        exported_interfaces = comp.export_interfaces if comp.export_interfaces else []
-        c_info = comp_info.get(comp.name, {})
-        is_host = (comp.name == config.host.name)
-
-        for if_name in exported_interfaces:
-            # The get_interface_ports function now contains all the "smart" logic
-            ports_to_export = get_interface_ports(if_name, comp.name, is_host, c_info)
-
-            for p in ports_to_export:
-                internal_port = p['internal']
-                top_port = p['top']
-                p_dir = p['dir']
-
-                # Get the full declaration from the parsed component info
-                p_info = c_info.get("ports", {}).get(internal_port)
-                if not p_info: continue
-
-                decl = p_info["decl"]
-
-                # Evaluate parameters in the port declaration
-                known_params = {}
-                known_params.update(c_info.get("supported_params", {}))
-                known_params.update(c_info.get("fixed_params", {}))
-                if comp.parameters:
-                    for k, v in comp.parameters.items():
-                        known_params[k] = "1" if v is True else "0" if v is False else str(v)
-
-                for param_name, param_val in known_params.items():
-                    decl = re.sub(rf'\b{param_name}\b', param_val, decl)
-
-                # Reconstruct the declaration with the correct top-level name
-                name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
-                if name_match:
-                    decl = decl[:name_match.start()] + top_port + name_match.group(2)
-                    if f"{p_dir} {decl}" not in top_ports:
-                        top_ports.append(f"{p_dir} {decl}")
-                    conn_str = f".{internal_port:<17} ( {top_port} )"
-                    if conn_str not in comp_extra_conns[comp.name]:
-                        comp_extra_conns[comp.name].append(conn_str)
+        top_ports_list.append(f"output {pkg}::soc_reg_req_t {comp.name}_reg_req_o")
+        top_ports_list.append(f"input  {pkg}::soc_reg_rsp_t {comp.name}_reg_rsp_i")
 
     if config.project.build_mode == "macro" and config.project.macro_settings:
         if config.project.macro_settings.slaves:
-            top_ports.append("input  axi_req_t  axi_req_i")
-            top_ports.append("output axi_resp_t axi_resp_o")
+            top_ports_list.append("input  axi_req_t  axi_req_i")
+            top_ports_list.append("output axi_resp_t axi_resp_o")
         if config.project.macro_settings.masters:
-            top_ports.append("output axi_req_t  axi_req_o")
-            top_ports.append("input  axi_resp_t axi_resp_i")
+            top_ports_list.append("output axi_req_t  axi_req_o")
+            top_ports_list.append("input  axi_resp_t axi_resp_i")
 %>\
-% if top_ports:
+% if top_ports_list:
 ,
 
   // ---------------------------------------------------------
   // External Component Ports
   // ---------------------------------------------------------
-  ${",\n  ".join(top_ports)}
+  ${",\n  ".join(top_ports_list)}
 % endif
 );
 
@@ -439,7 +396,7 @@ ${clock_and_reset_tree(config, p_name)}
 
   // Masters (Components -> Host)
 % for sig, slv_w, mst_w in channels:
-  logic [`IOMSB(${pkg}::NumAxiMasters):0][${mst_w}-1:0] xbar_mst_${sig};
+  logic [`IOMSB(${pkg}::NumAxiMastersAsync):0][${mst_w}-1:0] xbar_mst_${sig};
 % endfor
 
   // Synchronous Masters (Components -> Host)
@@ -657,280 +614,22 @@ ${clock_and_reset_tree(config, p_name)}
   // Parameters and ports are injected automatically based on the component's 
   // SV header analysis (Phase 2) and the Wiring Matrix.
   
-% for comp in [config.host] + config.components:
- % if not is_external(comp):
-  <% 
-    c_clk = comp.clock_domain or "host_clk"
-    c_rst = comp.reset_domain or c_clk.replace('_clk', '_rst')
-  %>
-  // --- Component: ${comp.name} (${comp.type}) ---
-<%
-  param_dict = {}
-  c_info = comp_info.get(comp.name, {})
-  
-  # 1. Standard AXI/System parameters
-  supported = c_info.get("supported_params", [])
-  for p in supported:
-      if p in ['AxiAddrWidth', 'AxiDataWidth', 'AxiUserWidth', 'LogDepth']:
-          param_dict[p] = p
-      elif p == 'AxiMaxReadTxns': param_dict[p] = f"{pkg}::LlcMaxReadTxns" if 'l2' in comp.name else f"{pkg}::RegMaxReadTxns"
-      elif p == 'AxiMaxWriteTxns': param_dict[p] = f"{pkg}::LlcMaxWriteTxns" if 'l2' in comp.name else f"{pkg}::RegMaxWriteTxns"
-      elif p == 'AxiUserAmoMsb': param_dict[p] = f"{pkg}::AxiUserAmoMsb"
-      elif p == 'AxiUserAmoLsb': param_dict[p] = f"{pkg}::AxiUserAmoLsb"
-      elif p == 'AxiUserEccErrBit': param_dict[p] = f"{pkg}::AxiUserEccErrBit"
-      elif p == 'AxiAmoNumCuts': param_dict[p] = f"{pkg}::LlcAmoNumCuts" if 'l2' in comp.name else f"{pkg}::RegAmoNumCuts"
-      elif p == 'AxiInIdWidth':
-          if 'llc_port' in (comp.interfaces or {}): param_dict[p] = f'{pkg}::LlcIdWidth'
-          else: param_dict[p] = 'AxiSlvIdWidth'
-      elif p == 'AxiOutIdWidth': param_dict[p] = 'AxiIdWidth'
-      elif p == 'AxiIdWidth':
-          # If it only has an axi_slave (or llc_port) and no axi_master, it's AxiSlvIdWidth
-          interfaces = comp.interfaces or {}
-          has_slave = 'axi_slave' in interfaces or 'llc_port' in interfaces
-          has_master = 'axi_master' in interfaces
-          if has_slave and not has_master: 
-              param_dict[p] = 'AxiSlvIdWidth'
-          else: 
-              param_dict[p] = 'AxiIdWidth'
-              
-      # --- Type Mappings ---
-      elif p in ['axi_req_t', 'axi_in_req_t', 'sync_axi_in_req_t', 'axi_slave_req_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_req_t"
-          elif 'llc_port' in (comp.interfaces or {}):
-              param_dict[p] = f"{pkg}::soc_axi_llc_req_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_slv_req_t"
-      elif p in ['axi_resp_t', 'axi_in_resp_t', 'sync_axi_in_rsp_t', 'axi_slave_resp_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_resp_t"
-          elif 'llc_port' in (comp.interfaces or {}):
-              param_dict[p] = f"{pkg}::soc_axi_llc_resp_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_slv_resp_t"
-      elif p in ['axi_aw_chan_t', 'axi_in_aw_chan_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_aw_chan_t"
-          elif 'llc_port' in (comp.interfaces or {}):
-              param_dict[p] = f"{pkg}::soc_axi_llc_aw_chan_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_slv_aw_chan_t"
-      elif p in ['axi_w_chan_t', 'axi_in_w_chan_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_w_chan_t"
-          elif 'llc_port' in (comp.interfaces or {}):
-              param_dict[p] = f"{pkg}::soc_axi_llc_w_chan_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_slv_w_chan_t"
-      elif p in ['axi_b_chan_t', 'axi_in_b_chan_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_b_chan_t"
-          elif 'llc_port' in (comp.interfaces or {}):
-              param_dict[p] = f"{pkg}::soc_axi_llc_b_chan_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_slv_b_chan_t"
-      elif p in ['axi_ar_chan_t', 'axi_in_ar_chan_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_ar_chan_t"
-          elif 'llc_port' in (comp.interfaces or {}):
-              param_dict[p] = f"{pkg}::soc_axi_llc_ar_chan_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_slv_ar_chan_t"
-      elif p in ['axi_r_chan_t', 'axi_in_r_chan_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_r_chan_t"
-          elif 'llc_port' in (comp.interfaces or {}):
-              param_dict[p] = f"{pkg}::soc_axi_llc_r_chan_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_slv_r_chan_t"
-
-      elif p in ['axi_out_req_t', 'sync_axi_out_req_t', 'axi_master_req_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_slv_req_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_req_t"
-      elif p in ['axi_out_resp_t', 'sync_axi_out_rsp_t', 'axi_master_resp_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_slv_resp_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_resp_t"
-      elif p in ['axi_out_aw_chan_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_slv_aw_chan_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_aw_chan_t"
-      elif p in ['axi_out_w_chan_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_slv_w_chan_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_w_chan_t"
-      elif p in ['axi_out_b_chan_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_slv_b_chan_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_b_chan_t"
-      elif p in ['axi_out_ar_chan_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_slv_ar_chan_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_ar_chan_t"
-      elif p in ['axi_out_r_chan_t']: 
-          if comp.name == config.host.name:
-              param_dict[p] = f"{pkg}::soc_axi_slv_r_chan_t"
-          else:
-              param_dict[p] = f"{pkg}::soc_axi_r_chan_t"
-
-      elif p in ['reg_req_t', 'sync_reg_in_req_t', 'sync_reg_out_req_t', 'async_reg_out_req_t']: 
-          param_dict[p] = f"{pkg}::soc_reg_req_t"
-      elif p in ['reg_rsp_t', 'sync_reg_in_rsp_t', 'sync_reg_out_rsp_t', 'async_reg_out_rsp_t']: 
-          param_dict[p] = f"{pkg}::soc_reg_rsp_t"
-          
-      elif p == 'MACRO_BASE_ADDR':
-          b_addr = 0
-          if comp.interfaces and 'axi_slave' in comp.interfaces:
-              slvs = comp.interfaces['axi_slave']
-              if isinstance(slvs, list) and len(slvs) > 0:
-                  b_addr = slvs[0].get('base_addr', 0)
-          elif getattr(comp, 'base_addr', None) is not None:
-              b_addr = comp.base_addr
-          b_val = int(b_addr, 16) if isinstance(b_addr, str) else b_addr
-          param_dict[p] = f"64'h{b_val:X}"
-
-      # --- CDC Width Mappings ---
-      elif p.startswith('AsyncAxiLlc'):
-          if p == 'AsyncAxiLlcAwWidth': 
-              param_dict[p] = f'{pkg}::LlcAwWidth'
-          elif p == 'AsyncAxiLlcWWidth': 
-              param_dict[p] = f'{pkg}::LlcWWidth'
-          elif p == 'AsyncAxiLlcBWidth': 
-              param_dict[p] = f'{pkg}::LlcBWidth'
-          elif p == 'AsyncAxiLlcArWidth': 
-              param_dict[p] = f'{pkg}::LlcArWidth'
-          elif p == 'AsyncAxiLlcRWidth': 
-              param_dict[p] = f'{pkg}::LlcRWidth'
-      elif p in ['AsyncAxiInAwWidth', 'AxiSlvAwWidth']:
-          if 'llc_port' in (comp.interfaces or {}): param_dict[p] = f'{pkg}::LlcAwWidth'
-          else: param_dict[p] = 'XbarMstAwWidth' if comp.name == config.host.name else 'XbarSlvAwWidth'
-      elif p in ['AsyncAxiInWWidth', 'AxiSlvWWidth']:
-          if 'llc_port' in (comp.interfaces or {}): param_dict[p] = f'{pkg}::LlcWWidth'
-          else: param_dict[p] = 'XbarMstWWidth' if comp.name == config.host.name else 'XbarSlvWWidth'
-      elif p in ['AsyncAxiInBWidth', 'AxiSlvBWidth']:
-          if 'llc_port' in (comp.interfaces or {}): param_dict[p] = f'{pkg}::LlcBWidth'
-          else: param_dict[p] = 'XbarMstBWidth' if comp.name == config.host.name else 'XbarSlvBWidth'
-      elif p in ['AsyncAxiInArWidth', 'AxiSlvArWidth']:
-          if 'llc_port' in (comp.interfaces or {}): param_dict[p] = f'{pkg}::LlcArWidth'
-          else: param_dict[p] = 'XbarMstArWidth' if comp.name == config.host.name else 'XbarSlvArWidth'
-      elif p in ['AsyncAxiInRWidth', 'AxiSlvRWidth']:
-          if 'llc_port' in (comp.interfaces or {}): param_dict[p] = f'{pkg}::LlcRWidth'
-          else: param_dict[p] = 'XbarMstRWidth' if comp.name == config.host.name else 'XbarSlvRWidth'
-          
-      elif p in ['AsyncAxiOutAwWidth', 'AxiMstAwWidth']:
-          param_dict[p] = 'XbarSlvAwWidth' if comp.name == config.host.name else 'XbarMstAwWidth'
-      elif p in ['AsyncAxiOutWWidth', 'AxiMstWWidth']:
-          param_dict[p] = 'XbarSlvWWidth' if comp.name == config.host.name else 'XbarMstWWidth'
-      elif p in ['AsyncAxiOutBWidth', 'AxiMstBWidth']:
-          param_dict[p] = 'XbarSlvBWidth' if comp.name == config.host.name else 'XbarMstBWidth'
-      elif p in ['AsyncAxiOutArWidth', 'AxiMstArWidth']:
-          param_dict[p] = 'XbarSlvArWidth' if comp.name == config.host.name else 'XbarMstArWidth'
-      elif p in ['AsyncAxiOutRWidth', 'AxiMstRWidth']:
-          param_dict[p] = 'XbarSlvRWidth' if comp.name == config.host.name else 'XbarMstRWidth'
-          
-  # 2. Custom parameters from YAML (override standard ones if specified)
-  if comp.parameters:
-      for p_k, p_v in comp.parameters.items():
-          if isinstance(p_v, bool):
-              param_dict[p_k] = "1'b1" if p_v else "1'b0"
-          else:
-              param_dict[p_k] = p_v
-      
-  param_list = [f".{k} ( {v} )" for k, v in param_dict.items()]
-  
-  # 3. Dynamic Port List Generation
-  port_list = []
-  port_list.append(f".clk_i         ( {c_clk} )")
-  
-  rst_wire = 'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'rsts_n[{pkg}::DomainIdx_{fmt_rst(c_rst)}]'
-  port_list.append(f".rst_ni        ( {rst_wire} )")
-  
-  if c_info.get('has_pwr_on_rst'):
-      por_wire = 'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'pwr_on_rsts_n[{pkg}::DomainIdx_{fmt_rst(c_rst)}]'
-      port_list.append(f".pwr_on_rst_ni ( {por_wire} )")
-      
-  if c_info.get('has_ref_clk'): port_list.append(".ref_clk_i     ( rt_clk )")
-  elif c_info.get('has_rt_clk'): port_list.append(".rt_clk_i      ( rt_clk )")
-      
-  if c_info.get('has_sys_clk'): port_list.append(".sys_clk_i     ( host_clk )")
-  if c_info.get('has_sys_rst'): port_list.append(".sys_rst_ni    ( host_pwr_on_rst_n )")
-      
-  if c_info.get('has_rtc'): port_list.append(".rtc_i         ( rt_clk )")
-  if c_info.get('has_test_mode'): port_list.append(".test_mode_i   ( test_mode_i )")
-      
-  if c_info.get('has_boot_mode'): port_list.append(".boot_mode_i   ( boot_mode_i )")
-  elif c_info.get('has_bootmode'): port_list.append(".bootmode_i    ( boot_mode_i )")
-      
-  # Connect dedicated clock divider if present
-  if comp.dedicated_clock_div:
-      div_clk = comp.dedicated_clock_div['name']
-      div_port = comp.dedicated_clock_div.get('port', f"{div_clk}_i")
-      port_list.append(f".{div_port:<17} ( {div_clk} )")
-      
-  # --- SYSTEM CONTROLLER (PeakRDL) WIRING ---
-  if comp.system_config:
-      c_name = comp.name
-      reg_out = "sys_regs_hwif_out"
-      reg_in = "sys_regs_hwif_in"
-      if comp.system_config.get('isolate'):
-          port_list.append(f".axi_isolate_i   ( {reg_out}.isolate_ctrl.{c_name}_isolate.value )")
-          port_list.append(f".axi_isolated_o  ( {reg_in}.isolate_status.{c_name}_isolated.next )")
-      if comp.system_config.get('fetch_enable'):
-          port_list.append(f".fetch_en_i      ( {reg_out}.fetch_enable.{c_name}_fetch_enable.value )")
-      if comp.system_config.get('boot_enable'):
-          port_list.append(f".en_sa_boot_i    ( {reg_out}.boot_enable.{c_name}_boot_enable.value )")
-      if comp.system_config.get('debug_req'):
-          if get_port_dim(c_name, 'debug_req_i', True):
-              port_list.append(f".debug_req_i     ( '{{default: {reg_out}.debug_req.{c_name}_debug_req.value}} )")
-          else:
-              port_list.append(f".debug_req_i     ( {reg_out}.debug_req.{c_name}_debug_req.value )")
-      if 'boot_addr' in comp.system_config and c_info.get("has_boot_addr"):
-          port_list.append(f".boot_addr_i     ( {reg_out}.{c_name}_boot_addr.{c_name}_boot_addr.value )")
-      if comp.system_config.get('has_busy_status'):
-          port_list.append(f".busy_o          ( {reg_in}.busy_status.{c_name}_busy.next )")
-      if comp.system_config.get('has_eoc_status') and 'eoc' not in (comp.interrupts or {}) and 'eoc_o' not in (comp.interrupts or {}):
-          port_list.append(f".eoc_o           ( {reg_in}.eoc_status.{c_name}_eoc.next )")
-
-  # Append the wiring matrix connections
-  exported_ports = [c.split('(')[0].strip().strip('.') for c in comp_extra_conns.get(comp.name, [])]
-  for wc in wiring_matrix.get(comp.name, []):
-      port_name = wc.split('(')[0].strip().strip('.')
-      if port_name not in exported_ports:
-          port_list.append(wc)
-          
-  # Inject exported interfaces
-  if comp.name in comp_extra_conns:
-      port_list.extend(comp_extra_conns[comp.name])
-      
-  # Auto-tie-off remaining unconnected ports to prevent TFMPC warnings
-  connected_ports = []
-  for p in port_list:
-      m = re.match(r'^\s*\.\s*([a-zA-Z0-9_]+)\s*\(', p)
-      if m: connected_ports.append(m.group(1))
-      
-  for port_name, p_info in c_info.get("ports", {}).items():
-      if port_name not in connected_ports:
-          val = "'0" if p_info["dir"] == "input" else ""
-          port_list.append(f".{port_name:<17} ( {val} )")
-%>
-  ${p_name}_${comp.type} ${"#(" if param_list else ""}
-% for i, p_str in enumerate(param_list):
-    ${p_str}${"," if i < len(param_list)-1 else ""}
-% endfor
-  ${")" if param_list else ""} i_${comp.name} (
-% for i, port_conn in enumerate(port_list):
-    ${port_conn}${"," if i < len(port_list) - 1 else ""}
-% endfor
+% for inst_name, inst in ir.instances.items():
+  // --- Component: ${inst.inst_name} (${inst.module_name}) ---
+  ${inst.module_name} \
+  % if inst.parameters:
+  #(
+    % for idx, (k, v) in enumerate(inst.parameters.items()):
+    .${k.ljust(17)} ( ${v} )${"," if idx < len(inst.parameters) - 1 else ""}
+    % endfor
+  ) \
+  % endif
+  ${inst.inst_name} (
+    % for idx, conn in enumerate(inst.connections):
+    .${conn.port_name.ljust(17)} ( ${conn.expression} )${"," if idx < len(inst.connections) - 1 else ""}
+    % endfor
   );
 
- % endif
 % endfor
 
 endmodule : ${top_level_module_name}

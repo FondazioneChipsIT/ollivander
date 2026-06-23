@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: SHL-0.51
 """
 SystemVerilog AST parsing and wrapper metadata extraction.
-Utilizes Verible parser to extract port signatures and parameter settings.
+Utilizes pyslang compiler front-end to extract port signatures and parameter settings.
 """
 
 import re
@@ -16,68 +16,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from core.utils import strip_comments
 
-def get_verible_ast(filepath: Path) -> Optional[Dict[str, Any]]:
-    """
-    Invokes Google's Verible parser to extract the Abstract Syntax Tree (AST)
-    from a SystemVerilog file. This allows Ollivander to reliably parse complex
-    module headers, parameters, and ports without relying solely on Regex.
-    The AST is exported as JSON, providing a structured, hierarchical view of
-    the RTL which is immune to formatting variations or multi-line declarations.
-    """
-    # Try to find the Verible executable in the system PATH.
-    verible_exe = shutil.which("verible-verilog-syntax")
-    if not verible_exe:
-        # Fallback: check if it's installed locally in the current Python
-        # virtual environment (e.g., via `pip install verible`).
-        venv_verible = Path(sys.executable).parent / "verible-verilog-syntax"
-        if venv_verible.is_file() and os.access(venv_verible, os.X_OK):
-            verible_exe = str(venv_verible)
-            
-    if not verible_exe:
-        return None
-        
-    try:
-        result = subprocess.run([verible_exe, "--export_json", str(filepath)], capture_output=True, text=True, check=True)
-        json_data = json.loads(result.stdout)
-        # Verible outputs a dictionary mapping the absolute file path to its AST.
-        # Example: {"/absolute/path.sv": {"tag": "kCompilationUnit", ...}}
-        return json_data.get(str(filepath))
-    except Exception:
-        return None
-
-def walk_ast(node, tags):
-    """
-    Recursively yields nodes that match any of the given tags.
-    Used to navigate the heavily nested JSON representation of the Verible AST.
-    """
-    if isinstance(node, dict):
-        if node.get("tag") in tags:
-            yield node
-        for child in node.get("children", []):
-            if child:
-                yield from walk_ast(child, tags)
-    elif isinstance(node, list):
-        for item in node:
-            if item:
-                yield from walk_ast(item, tags)
-
-def extract_tokens(node, tag=None):
-    """
-    Extracts tokens (leaves) from an AST node.
-    Optionally filters tokens by a specific Verible syntax tag.
-    """
-    if isinstance(node, dict):
-        if "children" not in node:
-            if not tag or node.get("tag") == tag:
-                yield node
-        else:
-            for child in node.get("children", []):
-                if child:
-                    yield from extract_tokens(child, tag)
-    elif isinstance(node, list):
-        for item in node:
-            if item:
-                yield from extract_tokens(item, tag)
+try:
+    import pyslang
+    HAS_PYSLANG = True
+except ImportError:
+    HAS_PYSLANG = False
 
 def _clean_param_val(val: Any) -> str:
     """
@@ -156,8 +99,6 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
             content = f.read()
     except Exception:
         return None
-        
-    ast = get_verible_ast(filepath)
 
     info = {
         "supported_params": {},
@@ -181,47 +122,106 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
             param_content = content
             header_content = content
 
-    ast_found_params = False
-    if ast:
-        # =====================================================================
-        # AST-BASED PARAMETER EXTRACTION
-        # =====================================================================
-        decl_tags = {"kParamDeclaration", "kLocalParamDeclaration", "kParameterPortDeclaration"}
-        assign_tags = {"kVariableDeclarationAssignment", "kTypeAssignment", "kParamAssignment", "kParameterAssignment", "kAssignment"}
-        for decl in walk_ast(ast, decl_tags):
-            is_local = (decl.get("tag") == "kLocalParamDeclaration")
-            for assign in walk_ast(decl, assign_tags):
-                tokens = list(extract_tokens(assign))
-                eq_index = -1
-                for i, t in enumerate(tokens):
-                    if t.get("text") == "=":
-                        eq_index = i
-                        break
-                        
-                if eq_index > 0:
-                    param_name = ""
-                    for i in range(eq_index - 1, -1, -1):
-                        text = tokens[i].get("text", "")
-                        if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', text):
-                            param_name = text
-                            break
-                            
-                    if param_name:
-                        # Reconstruct the value from the remaining tokens.
-                        val_tokens = [t.get("text", "") for t in tokens[eq_index + 1:]]
-                        if val_tokens:
-                            param_val = "".join(val_tokens).strip(";")
-                            clean_val = _clean_param_val(param_val)
-                            if is_local:
-                                info["fixed_params"][param_name] = clean_val
-                            else:
-                                info["supported_params"][param_name] = clean_val
-                            ast_found_params = True
+    # Use pyslang to extract parameters and ports
+    pyslang_success = False
+    port_names = set()
+    info["ports"] = {}
 
-    if not ast or not ast_found_params:
-        # =====================================================================
-        # LEGACY REGEX-BASED PARAMETER EXTRACTION (Fallback)
-        # =====================================================================
+    if HAS_PYSLANG:
+        try:
+            tree = pyslang.syntax.SyntaxTree.fromFile(str(filepath))
+            comp = pyslang.ast.Compilation()
+            comp.addSyntaxTree(tree)
+            root = comp.getRoot()
+            top_instances = list(root.topInstances)
+            
+            # Find the instance matching the component_type
+            inst = None
+            for top_inst in top_instances:
+                if top_inst.name == component_type:
+                    inst = top_inst
+                    break
+            if not inst and top_instances:
+                inst = top_instances[0]
+                
+            if inst:
+                body = inst.body
+                # 1. Parameter extraction
+                for p in body.parameters:
+                    # Detect if parameter is a type parameter
+                    is_type = type(p).__name__ == "TypeParameterSymbol" or not hasattr(p, 'value')
+                    val = ""
+                    if is_type:
+                        if hasattr(p, 'targetType') and p.targetType and hasattr(p.targetType, 'type') and p.targetType.type and not str(p.targetType.type).startswith('<error>'):
+                            val = str(p.targetType.type)
+                        if not val and hasattr(p, 'syntax') and p.syntax and hasattr(p.syntax, 'assignment') and p.syntax.assignment:
+                            val = str(p.syntax.assignment).strip()
+                            if val.startswith('='):
+                                val = val[1:].strip()
+                        if p.isLocalParam:
+                            info["fixed_params"][p.name] = val
+                        else:
+                            info["supported_params"][p.name] = val
+                    else:
+                        if hasattr(p, 'value') and not p.value.empty:
+                            val = str(p.value.value)
+                        if not val and hasattr(p, 'syntax') and p.syntax and hasattr(p.syntax, 'initializer') and p.syntax.initializer and hasattr(p.syntax.initializer, 'expr') and p.syntax.initializer.expr:
+                            val = str(p.syntax.initializer.expr).strip()
+                        clean_val = _clean_param_val(val)
+                        if p.isLocalParam:
+                            info["fixed_params"][p.name] = clean_val
+                        else:
+                            info["supported_params"][p.name] = clean_val
+
+                # 2. Port extraction
+                for port in body.portList:
+                    p_name = port.name
+                    port_names.add(p_name)
+                    
+                    direction_str = str(port.direction).split('.')[-1].lower()
+                    if direction_str == 'in':
+                        p_dir = 'input'
+                    elif direction_str == 'out':
+                        p_dir = 'output'
+                    elif direction_str == 'inout':
+                        p_dir = 'inout'
+                    else:
+                        p_dir = direction_str
+                        
+                    decl = ""
+                    type_dim = ""
+                    unpacked = ""
+                    if hasattr(port, 'syntax') and port.syntax and hasattr(port.syntax, 'parent') and port.syntax.parent:
+                        decl = strip_comments(str(port.syntax.parent)).strip()
+                        # Strip direction prefix from declaration
+                        for prefix in ['input', 'output', 'inout']:
+                            if decl.startswith(prefix):
+                                decl = decl[len(prefix):].strip()
+                                break
+                        header = strip_comments(str(port.syntax.parent.header)).strip()
+                        type_dim = header
+                        for prefix in ['input', 'output', 'inout']:
+                            if header.startswith(prefix):
+                                type_dim = header[len(prefix):].strip()
+                                break
+                        if hasattr(port.syntax, 'dimensions') and port.syntax.dimensions:
+                            unpacked = "".join(strip_comments(str(d)).strip() for d in port.syntax.dimensions)
+                    else:
+                        decl = f"logic {p_name}"
+                        type_dim = "logic"
+                        
+                    info["ports"][p_name] = {
+                        "dir": p_dir,
+                        "decl": decl,
+                        "type_dim": type_dim,
+                        "unpacked": unpacked
+                    }
+                pyslang_success = True
+        except Exception as e:
+            print(f"[WARNING] pyslang parsing failed for {component_type}: {e}. Falling back to regex.")
+
+    if not pyslang_success:
+        # Fallback Parameter Extraction (Legacy Regex)
         pattern = re.compile(r'\b(parameter|localparam)\b\s+(?:type\s+|[A-Za-z0-9_\[\]\$:]+\s+)*([A-Za-z0-9_]+)\s*=\s*([^,;\n]+)[,;]?')
         for match in pattern.finditer(param_content):
             param_kind = match.group(1).strip()
@@ -256,47 +256,7 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     # Clean comments from header_content for safe regex matching
     header_clean = strip_comments(header_content)
 
-    # =====================================================================
-    # PORT NAMES EXTRACTION (AST + Regex Fallback)
-    # =====================================================================
-    port_names = set()
-    info["ports"] = {}
-    if ast:
-        for port_decl in walk_ast(ast, {"kPortDeclaration", "kPort"}):
-            tokens = list(extract_tokens(port_decl))
-            
-            # Split tokens using commas to properly handle multiple declarations
-            # on the same line
-            sub_decls_tokens = []
-            current_decl = []
-            bracket_level = 0
-            for t in tokens:
-                text = t.get("text", "")
-                if text == ',' and bracket_level == 0:
-                    if current_decl:
-                        sub_decls_tokens.append(current_decl)
-                    current_decl = []
-                else:
-                    current_decl.append(t)
-                    if text in ['[', '(', '{']: bracket_level += 1
-                    elif text in [']', ')', '}']: bracket_level -= 1
-            if current_decl:
-                sub_decls_tokens.append(current_decl)
-
-            for decl_tokens in sub_decls_tokens:
-                unpacked_level = 0
-                port_name = ""
-                for t in reversed(decl_tokens):
-                    text = t.get("text", "")
-                    if text == ']': unpacked_level += 1
-                    elif text == '[': unpacked_level -= 1
-                    elif unpacked_level == 0 and t.get("tag") == "SymbolIdentifier":
-                        port_name = text
-                        break
-                if port_name:
-                    port_names.add(port_name)
-
-    # Fallback Regex: Useful for retrieving ports hidden inside Macro calls
+    # Fallback/Merge Port Names Extraction
     port_matches = re.finditer(r'\b(input|output|inout)\b([\s\S]*?)(?=\b(?:input|output|inout)\b|\)\s*(?:;|$))', header_clean)
     for m in port_matches:
         p_dir = m.group(1)
@@ -305,39 +265,20 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
         name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
         if name_match:
             p_name = name_match.group(1)
-            port_names.add(p_name)
-            info["ports"][p_name] = {
-                "dir": p_dir,
-                "decl": decl,
-                "type_dim": decl[:name_match.start()].strip(),
-                "unpacked": name_match.group(2).strip()
-            }
+            if p_name not in info["ports"]:
+                port_names.add(p_name)
+                info["ports"][p_name] = {
+                    "dir": p_dir,
+                    "decl": decl,
+                    "type_dim": decl[:name_match.start()].strip(),
+                    "unpacked": name_match.group(2).strip()
+                }
             
-    # Add any ports detected exclusively by the AST
-    for p_name in port_names:
-        if p_name not in info["ports"]:
-            info["ports"][p_name] = {
-                "dir": "inout",
-                "decl": f"logic {p_name}",
-                "type_dim": "logic",
-                "unpacked": ""
-            }
-            
-    # =====================================================================
-    # IMPORTS EXTRACTION (AST + Regex Fallback)
-    # =====================================================================
+    # Extract package imports (Regex fallback that matches all imports in the file)
     imports = set()
-    if ast:
-        for imp_decl in walk_ast(ast, {"kPackageImportItem"}):
-            ids = list(extract_tokens(imp_decl, "SymbolIdentifier"))
-            if ids:
-                imports.add(ids[0].get("text", ""))
-                
-    # Always run the regex fallback on the full content to catch imports before the module declaration
     content_clean = strip_comments(content)
-    for m in re.finditer(r'\bimport\s+([a-zA-Z_][a-zA-Z0-9_]*)::\*;', content_clean):
+    for m in re.finditer(r'\bimport\s+([a-zA-Z_][a-zA-Z0-9_]*)::', content_clean):
         imports.add(m.group(1))
-        
     info["imports"] = list(imports)
 
     # Detect interfaces based on standardized port naming conventions

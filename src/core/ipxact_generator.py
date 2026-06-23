@@ -13,6 +13,8 @@ from xml.dom import minidom
 from pathlib import Path
 from pyEDAA.IPXACT.Component import Component
 from pyEDAA.IPXACT import IPXACTException
+from core.utils import simplify_port_ranges
+
 
 def generate_ipxact(soc_config, env, generator, comp_info):
     """
@@ -209,6 +211,8 @@ def get_top_level_ports(config, generator, comp_info):
                 
                 for param_name, param_val in known_params.items():
                     decl = re.sub(rf'\b{param_name}\b', param_val, decl)
+                decl = simplify_port_ranges(decl)
+
                     
                 name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
                 if not name_match:

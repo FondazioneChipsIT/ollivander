@@ -151,9 +151,13 @@ def build_connection_matrix(soc_config, comp_info):
             for sig, d in slv_ports.items():
                 p_dir = 'o' if d == 'i' else 'i'
                 ports.append(f".async_axi_out_{sig}_{p_dir} ( xbar_slv_{sig} )")
-            for sig, d in mst_ports.items():
-                p_dir = 'o' if d == 'i' else 'i'
-                ports.append(f".async_axi_in_{sig}_{p_dir} ( xbar_mst_{sig} )")
+            if soc_config.host.parameters.get('AxiNumMstAsync', 0) > 0:
+                for sig, d in mst_ports.items():
+                    p_dir = 'o' if d == 'i' else 'i'
+                    ports.append(f".async_axi_in_{sig}_{p_dir} ( xbar_mst_{sig} )")
+            if soc_config.host.parameters.get('AxiNumMstSync', 0) > 0:
+                ports.append(".axi_req_i ( xbar_sync_mst_req )")
+                ports.append(".axi_resp_o ( xbar_sync_mst_rsp )")
             
             # Host synchronous AXI connection (bypass CDC for high-performance peripherals)
             ports.append(".axi_req_o ( xbar_sync_slv_req )")
@@ -203,6 +207,10 @@ def build_connection_matrix(soc_config, comp_info):
                     base_idx = f"ollivander_soc_pkg::AxiSlvIdx_{camel_case(comp.name)}"
                     
                     is_sync = slvs[0].get('sync_domain', False)
+                    c_info = comp_info.get(comp.name, {})
+                    if c_info and "ports" in c_info:
+                        if not is_sync and "async_axi_in_aw_data_i" not in c_info["ports"]:
+                            is_sync = True
                     
                     # Handle AXI Slaves: if a component exposes multiple AXI ports (e.g., a multi-bank L2 memory),
                     # we construct a concatenation '{...}' of the corresponding slices from the Host array.
@@ -229,8 +237,18 @@ def build_connection_matrix(soc_config, comp_info):
                 # to the Chimney. They are not wired up at the top-level.
                 if soc_config.topology.type != "noc":
                     idx = f"ollivander_soc_pkg::AxiMstIdx_{camel_case(comp.name)}"
-                    for sig, d in mst_ports.items():
-                        ports.append(f".async_axi_out_{sig}_{d} ( xbar_mst_{sig}[{idx}] )")
+                    is_sync_mst = True
+                    c_info = comp_info.get(comp.name, {})
+                    if c_info and "ports" in c_info:
+                        if "async_axi_out_aw_data_o" in c_info["ports"]:
+                            is_sync_mst = False
+                            
+                    if is_sync_mst:
+                        ports.append(f".axi_req_o ( xbar_sync_mst_req[({idx} - ollivander_soc_pkg::NumAxiMastersAsync)] )")
+                        ports.append(f".axi_resp_i ( xbar_sync_mst_rsp[({idx} - ollivander_soc_pkg::NumAxiMastersAsync)] )")
+                    else:
+                        for sig, d in mst_ports.items():
+                            ports.append(f".async_axi_out_{sig}_{d} ( xbar_mst_{sig}[{idx}] )")
 
         # ----------------------------------------------------------------------
         # 2. PERIPHERAL REGBUS CONNECTIONS

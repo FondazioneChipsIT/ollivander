@@ -1,4 +1,4 @@
-# Copyright 2026 Fondazione Chips-IT.
+﻿# Copyright 2026 Fondazione Chips-IT.
 # Solderpad Hardware License, Version 0.51, see LICENSE for details.
 # SPDX-License-Identifier: SHL-0.51
 
@@ -9,10 +9,14 @@ import yaml
 from pathlib import Path
 from mako.template import Template
 
+import core.interfaces
 from core.interfaces import get_interface_ports
 from core.sv_parser import get_isle_info
 from core.wiring import build_connection_matrix
-from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_import_sv_packages, write_if_changed, strip_comments
+from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_import_sv_packages, write_if_changed, strip_comments, simplify_port_ranges
+from core.sv_ir import SVArchitectureIR, PortConnection
+from core.rtl_helpers import get_base_name, extract_dims, get_suffixes, norm_type, sv_dependency_sort, PORT_PATTERN
+from core.rtl_ir_builder import build_crossbar_ir, build_noc_ir
 
 
 class RTLGenerator:
@@ -352,7 +356,59 @@ class RTLGenerator:
                     self.project_dependencies.setdefault(dep_name, {})
                     self.project_dependencies[dep_name].update(dep_dict)
 
-        import core.interfaces
+        # Dynamically adjust sync_domain and host AXI parameters based on physical ports.
+        if self.soc_config.topology.type == "crossbar":
+            num_sync_slaves = 0
+            num_async_slaves = 0
+            for c in self.soc_config.components if self.soc_config.components else []:
+                if c.interfaces and 'axi_slave' in c.interfaces:
+                    slvs = c.interfaces['axi_slave']
+                    if isinstance(slvs, dict):
+                        slvs = [slvs]
+                    for slv in slvs:
+                        ports_cnt = slv.get('ports', 1)
+                        is_sync = slv.get('sync_domain', False)
+                        c_info = comp_info.get(c.name, {})
+                        if not is_sync:
+                            if c_info and "ports" in c_info:
+                                if "async_axi_in_aw_data_i" not in c_info["ports"]:
+                                    slv['sync_domain'] = True
+                                    is_sync = True
+                        if is_sync:
+                            num_sync_slaves += ports_cnt
+                        else:
+                            num_async_slaves += ports_cnt
+
+            if self.soc_config.project.build_mode == "macro" and self.soc_config.project.macro_settings:
+                if self.soc_config.project.macro_settings.masters:
+                    num_sync_slaves += len(self.soc_config.project.macro_settings.masters)
+
+            if getattr(self.soc_config.host, 'parameters', None) is None:
+                self.soc_config.host.parameters = {}
+            self.soc_config.host.parameters['AxiNumSlvSync'] = num_sync_slaves
+            self.soc_config.host.parameters['AxiNumSlvAsync'] = num_async_slaves
+
+            num_sync_masters = 0
+            num_async_masters = 0
+            for c in self.soc_config.components if self.soc_config.components else []:
+                if c.interfaces and c.interfaces.get('axi_master'):
+                    is_sync_mst = True
+                    c_info = comp_info.get(c.name, {})
+                    if c_info and "ports" in c_info:
+                        if "async_axi_out_aw_data_o" in c_info["ports"]:
+                            is_sync_mst = False
+                    if is_sync_mst:
+                        num_sync_masters += 1
+                    else:
+                        num_async_masters += 1
+
+            if self.soc_config.project.build_mode == "macro" and self.soc_config.project.macro_settings:
+                if self.soc_config.project.macro_settings.slaves:
+                    num_sync_masters += len(self.soc_config.project.macro_settings.slaves)
+
+            self.soc_config.host.parameters['AxiNumMstSync'] = num_sync_masters
+            self.soc_config.host.parameters['AxiNumMstAsync'] = num_async_masters
+
         core.interfaces.GLOBAL_COMP_INFO.clear()
         core.interfaces.GLOBAL_COMP_INFO.update(comp_info)
 
@@ -415,15 +471,6 @@ class RTLGenerator:
         
         all_comps = [self.soc_config.host] + (self.soc_config.components if self.soc_config.components else [])
         
-        def get_base_name(name):
-            if name.endswith("_en_o"): return name[:-5]
-            if name.endswith("_oe_o"): return name[:-5]
-            if name.endswith("_oe"): return name[:-3]
-            if name.endswith("_no"): return name[:-1]
-            if name.endswith("_ni"): return name[:-1]
-            if name.endswith("_o"): return name[:-2]
-            if name.endswith("_i"): return name[:-2]
-            return name
 
         pad_domains = self._get_pad_domains()
         port_multiples = {}
@@ -452,15 +499,6 @@ class RTLGenerator:
         grouped_ports = {}
         port_mapping = {}
 
-        def extract_dims(type_str):
-            dims = []
-            for m in re.finditer(r'\[\s*([^\]:]+)\s*:\s*([^\]]+)\s*\]', str(type_str)):
-                try:
-                    msb = int(eval(m.group(1), {"__builtins__": {}}))
-                    lsb = int(eval(m.group(2), {"__builtins__": {}}))
-                    dims.append((msb, lsb))
-                except Exception: pass
-            return dims
 
         def add_port(name, direction, soc_port_name, p_type="logic"):
             dims = extract_dims(p_type)
@@ -479,16 +517,6 @@ class RTLGenerator:
                 elif direction == "inout":
                     grouped_ports[base][soc_sig] = "pad_inout"
             else:
-                def get_suffixes(dims_list):
-                    if not dims_list: return [""]
-                    c_msb, c_lsb = dims_list[0]
-                    c_step = -1 if c_msb >= c_lsb else 1
-                    res = []
-                    for c_idx in range(c_msb, c_lsb + c_step, c_step):
-                        for sub in get_suffixes(dims_list[1:]):
-                            res.append(f"_{c_idx}{sub}")
-                    return res
-                
                 for suf in get_suffixes(dims):
                     base = get_base_name(name) + suf
                     if base not in grouped_ports:
@@ -587,6 +615,149 @@ class RTLGenerator:
         top_level_module_name = self.top_level_module_name
         top_level_filename = f"{top_level_module_name}.sv"
 
+        # ----------------------------------------------------------------------
+        # Calculate comp_extra_conns and top_ports in Python
+        # ----------------------------------------------------------------------
+        comp_extra_conns = {}
+        top_ports = []
+        all_extra_ports = []
+        noc_comp_extra_conns = {}
+        
+        all_comps = [self.soc_config.host] + (self.soc_config.components if self.soc_config.components else [])
+        
+        if self.soc_config.topology.type == "crossbar":
+            for comp in all_comps:
+                comp_extra_conns.setdefault(comp.name, [])
+                exported_interfaces = comp.export_interfaces if comp.export_interfaces else []
+                c_info = comp_info.get(comp.name, {})
+                is_host = (comp.name == self.soc_config.host.name)
+                
+                for if_name in exported_interfaces:
+                    ports_to_export = get_interface_ports(if_name, comp.name, is_host, c_info)
+                    for p in ports_to_export:
+                        internal_port = p['internal']
+                        top_port = p['top']
+                        p_dir = p['dir']
+                        
+                        p_info = c_info.get("ports", {}).get(internal_port)
+                        if not p_info:
+                            continue
+                        
+                        decl = p_info["decl"]
+                        known_params = {}
+                        known_params.update(c_info.get("supported_params", {}))
+                        known_params.update(c_info.get("fixed_params", {}))
+                        if comp.parameters:
+                            for k, v in comp.parameters.items():
+                                known_params[k] = "1" if v is True else "0" if v is False else str(v)
+                                
+                        for param_name, param_val in known_params.items():
+                            decl = re.sub(rf'\b{param_name}\b', param_val, decl)
+                            
+                        name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
+                        if name_match:
+                            decl = decl[:name_match.start()] + top_port + name_match.group(2)
+                            decl = simplify_port_ranges(decl)
+                            if f"{p_dir} {decl}" not in top_ports:
+                                top_ports.append(f"{p_dir} {decl}")
+                            conn_str = f".{internal_port:<17} ( {top_port} )"
+                            if conn_str not in comp_extra_conns[comp.name]:
+                                comp_extra_conns[comp.name].append(conn_str)
+        elif self.soc_config.topology.type == "noc":
+            max_x, max_y = 0, 0
+            grid = {}
+            for c in all_comps:
+                p = getattr(c, 'placement', None)
+                if not p or 'logical' not in p: continue
+                log = p['logical']
+                items = log if isinstance(log, list) else [log]
+                inst_idx = 0
+                for item in items:
+                    if 'box' in item:
+                        b = item['box']
+                        for x in range(b['x_start'], b['x_end']+1):
+                            for y in range(b['y_start'], b['y_end']+1):
+                                grid[(x,y)] = (c, inst_idx)
+                                inst_idx += 1
+                                max_x = max(max_x, x)
+                                max_y = max(max_y, y)
+                    else:
+                        x, y = item['x'], item['y']
+                        grid[(x,y)] = (c, inst_idx)
+                        inst_idx += 1
+                        max_x = max(max_x, x)
+                        max_y = max(max_y, y)
+            
+            for c in all_comps:
+                inst_coords = {}
+                num_instances = 0
+                for (gx, gy), (c_grid, idx) in grid.items():
+                    if c_grid and c_grid.name == c.name:
+                        num_instances = max(num_instances, idx + 1)
+                        inst_coords[idx] = (gx, gy)
+                if num_instances == 0:
+                    num_instances = 1
+                    
+                c_info = comp_info.get(c.name, {})
+                is_host = (c.name == self.soc_config.host.name)
+                exported_interfaces = c.export_interfaces if c.export_interfaces else []
+                
+                for if_name in exported_interfaces:
+                    ports_to_export = get_interface_ports(if_name, c.name, is_host, c_info)
+                    for p in ports_to_export:
+                        internal_port = p['internal']
+                        p_dir = p['dir']
+                        p_info = c_info.get("ports", {}).get(internal_port)
+                        if not p_info: continue
+                        decl = p_info["decl"]
+                        
+                        known_params = {}
+                        known_params.update(c_info.get("supported_params", {}))
+                        known_params.update(c_info.get("fixed_params", {}))
+                        if c.parameters:
+                            for k, v in c.parameters.items():
+                                known_params[k] = "1" if v is True else "0" if v is False else str(v)
+                        for param_name, param_val in known_params.items():
+                            decl = re.sub(rf'\b{param_name}\b', param_val, decl)
+                        decl = simplify_port_ranges(decl)
+                        
+                        name_match = re.search(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$', decl)
+                        if name_match:
+                            for inst_idx in range(num_instances):
+                                if is_host:
+                                    top_port_name = p['top']
+                                else:
+                                    if num_instances > 1:
+                                        cx, cy = inst_coords.get(inst_idx, (0,0))
+                                        top_port_name = f"{c.name}_{cx}_{cy}_{internal_port}"
+                                    else:
+                                        top_port_name = p['top']
+                                        
+                                inst_decl = decl[:name_match.start()] + top_port_name + name_match.group(2)
+                                if f"{p_dir} {inst_decl}" not in all_extra_ports:
+                                    all_extra_ports.append(f"{p_dir} {inst_decl}")
+                                    
+                                key = (c.name, inst_idx)
+                                noc_comp_extra_conns.setdefault(key, [])
+                                conn_str = f".{internal_port:<17} ( {top_port_name} )"
+                                if conn_str not in noc_comp_extra_conns[key]:
+                                    noc_comp_extra_conns[key].append(conn_str)
+
+        # Build and verify the SystemVerilog Intermediate Representation (IR)
+        ir = self.build_architecture_ir(comp_info, wiring_matrix, comp_extra_conns, noc_comp_extra_conns, port_mapping, top_ports, all_extra_ports)
+        validation_messages = ir.verify(comp_info)
+        if validation_messages:
+            print("\n" + "="*70)
+            print("[*] RTL Structural Verification Report:")
+            has_error = False
+            for msg in validation_messages:
+                print(f"  {msg}")
+                if msg.startswith("[ERROR]"):
+                    has_error = True
+            print("="*70 + "\n")
+            if has_error:
+                print("[FATAL ERROR] Structural verification failed. Halting generation.")
+                sys.exit(1)
 
         macro_pragmas = []
         hw_dir = self.env.outdir_path / self.env.hw_sub
@@ -598,6 +769,7 @@ class RTLGenerator:
         
         template_kwargs = {
             "config": self.soc_config,
+            "ir": ir,
             "top_level_module_name": top_level_module_name,
             "project_name": self.soc_config.project.name,
             "sys_ctrl": self.soc_config.system_controller.model_dump(exclude_none=True) if self.soc_config.system_controller else {},
@@ -609,6 +781,8 @@ class RTLGenerator:
             "env_config": {"dependencies": self.env.registry_dependencies},
             "grouped_ports": grouped_ports,
             "port_mapping": port_mapping,
+            "top_ports": top_ports,
+            "all_extra_ports": all_extra_ports,
             "pad_domains": pad_domains,
             "macro_pragmas": macro_pragmas,
             "original_isle_types": self.original_isle_types,
@@ -751,16 +925,6 @@ class RTLGenerator:
             else:
                 print(f"[WARNING] Required file '{req_file}' not found in component paths.")
                 staged_local_files.add(req_file)
-
-        def sv_dependency_sort(files):
-            def get_rank(f):
-                fname = Path(f).name
-                if fname.endswith('_soc_pkg.sv'): return 0
-                if fname.endswith('_sys_regs_pkg.sv'): return 1
-                if fname.endswith('_noc_pkg.sv'): return 2
-                if fname.endswith('_pkg.sv'): return 3
-                return 4
-            return sorted(files, key=lambda f: (get_rank(f), f))
 
         template_kwargs["external_local_files"] = sv_dependency_sort(external_local_files)
 
@@ -905,11 +1069,10 @@ class RTLGenerator:
         core_clean = strip_comments(core_file.read_text(encoding='utf-8'))
 
         
-        port_pattern = re.compile(r'\b(input|output|inout)\b\s+(?:wire\s+|var\s+)?(logic(?:[\s\[\]0-9a-zA-Z_\-\+\*:]+)?)\s+([a-zA-Z0-9_]+)\s*(?:,|$|\))')
         core_ports = {}
         module_match = re.search(r'\bmodule\s+'+self.soc_config.project.name+r'\b[\s\S]*?\)\s*;', core_clean)
         if module_match:
-            for m in port_pattern.finditer(module_match.group(0)):
+            for m in PORT_PATTERN.finditer(module_match.group(0)):
                 p_type = re.sub(r'\s+', ' ', m.group(2).strip())
                 core_ports[m.group(3).strip()] = {'dir': m.group(1).strip(), 'type': p_type}
                 
@@ -976,10 +1139,6 @@ class RTLGenerator:
                     missing_pads.append((pad_sig, core_sig, core_type, p_dir))
                 else:
                     pad_type = padframe_fields[pad_sig]['type']
-                    def norm_type(t):
-                        t = re.sub(r'\s+', '', t)
-                        t = t.replace('1-1', '0')
-                        return 'logic' if t == 'logic[0:0]' else t
                     if norm_type(core_type) != norm_type(pad_type):
                         fatal_errors.append(f"Width/Type mismatch on '{core_sig}': Core expects '{core_type}', Padframe provides '{pad_type}'")
                     else:
@@ -1068,16 +1227,6 @@ class RTLGenerator:
                     for out_idx in range(outer_msb, outer_lsb + outer_step, outer_step):
                         inner_dims = dims[1:]
                         
-                        def get_suffixes(dims_list):
-                            if not dims_list: return [""]
-                            c_msb, c_lsb = dims_list[0]
-                            c_step = -1 if c_msb >= c_lsb else 1
-                            res = []
-                            for c_idx in range(c_msb, c_lsb + c_step, c_step):
-                                for sub in get_suffixes(dims_list[1:]):
-                                    res.append(f"_{c_idx}{sub}")
-                            return res
-                            
                         inner_suffixes = get_suffixes(inner_dims)
                         chunk_paths = []
                         for suf in inner_suffixes:
@@ -1196,3 +1345,63 @@ class RTLGenerator:
         except Exception as e:
             print(f"\n[ERROR] Failed to render chip_top.sv.mako:\n{e}")
             sys.exit(1)
+
+    def build_architecture_ir(self, comp_info, wiring_matrix, comp_extra_conns, noc_comp_extra_conns, port_mapping, top_ports=None, all_extra_ports=None):
+        ir = SVArchitectureIR()
+        
+        # Register top-level system signals
+        ir.add_signal("clk_i", "logic")
+        ir.add_signal("rst_ni", "logic")
+        ir.add_signal("host_clk", "logic")
+        ir.add_signal("host_rst_n", "logic")
+        ir.add_signal("host_pwr_on_rst_n", "logic")
+        ir.add_signal("rt_clk", "logic")
+        ir.add_signal("test_mode_i", "logic")
+        ir.add_signal("boot_mode_i", "logic", "[1:0]")
+        
+        # Register clock and reset domain arrays
+        num_domains = len(self.soc_config.clock_tree.domains)
+        ir.add_signal("clks", "logic", f"[{num_domains-1}:0]")
+        ir.add_signal("clks_n", "logic", f"[{num_domains-1}:0]")
+        ir.add_signal("rsts_n", "logic", f"[{num_domains-1}:0]")
+        ir.add_signal("pwr_on_rsts_n", "logic", f"[{num_domains-1}:0]")
+        ir.add_signal("sw_rsts_n", "logic", f"[{num_domains-1}:0]")
+
+        # Register exported interface signals (skip if already registered)
+        for pm_name, pm_info in port_mapping.items():
+            if pm_name not in ir.signals:
+                ir.add_signal(pm_name, "logic")
+            
+        ir.add_signal("sys_regs_hwif_out", f"{self.top_level_module_name}_sys_regs_pkg::{self.top_level_module_name}_sys_regs__out_t")
+        ir.add_signal("sys_regs_hwif_in", f"{self.top_level_module_name}_sys_regs_pkg::{self.top_level_module_name}_sys_regs__in_t")
+
+        # Parse top_ports and all_extra_ports to register the correct type and dimensions
+        for port_decl in ((top_ports or []) + (all_extra_ports or [])):
+            port_decl_clean = port_decl.strip()
+            if not port_decl_clean:
+                continue
+            m_dir = re.match(r"^\s*(input|output|inout)\b\s*(.*)$", port_decl_clean)
+            if m_dir:
+                remaining = m_dir.group(2).strip()
+                m_name = re.search(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\\[[^\\]]*\\]\s*)*)$", remaining)
+                if m_name:
+                    sig_name = m_name.group(1)
+                    trailing_dims = m_name.group(2).strip()
+                    type_and_leading_dims = remaining[:m_name.start()].strip()
+                    
+                    m_dim = re.search(r"(\[.*\])$", type_and_leading_dims)
+                    if m_dim:
+                        dimensions = m_dim.group(1) + trailing_dims
+                        sig_type = type_and_leading_dims[:m_dim.start()].strip()
+                    else:
+                        dimensions = trailing_dims
+                        sig_type = type_and_leading_dims
+                    
+                    ir.add_signal(sig_name, sig_type, dimensions)
+
+        if self.soc_config.topology.type == "crossbar":
+            build_crossbar_ir(ir, self.soc_config, comp_info, wiring_matrix, comp_extra_conns)
+        elif self.soc_config.topology.type == "noc":
+            build_noc_ir(ir, self.soc_config, comp_info, noc_comp_extra_conns, self.original_isle_types)
+
+        return ir

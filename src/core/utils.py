@@ -87,3 +87,34 @@ def write_if_changed(file_path: Path, content: str):
     if file_path.is_file() and file_path.read_text(encoding="utf-8", errors="ignore") == content:
         return
     file_path.write_text(content, encoding="utf-8", newline="\n")
+
+def simplify_port_ranges(decl: str) -> str:
+    """
+    Simplifies arithmetic expressions inside square brackets in a port declaration string.
+    E.g. '[2-1:0][1-1:0]' -> '[1:0][0:0]'
+    """
+    def evaluate_simple_arithmetic(expr: str) -> str:
+        expr_clean = expr.strip()
+        if not expr_clean:
+            return expr
+        # Allow only digits, basic arithmetic/bitwise operators, parentheses, and whitespace
+        if re.match(r'^[0-9+\-*/%&|^~<>()\s]+$', expr_clean):
+            try:
+                val = eval(expr_clean)
+                if isinstance(val, (int, float)):
+                    return str(int(val))
+            except Exception:
+                pass
+        return expr
+
+    def replace_bracket(match):
+        content = match.group(1)
+        if ':' in content:
+            parts = content.split(':', 1)
+            p1 = evaluate_simple_arithmetic(parts[0])
+            p2 = evaluate_simple_arithmetic(parts[1])
+            return f"[{p1}:{p2}]"
+        else:
+            return f"[{evaluate_simple_arithmetic(content)}]"
+            
+    return re.sub(r'\[([^\]]+)\]', replace_bracket, decl)
