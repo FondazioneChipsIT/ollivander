@@ -11,3 +11,4 @@ peakrdl-regblock
 peakrdl-cheader
 peakrdl-rawheader
 padrick
+pyEDAA.IPXACT

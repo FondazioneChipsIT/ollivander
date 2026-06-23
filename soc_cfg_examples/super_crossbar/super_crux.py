@@ -28,6 +28,9 @@ config = OllivanderConfig(
         name="super_crux",
         description="Super Crux Heterogeneous Multi-Core SoC Specification with Nested Crux Macro",
         author="Ollivander Generator",
+        vendor="Chips-IT",     # IP-XACT component vendor metadata
+        library="SoC",         # IP-XACT component library name metadata
+        version="1.0.0",       # IP-XACT component version metadata
         build_mode="standalone"
     ),
     

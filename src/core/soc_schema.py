@@ -49,6 +49,9 @@ class Project(BaseModel):
     author: str
     build_mode: Literal["standalone", "macro"] = "standalone"
     macro_settings: Optional[MacroSettings] = None
+    vendor: str = "Ollivander"
+    library: str = "SoC"
+    version: str = "1.0"
 
     @property
     def top_level_module_name(self) -> str:

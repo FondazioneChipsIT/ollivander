@@ -41,7 +41,10 @@ config = OllivanderConfig(
         name="super_mesh",
         description="Massive platform integrating the Mesh and Crux Macros",
         author="Ollivander Generator",
-        build_mode="standalone"
+        build_mode="standalone",
+        vendor="Chips-IT",     # IP-XACT component vendor metadata
+        library="SoC",         # IP-XACT component library name metadata
+        version="1.0.0",       # IP-XACT component version metadata
     ),
     
     # --- TOPOLOGY & INTERCONNECT ---

@@ -41,6 +41,9 @@ Basic metadata used to name the generated packages and top-level modules.
 |                  |        | reusable IP block instead of a complete SoC.                                     |
 | `macro_settings` | Object | *Optional*. Configuration for macro generation. Evaluated only if                |
 |                  |        | `build_mode` is `"macro"`.                                                       |
+| `vendor`         | String | *Optional*. Vendor name for IP-XACT component metadata (default: `"Ollivander"`).|
+| `library`        | String | *Optional*. Library name for IP-XACT component metadata (default: `"SoC"`).       |
+| `version`        | String | *Optional*. Version string for IP-XACT component metadata (default: `"1.0"`).     |
 
 **Macro Settings (`macro_settings`)**:
 Defines the interfaces exported at the top-level boundaries when the SoC is generated as a macro.

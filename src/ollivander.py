@@ -30,6 +30,7 @@ from core.arch_optimizer import optimize_clock_tree, autoconfigure_host
 from core.tool_runners import run_floogen, run_peakrdl, run_verible, run_pre_build_steps, run_padrick
 from core.reporter import print_generation_report
 from core.rtl_generator import RTLGenerator
+from core.ipxact_generator import generate_ipxact
 
 def main():
     # =========================================================================
@@ -415,6 +416,13 @@ def main():
     # Automatically formats all generated SystemVerilog files to ensure a clean,
     # professional and highly readable output.
     run_verible(hw_dir, tb_dir)
+
+    # =========================================================================
+    # 16. PHASE 10: IP-XACT COMPONENT EXPORT
+    # =========================================================================
+    # Generates a standard IEEE 1685 IP-XACT component XML description for
+    # the digital top-level of the SoC.
+    generate_ipxact(soc_config, env, generator, comp_info)
 
     print(f"\n[SUCCESS] Generation complete! Files saved to '{outdir_path.resolve()}'")
 

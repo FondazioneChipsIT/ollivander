@@ -11,6 +11,9 @@ project:
   description: "AI and Machine Learning acceleration platform (Gwaihir clone)"
   author: "Ollivander Generator"
   build_mode: "macro"
+  vendor: "Chips-IT"          # IP-XACT component vendor metadata
+  library: "SoC"              # IP-XACT component library name metadata
+  version: "1.0.0"            # IP-XACT component version metadata
   macro_settings:
     export_type: "isle"
     # Export a single unified standard AXI interface (narrow+wide merged via the join adapter)

@@ -82,6 +82,9 @@ Ollivander parses the Core RTL and the Padrick-generated Padframe package, cross
 ### Phase 9: RTL Formatting
 To ensure a clean, professional, and highly readable output, Ollivander invokes **Verible** to automatically format all generated SystemVerilog code according to strict formatting standards.
 
+### Phase 10: IP-XACT Component Export
+Ollivander generates a standard-compliant IEEE 1685-2014 IP-XACT XML component description for the digital top-level (excluding the padframe) under `<outdir>/hw/ipxact/<project_name>.xml`. It automatically performs schema validation via `pyEDAA.IPXACT` to ensure full compatibility with commercial and open-source EDA tools.
+
 ### Beyond Generation: Software Bridging & Testbench Preloading
 To close the gap between hardware generation and bare-metal validation, Ollivander can fully automate the software build and simulation setup. If defined in your YAML, it will:
 1. Generate a **Linker Script** (`linker.ld`) perfectly synchronized with your SoC's physical memory map, eliminating manual offset errors.
@@ -103,6 +106,7 @@ To close the gap between hardware generation and bare-metal validation, Ollivand
 *   **AXI Isolation**: Heterogeneous SoCs require IPs to be powered down or reset independently. Ollivander automatically generates AXI isolation fences controlled by the central System Controller to prevent bus deadlocks.
 *   **Hardware-to-Software Synchronization**: Linker scripts and C-headers are dynamically generated directly from the hardware specification, guaranteeing that your bare-metal software always targets the correct memory map and peripheral base addresses.
 *   **Physical Chip Wrapping**: Fully automates the tedious and error-prone process of instantiating hundreds of physical I/O pads and routing them to the internal SoC logic.
+*   **IEEE 1685-2014 IP-XACT Generation**: Automatically exports standard-compliant XML component metadata descriptions for the digital core top-level, grouping ports into standard logical interfaces (clocks, resets, AXI4) and setting up view instantiations for seamless EDA tool integration.
 
 ---
 
@@ -140,10 +144,12 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 │   ├── <project_name>_chip.sv    # The final physical chip wrapper (if padframe is used)
 │   ├── <project_name>_soc_pkg.sv
 │   ├── padframe/                 # Auto-generated RTL and packages from Padrick
+│   ├── ipxact/                   # Auto-generated IEEE 1685-2014 IP-XACT XML Component Description
+│   │   └── <project_name>.xml
 │   └── ...
 ├── <sub_sw>/                     # Software bridging artifacts:
 │   ├── <project_name>_soc_regs.h # Auto-generated C-headers for bare-metal CSR access
-│   ├── link.ld                   # Memory-mapped Linker Script
+│   ├── linker.ld                 # Memory-mapped Linker Script
 │   ├── main.c                    # Starter C firmware skeleton
 │   └── *.elf, *.hex              # Compiled software binaries ready for simulation
 ├── <sub_reg>/                    # Register specification files (*.rdl)

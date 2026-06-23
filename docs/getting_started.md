@@ -154,6 +154,11 @@ This command stubs all the external modules, in order to avoid their complete co
 
 For a clean and definitive build, always rely on the full `make generate` command.
 
+### IP-XACT Component Export & Validation
+In addition to the SystemVerilog RTL, Ollivander automatically generates an IEEE 1685-2014 compliant IP-XACT component description XML representing the digital core top-level (without padframe). This XML is saved to `generated/hw/ipxact/<project_name>.xml`.
+
+Every time you run `make generate`, Ollivander parses the written XML back and validates it against the official Accellera schema using `pyEDAA.IPXACT`. If schema validation fails, the generator raises an error and halts the build to ensure that only compliant metadata is produced.
+
 ---
 
 ## 7. Software Development and Simulation

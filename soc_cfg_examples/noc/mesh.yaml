@@ -10,6 +10,9 @@ project:
   name: "mesh"
   description: "AI and Machine Learning acceleration platform (Gwaihir clone)"
   author: "Ollivander Generator"
+  vendor: "Chips-IT"          # IP-XACT component vendor metadata
+  library: "SoC"              # IP-XACT component library name metadata
+  version: "1.0.0"            # IP-XACT component version metadata
 
 # ------------------------------------------------------------------------------
 # 1. TOPOLOGY & INTERCONNECT
