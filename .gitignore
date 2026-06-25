@@ -8,6 +8,7 @@ generated/
 # Hardware Dependency Manager (Bender)
 bender_work/
 .bender/
+Bender.local
 Bender.lock
 Bender.yml
 compile.tcl
@@ -48,3 +49,8 @@ Thumbs.db
 
 # Others
 _ext_references/
+
+# Logs and temporary tool outputs
+*.log
+fast_check.log
+.tmp_llvm_bin/

@@ -1,246 +1,333 @@
-# 3.3V Pad Domain - Low-Speed Interfaces & System Control
-
 - name: PAD_UART_TX
-  description: "Dedicated UART TX Pad"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_V
   is_static: true
+  description: Dedicated UART TX Pad
   connections:
     chip2pad: uart_tx_o
-
+    output_en: 1'b1
+    drive_strength: uart_tx_drv_str
+    slew_en: uart_tx_slew_en
 - name: PAD_UART_RX
-  description: "Dedicated UART RX Pad"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Dedicated UART RX Pad
   connections:
     pad2chip: uart_rx_i
-
+    input_en: 1'b1
+    pu_en: 1'b1
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_UART_RTS_N
-  description: "UART RTS"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_V
   is_static: true
+  description: UART RTS
   connections:
     chip2pad: uart_rts_no
-
+    output_en: 1'b1
 - name: PAD_UART_DTR_N
-  description: "UART DTR"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_V
   is_static: true
+  description: UART DTR
   connections:
     chip2pad: uart_dtr_no
-
+    output_en: 1'b1
 - name: PAD_UART_CTS_N
-  description: "UART CTS"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: UART CTS
   connections:
     pad2chip: uart_cts_ni
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_UART_DSR_N
-  description: "UART DSR"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: UART DSR
   connections:
     pad2chip: uart_dsr_ni
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_UART_DCD_N
-  description: "UART DCD"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: UART DCD
   connections:
     pad2chip: uart_dcd_ni
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_UART_RIN_N
-  description: "UART RIN"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: UART RIN
   connections:
     pad2chip: uart_rin_ni
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_I2C_SDA
-  description: "Dedicated I2C SDA Pad"
-  pad_type: PAD_BIDIR
+  pad_type: PAD_BIDIR_V
   is_static: true
+  description: Dedicated I2C SDA Pad
   connections:
-    chip2pad: i2c_sda_o
     pad2chip: i2c_sda_i
-    paden2chip: i2c_sda_en_o
-
+    chip2pad: i2c_sda_o
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: i2c_sda_en_o
 - name: PAD_I2C_SCL
-  description: "Dedicated I2C SCL Pad"
-  pad_type: PAD_BIDIR
+  pad_type: PAD_BIDIR_V
   is_static: true
+  description: Dedicated I2C SCL Pad
   connections:
-    chip2pad: i2c_scl_o
     pad2chip: i2c_scl_i
-    paden2chip: i2c_scl_en_o
-
+    chip2pad: i2c_scl_o
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: i2c_scl_en_o
 - name: PAD_JTAG_TCK
-  description: "Dedicated JTAG TCK Pad"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Dedicated JTAG TCK Pad
   connections:
     pad2chip: jtag_tck_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_JTAG_TDI
-  description: "Dedicated JTAG TDI Pad"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Dedicated JTAG TDI Pad
   connections:
     pad2chip: jtag_tdi_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_JTAG_TDO
-  description: "Dedicated JTAG TDO Pad"
-  pad_type: PAD_BIDIR
+  pad_type: PAD_BIDIR_V
   is_static: true
+  description: Dedicated JTAG TDO Pad
   connections:
     chip2pad: jtag_tdo_o
-    paden2chip: jtag_tdo_oe_o
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: jtag_tdo_oe_o
 - name: PAD_JTAG_TMS
-  description: "Dedicated JTAG TMS Pad"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Dedicated JTAG TMS Pad
   connections:
     pad2chip: jtag_tms_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_TEST_MODE
-  description: "Test Mode"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Test Mode
   connections:
     pad2chip: test_mode_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_JTAG_TRST_N
-  description: "JTAG TRST"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: JTAG TRST
   connections:
     pad2chip: jtag_trst_ni
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_SAFE_JTAG_TCK
-  description: "Safety Island JTAG TCK"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Safety Island JTAG TCK
   connections:
     pad2chip: safety_island_jtag_tck_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_SAFE_JTAG_TMS
-  description: "Safety Island JTAG TMS"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Safety Island JTAG TMS
   connections:
     pad2chip: safety_island_jtag_tms_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_SAFE_JTAG_TDI
-  description: "Safety Island JTAG TDI"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Safety Island JTAG TDI
   connections:
     pad2chip: safety_island_jtag_tdi_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_SAFE_JTAG_TDO
-  description: "Safety Island JTAG TDO"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_V
   is_static: true
+  description: Safety Island JTAG TDO
   connections:
     chip2pad: safety_island_jtag_tdo_o
-
+    output_en: 1'b1
 - name: PAD_SAFE_JTAG_TRST_N
-  description: "Safety Island JTAG TRST"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Safety Island JTAG TRST
   connections:
     pad2chip: safety_island_jtag_trst_ni
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_SEC_JTAG_TCK
-  description: "Security Island JTAG TCK"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Security Island JTAG TCK
   connections:
     pad2chip: security_island_jtag_tck_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_SEC_JTAG_TMS
-  description: "Security Island JTAG TMS"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Security Island JTAG TMS
   connections:
     pad2chip: security_island_jtag_tms_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_SEC_JTAG_TDI
-  description: "Security Island JTAG TDI"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Security Island JTAG TDI
   connections:
     pad2chip: security_island_jtag_tdi_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_SEC_JTAG_TDO
-  description: "Security Island JTAG TDO"
-  pad_type: PAD_BIDIR
+  pad_type: PAD_BIDIR_V
   is_static: true
+  description: Security Island JTAG TDO
   connections:
     chip2pad: security_island_jtag_tdo_o
-    paden2chip: security_island_jtag_tdo_oe_o
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: security_island_jtag_tdo_oe_o
 - name: PAD_SEC_JTAG_TRST_N
-  description: "Security Island JTAG TRST"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Security Island JTAG TRST
   connections:
     pad2chip: security_island_jtag_trst_ni
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_SEC_UART_TX
-  description: "Security Island UART TX"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_V
   is_static: true
+  description: Security Island UART TX
   connections:
     chip2pad: security_island_uart_tx_o
-
+    output_en: 1'b1
+    drive_strength: uart_tx_drv_str
+    slew_en: uart_tx_slew_en
 - name: PAD_SEC_UART_RX
-  description: "Security Island UART RX"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: Security Island UART RX
   connections:
     pad2chip: security_island_uart_rx_i
-
+    input_en: 1'b1
+    pu_en: 1'b1
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_APB_RX
-  description: "APB Subsystem RX"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: APB Subsystem RX
   connections:
     pad2chip: apb_subsystem_rx_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_APB_TX
-  description: "APB Subsystem TX"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_V
   is_static: true
+  description: APB Subsystem TX
   connections:
     chip2pad: apb_subsystem_tx_o
-
+    output_en: 1'b1
 - name: PAD_CAN_RX
-  description: "CAN Bus RX"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_V
   is_static: true
+  description: CAN Bus RX
   connections:
     pad2chip: apb_subsystem_can_bus_rx_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_CAN_TX
-  description: "CAN Bus TX"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_V
   is_static: true
+  description: CAN Bus TX
   connections:
     chip2pad: apb_subsystem_can_bus_tx_o
-
+    output_en: 1'b1
 - name: PAD_CAN_EVENT
-  description: "CAN Bus Event"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_V
   is_static: true
+  description: CAN Bus Event
   connections:
     chip2pad: apb_subsystem_can_bus_event_o
-
-- name: "PAD_BOOT_MODE_{i}"
-  description: "Boot Mode {i}"
-  pad_type: PAD_INPUT
+    output_en: 1'b1
+- name: PAD_BOOT_MODE_{i}
+  pad_type: PAD_INPUT_V
   multiple: 2
   is_static: true
+  description: Boot Mode {i}
   connections:
     pad2chip: boot_mode_i_{i}
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+- name: pad_muxed_gpio_{i}
+  pad_type: PAD_BIDIR_V
+  multiple: 8
+  is_static: false
+  default_port: soc_exports.gpio_{i}
+  description: GPIO Bus (muxed)

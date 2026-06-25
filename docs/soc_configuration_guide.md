@@ -129,19 +129,55 @@ Delegates the physical pad ring definition to **Padrick**, while Ollivander auto
 | `size`         | Int/Hex | *Optional*. Size of the memory region (default: `0x1000`).                        |
 | `sync_domain`  | Boolean | *Optional*. `true` = Host Clock, `false` = Uses async CDC adapter for the         |
 |                |         | configuration bus (default: `false`).                                             |
-|`domains`       | List    | A list of power/voltage domains containing the physical pad definitions.          |
+| `domains`       | List    | A list of power/voltage domains containing the physical pad definitions.          |
 | `padrick_cfg`  | String  | *Optional*. Path to a custom Padrick `config_top.yml` (overrides the `domains`    |
 |                |         | list).                                                                            |
+| `pad_csv`      | String  | *Optional*. Path to a CSV file defining the padlist dynamically across domains.    |
+| `pad_py`       | String  | *Optional*. Path to a Python file defining the padlist dynamically across domains. |
 | `header_file`  | String  | *Optional*. Path to a text file for the RTL header (auto-generates standard       |
 |                |         | license if omitted).                                                              |
 
 **Domain Object (`domains` list):**
 Used to partition pads into multiple power or I/O domains (e.g., 1.8V vs 3.3V).
 *   `name`: String. Name of the domain (e.g., `domain_1v8`).
-*   `tech`: String. Name of the technology catalog file to use (e.g., `behavioral`, `tsmc28_io`). Ollivander looks for this file in the `padframes/tech/` directory of the component search paths.
-*   `pad_list`: String. Path to the YAML file detailing the specific pads for this domain.
+*   `tech`: String. Name of the technology catalog file to use (e.g., `behavioral`, `tsmc28_io`). Ollivander looks for this catalog as `padframes/<tech_name>/<tech_name>.yml` under the component search paths (e.g. `components/padframes/<tech_name>/<tech_name>.yml`).
+*   `pad_list`: String. *Optional*. Path to the YAML file detailing the specific pads for this domain. Required only if neither `pad_csv` nor `pad_py` is specified.
 
----
+**Example Padframe Configuration (showing the 3 alternative definition methods):**
+```yaml
+padframe:
+  name: "crux_padframe"
+  base_addr: 0x200A0000
+  sync_domain: false
+
+  # --- Alternative 1: CSV Padlist (Default) ---
+  pad_csv: "crux_pads.csv"
+  domains:
+    - name: "domain_1v8"
+      tech: "behavioral"
+    - name: "domain_3v3"
+      tech: "behavioral"
+
+  # --- Alternative 2: Python Dynamic Padlist ---
+  # pad_py: "crux_pads.py"
+  # domains:
+  #   - name: "domain_1v8"
+  #     tech: "behavioral"
+  #   - name: "domain_3v3"
+  #     tech: "behavioral"
+
+  # --- Alternative 3: YAML Padlists ---
+  # domains:
+  #   - name: "domain_1v8"
+  #     tech: "behavioral"
+  #     pad_list: "crux_pad_list_1v8.yml"
+  #   - name: "domain_3v3"
+  #     tech: "behavioral"
+  #     pad_list: "crux_pad_list_3v3.yml"
+```
+
+For a comprehensive guide explaining the padframe definition options and technology directory layouts in detail, see the [Padframe Configuration Guide](padframe_configuration_guide.md).
+
 
 ## 3. Host and Components (`host`, `components`)
 

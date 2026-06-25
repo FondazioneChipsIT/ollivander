@@ -74,7 +74,7 @@ If the NoC topology is selected, Ollivander invokes `floogen` to generate the No
 Ollivander invokes **PeakRDL** to parse the generated SystemRDL files. This produces the synthesis-ready SystemVerilog for the System Controller (handling software resets, AXI isolation, and clock gating) and the C-header files (`.h`) for bare-metal software drivers.
 
 ### Phase 7: Padframe Generation (Optional)
-If a padframe is defined, Ollivander delegates the physical I/O ring and pinmux generation to **Padrick**. It supports multiple power domains and generates the CSRs and the RTL for the complete pad ring.
+If a padframe is defined, Ollivander delegates the physical I/O ring and pinmux generation to **Padrick**. Ollivander supports three options for defining the pad list: flat CSV files (`.csv`), dynamic Python generator scripts (`.py`), or native Padrick YAML files (`.yml`). It supports multiple power domains and generates the CSRs and the RTL for the complete pad ring. For more details, refer to the [Padframe Configuration Guide](docs/padframe_configuration_guide.md).
 
 ### Phase 8: Chip Wrapper Engine (Optional)
 Ollivander parses the Core RTL and the Padrick-generated Padframe package, cross-validating the exact port struct signatures. It then safely renders the final `<project_name>_chip.sv` physical wrapper, instantiating the core, the padframe, and the necessary Clock Domain Crossing (CDC) adapters for the configuration bus.
@@ -105,7 +105,7 @@ To close the gap between hardware generation and bare-metal validation, Ollivand
 *   **Decoupled Register Specifications**: Third-party IP registers are discovered dynamically via the `// PEAKRDL: source="..." map="..."` pragma inside their SystemVerilog wrappers, allowing Ollivander to automatically build a unified global C-header for the software stack.
 *   **AXI Isolation**: Heterogeneous SoCs require IPs to be powered down or reset independently. Ollivander automatically generates AXI isolation fences controlled by the central System Controller to prevent bus deadlocks.
 *   **Hardware-to-Software Synchronization**: Linker scripts and C-headers are dynamically generated directly from the hardware specification, guaranteeing that your bare-metal software always targets the correct memory map and peripheral base addresses.
-*   **Physical Chip Wrapping**: Fully automates the tedious and error-prone process of instantiating hundreds of physical I/O pads and routing them to the internal SoC logic.
+*   **Physical Chip Wrapping**: Fully automates the tedious and error-prone process of instantiating hundreds of physical I/O pads and routing them to the internal SoC logic (supporting CSV, Python, and native YAML inputs; see [Padframe Configuration Guide](docs/padframe_configuration_guide.md)).
 *   **IEEE 1685-2014 IP-XACT Generation**: Automatically exports standard-compliant XML component metadata descriptions for the digital core top-level, grouping ports into standard logical interfaces (clocks, resets, AXI4) and setting up view instantiations for seamless EDA tool integration.
 *   **NoC Design Rule Checking & Latency Reports**: Includes a built-in NoC Placement Checker (NPC) that validates manual tile coordinates, detects physical collision/overlap conflicts, and generates a latency/routing report with the Manhattan hop-count matrix.
 
@@ -113,17 +113,25 @@ To close the gap between hardware generation and bare-metal validation, Ollivand
 
 ## 5. Usage
 
-Ollivander provides a fully automated `Makefile` workflow. To start a new project:
+Ollivander provides a fully automated `Makefile` workflow powered by a shared config file (`ollivander.mk`). To start a new project:
 
-1. **Setup the Environment**: Copy the sample Makefile and install dependencies (it automatically uses `uv` if available, or falls back to `pip`):
-```bash
-cp Makefile.sample Makefile
-make setup
+1. **Prepare YAML Configurations**: Create your SoC architectural specification YAML (e.g., `my_project.yaml`) and your environment bridge YAML (e.g., `my_project_env.yaml`). You can find examples in the `soc_cfg_examples/` directory.
+
+2. **Create the Project Makefile**: Create a file named `Makefile` in the root of your project directory, defining your project configuration variables and including the shared `ollivander.mk`:
+```makefile
+# Path to the root of the Ollivander repository/submodule
+OLLIVANDER_ROOT := .
+SOC_YAML        := my_project.yaml
+ENV_YAML        := my_project_env.yaml
+OUT_DIR         := generated
+
+include $(OLLIVANDER_ROOT)/ollivander.mk
 ```
 
-2. **Prepare YAML Configurations**: Create your SoC architectural specification YAML (e.g., `my_project.yaml`) and your environment bridge YAML (e.g., `my_project_env.yaml`). You can find examples in the `soc_cfg/` directory.
-
-3. **Configure the Makefile**: Open your newly copied `Makefile` and update the `SOC_YAML` and `ENV_YAML` variables to point to your files.
+3. **Setup the Environment**: Install dependencies and tools (it automatically uses `uv` if available, or falls back to `pip`):
+```bash
+make setup
+```
 
 4. **Generate the SoC**: Run the generator using the `make` target:
 ```bash
@@ -166,8 +174,8 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 
 ## 6. Directory Structure
 
-*   `Makefile.sample`: The starting point for project automation and environment setup.
-*   `ollivander_config.yaml`: Environment configuration and centralized dependency registry.
+*   `ollivander.mk`: Shared Makefile containing the central build rules and setup routines.
+*   `ollivander_config.yml`: Environment configuration and centralized dependency registry.
 *   `src/`: The core engine, containing the Python scripts (`ollivander.py`, `soc_schema.py`, `wiring.py`) and the `templates/` folder (Mako blueprints for SystemVerilog and C).
 *   `soc_cfg_examples/`: Contains example YAML configurations (the "Single Source of Truth" for the SoC).
 *   `components/isles/`: Standardized SystemVerilog wrappers (and their Mako templates if dynamically generated) for the hardware IPs.

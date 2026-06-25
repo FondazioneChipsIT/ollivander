@@ -1,217 +1,299 @@
-# 1.8V Pad Domain - High-Speed Interfaces & Clocks
-
-- name: PAD_CLK
-  description: "Global Clock"
-  pad_type: PAD_INPUT
+- name: config_tc_pad
+  pad_type: CONFIG_TC_PAD_DEF
   is_static: true
+  description: Config pad definition
+- name: corner_{i}
+  pad_type: PAD_CORNER
+  multiple: 4
+  is_static: true
+  description: Corner pad
+- name: vdd_io_{i}_h
+  pad_type: PAD_VDD_IO_H
+  multiple: 2
+  is_static: true
+  description: I/O VDD Supply
+- name: vss_io_{i}_h
+  pad_type: PAD_VSS_IO_H
+  multiple: 2
+  is_static: true
+  description: I/O VSS Supply
+- name: vdd_core_{i}_h
+  pad_type: PAD_VDD_CORE_H
+  multiple: 3
+  is_static: true
+  description: Core VDD Supply
+- name: vss_core_{i}_h
+  pad_type: PAD_VSS_CORE_H
+  multiple: 2
+  is_static: true
+  description: Core VSS Supply
+- name: PAD_CLK
+  pad_type: PAD_INPUT_H
+  is_static: true
+  description: Global Clock
   connections:
     pad2chip: ref_clk_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_RST_N
-  description: "Global Reset (Active Low)"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_H
   is_static: true
+  description: Global Reset (Active Low)
   connections:
     pad2chip: pwr_on_rst_ni
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_ETH_MDIO
-  description: "Ethernet MDIO"
-  pad_type: PAD_BIDIR
+  pad_type: PAD_BIDIR_H
   is_static: true
+  description: Ethernet MDIO
   connections:
-    chip2pad: ethernet_phy_mdio_o
     pad2chip: ethernet_phy_mdio_i
-    paden2chip: ethernet_phy_mdio_oe
-
+    chip2pad: ethernet_phy_mdio_o
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: ethernet_phy_mdio_oe
 - name: PAD_SPI_SCK
-  description: "Host SPI SCK"
-  pad_type: PAD_BIDIR
+  pad_type: PAD_BIDIR_H
   is_static: true
+  description: Host SPI SCK
   connections:
     chip2pad: spi_sck_o
-    paden2chip: spi_sck_en_o
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: spi_sck_en_o
 - name: PAD_SPI_CSB
-  description: "Host SPI CSB"
-  pad_type: PAD_BIDIR
+  pad_type: PAD_BIDIR_H
   is_static: true
+  description: Host SPI CSB
   connections:
     chip2pad: spi_csb_o
-    paden2chip: spi_csb_en_o
-
-- name: "PAD_SPI_SD_{i}"
-  description: "Host SPI SD {i}"
-  pad_type: PAD_BIDIR
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: spi_csb_en_o
+- name: PAD_SPI_SD_{i}
+  pad_type: PAD_BIDIR_H
   multiple: 4
   is_static: true
+  description: Host SPI SD {i}
   connections:
-    chip2pad: spi_sd_o_{i}
     pad2chip: spi_sd_i_{i}
-    paden2chip: spi_sd_en_o_{i}
-
-- name: "PAD_HYPERBUS_CK_{i}"
-  description: "Hyperbus CK {i}"
-  pad_type: PAD_OUTPUT
+    chip2pad: spi_sd_o_{i}
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: spi_sd_en_o_{i}
+- name: PAD_HYPERBUS_CK_{i}
+  pad_type: PAD_OUTPUT_H
   multiple: 2
   is_static: true
+  description: Hyperbus CK {i}
   connections:
     chip2pad: hyperbus_ck_o_{i}
-
-- name: "PAD_HYPERBUS_CK_NO_{i}"
-  description: "Hyperbus CK_NO {i}"
-  pad_type: PAD_OUTPUT
+    output_en: 1'b1
+- name: PAD_HYPERBUS_CK_NO_{i}
+  pad_type: PAD_OUTPUT_H
   multiple: 2
   is_static: true
+  description: Hyperbus CK_NO {i}
   connections:
     chip2pad: hyperbus_ck_no_{i}
-
-- name: "PAD_HYPERBUS_CS_{i}"
-  description: "Hyperbus CS {i}"
-  pad_type: PAD_OUTPUT
+    output_en: 1'b1
+- name: PAD_HYPERBUS_CS_{i}
+  pad_type: PAD_OUTPUT_H
   multiple: 2
   is_static: true
+  description: Hyperbus CS {i}
   connections:
     chip2pad: hyperbus_cs_no_{i}_0
-
-- name: "PAD_HYPERBUS_RWDS_{i}"
-  description: "Hyperbus RWDS {i}"
-  pad_type: PAD_BIDIR
+    output_en: 1'b1
+- name: PAD_HYPERBUS_RWDS_{i}
+  pad_type: PAD_BIDIR_H
   multiple: 2
   is_static: true
+  description: Hyperbus RWDS {i}
   connections:
-    chip2pad: hyperbus_rwds_o_{i}
     pad2chip: hyperbus_rwds_i_{i}
-    paden2chip: hyperbus_rwds_oe_o_{i}
-
-- name: "PAD_HYPERBUS_DQ_0_{i}"
-  description: "Hyperbus DQ 0 {i}"
-  pad_type: PAD_BIDIR
+    chip2pad: hyperbus_rwds_o_{i}
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: hyperbus_rwds_oe_o_{i}
+- name: PAD_HYPERBUS_DQ_0_{i}
+  pad_type: PAD_BIDIR_H
   multiple: 8
   is_static: true
+  description: Hyperbus DQ 0 {i}
   connections:
-    chip2pad: hyperbus_dq_o_0_{i}
     pad2chip: hyperbus_dq_i_0_{i}
-    paden2chip: hyperbus_dq_oe_o_0
-
-- name: "PAD_HYPERBUS_DQ_1_{i}"
-  description: "Hyperbus DQ 1 {i}"
-  pad_type: PAD_BIDIR
+    chip2pad: hyperbus_dq_o_0_{i}
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: hyperbus_dq_oe_o_0
+- name: PAD_HYPERBUS_DQ_1_{i}
+  pad_type: PAD_BIDIR_H
   multiple: 8
   is_static: true
+  description: Hyperbus DQ 1 {i}
   connections:
-    chip2pad: hyperbus_dq_o_1_{i}
     pad2chip: hyperbus_dq_i_1_{i}
-    paden2chip: hyperbus_dq_oe_o_1
-
-- name: "PAD_HYPERBUS_RESET_{i}"
-  description: "Hyperbus Reset {i}"
-  pad_type: PAD_OUTPUT
+    chip2pad: hyperbus_dq_o_1_{i}
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: hyperbus_dq_oe_o_1
+- name: PAD_HYPERBUS_RESET_{i}
+  pad_type: PAD_OUTPUT_H
   multiple: 2
   is_static: true
+  description: Hyperbus Reset {i}
   connections:
     chip2pad: hyperbus_reset_no_{i}
-
+    output_en: 1'b1
 - name: PAD_SEC_SPI_SCK
-  description: "Security Island SPI SCK"
-  pad_type: PAD_BIDIR
+  pad_type: PAD_BIDIR_H
   is_static: true
+  description: Security Island SPI SCK
   connections:
     chip2pad: security_island_spi_host_sck_o
-    paden2chip: security_island_spi_host_sck_en_o
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: security_island_spi_host_sck_en_o
 - name: PAD_SEC_SPI_CSB
-  description: "Security Island SPI CSB"
-  pad_type: PAD_BIDIR
+  pad_type: PAD_BIDIR_H
   is_static: true
+  description: Security Island SPI CSB
   connections:
     chip2pad: security_island_spi_host_csb_o
-    paden2chip: security_island_spi_host_csb_en_o
-
-- name: "PAD_SEC_SPI_SD_{i}"
-  description: "Security Island SPI SD {i}"
-  pad_type: PAD_BIDIR
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: security_island_spi_host_csb_en_o
+- name: PAD_SEC_SPI_SD_{i}
+  pad_type: PAD_BIDIR_H
   multiple: 4
   is_static: true
+  description: Security Island SPI SD {i}
   connections:
-    chip2pad: security_island_spi_host_sd_o_{i}
     pad2chip: security_island_spi_host_sd_i_{i}
-    paden2chip: security_island_spi_host_sd_en_o_{i}
-
+    chip2pad: security_island_spi_host_sd_o_{i}
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+    output_en: security_island_spi_host_sd_en_o_{i}
 - name: PAD_ETH_RX_CLK
-  description: "Ethernet RX Clock"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_H
   is_static: true
+  description: Ethernet RX Clock
   connections:
     pad2chip: ethernet_phy_rx_clk_i
-
-- name: "PAD_ETH_RXD_{i}"
-  description: "Ethernet RX Data {i}"
-  pad_type: PAD_INPUT
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
+- name: PAD_ETH_RXD_{i}
+  pad_type: PAD_INPUT_H
   multiple: 4
   is_static: true
+  description: Ethernet RX Data {i}
   connections:
     pad2chip: ethernet_phy_rxd_i_{i}
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_ETH_RX_CTL
-  description: "Ethernet RX Control"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_H
   is_static: true
+  description: Ethernet RX Control
   connections:
     pad2chip: ethernet_phy_rx_ctl_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_ETH_TX_CLK
-  description: "Ethernet TX Clock"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_H
   is_static: true
+  description: Ethernet TX Clock
   connections:
     chip2pad: ethernet_phy_tx_clk_o
-
-- name: "PAD_ETH_TXD_{i}"
-  description: "Ethernet TX Data {i}"
-  pad_type: PAD_OUTPUT
+    output_en: 1'b1
+- name: PAD_ETH_TXD_{i}
+  pad_type: PAD_OUTPUT_H
   multiple: 4
   is_static: true
+  description: Ethernet TX Data {i}
   connections:
     chip2pad: ethernet_phy_txd_o_{i}
-
+    output_en: 1'b1
 - name: PAD_ETH_TX_CTL
-  description: "Ethernet TX Control"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_H
   is_static: true
+  description: Ethernet TX Control
   connections:
     chip2pad: ethernet_phy_tx_ctl_o
-
+    output_en: 1'b1
 - name: PAD_ETH_RESETN
-  description: "Ethernet PHY Reset"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_H
   is_static: true
+  description: Ethernet PHY Reset
   connections:
     chip2pad: ethernet_phy_resetn_o
-
+    output_en: 1'b1
 - name: PAD_ETH_MDC
-  description: "Ethernet MDC"
-  pad_type: PAD_OUTPUT
+  pad_type: PAD_OUTPUT_H
   is_static: true
+  description: Ethernet MDC
   connections:
     chip2pad: ethernet_phy_mdc_o
-
+    output_en: 1'b1
 - name: PAD_ETH_INTN
-  description: "Ethernet PHY Interrupt"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_H
   is_static: true
+  description: Ethernet PHY Interrupt
   connections:
     pad2chip: ethernet_phy_intn_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_ETH_PME
-  description: "Ethernet PHY Power Management Event"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_H
   is_static: true
+  description: Ethernet PHY Power Management Event
   connections:
     pad2chip: ethernet_phy_pme_i
-
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1
 - name: PAD_ETH_CLK200
-  description: "Ethernet 200MHz Clock"
-  pad_type: PAD_INPUT
+  pad_type: PAD_INPUT_H
   is_static: true
+  description: Ethernet 200MHz Clock
   connections:
     pad2chip: ethernet_eth_clk200_i
+    input_en: 1'b1
+    pu_en: 1'b0
+    pd_en: 1'b0
+    schmitt_en: 1'b1

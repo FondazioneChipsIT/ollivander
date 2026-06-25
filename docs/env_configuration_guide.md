@@ -11,7 +11,7 @@ The environment configuration tells Ollivander:
 
 ## 1. File Precedence and Overrides
 
-Ollivander uses a base configuration file, usually named `ollivander_config.yaml`, located in the generator's root directory. **You should never modify this file directly.**
+Ollivander uses a base configuration file, usually named `ollivander_config.yml`, located in the generator's root directory. **You should never modify this file directly.**
 
 Instead, when integrating Ollivander into your project, you should create a project-specific environment file (e.g., `my_project_env.yaml`) and pass it to the generator using the `-a` (`--append-env`) flag:
 
@@ -94,7 +94,7 @@ Some IPs contain multiple implementations (e.g., FPGA vs ASIC) or optional sub-m
 | `bender_targets` | List of Strings | A list of targets that will be automatically passed to `bender script    |
 |                  |                 | vsim` when compiling the SoC (e.g., `["cva6", "fpga_synth"]`).           |
 
-*Note: If you define `bender_targets` for an existing IP in your custom project environment file, it will **completely replace** the default targets defined in the base `ollivander_config.yaml`. If you want to add a target while keeping the default ones, you must list both the default targets and your new target in your custom file.*
+*Note: If you define `bender_targets` for an existing IP in your custom project environment file, it will **completely replace** the default targets defined in the base `ollivander_config.yml`. If you want to add a target while keeping the default ones, you must list both the default targets and your new target in your custom file.*
 
 ### 3.3 Pre-Build Tooling and Scripts
 Sometimes an IP needs to generate some files, download models, or install python libraries *before* the RTL can be compiled or simulated. Ollivander handles this automatically in Python immediately after fetching the IPs via Bender.

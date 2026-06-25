@@ -23,8 +23,9 @@ prometheus_soc/
 ├── hw_ips/                  <-- Your custom IPs and wrappers (*_isle.sv)
 │   ├── aes_crypto_isle.sv
 │   └── padframes/           <-- Custom Padframe technology catalogs (Optional)
-│       └── tech/
-│           └── my_custom_io.yml
+│       └── my_custom_io/
+│           ├── my_custom_io.yml
+│           └── my_custom_io_cells.sv
 ├── prometheus_env.yaml      <-- Environment bridge file (YAML)
 ├── prometheus.yaml          <-- Your SoC specification (YAML or .py script)
 └── Makefile                 <-- Project automation
@@ -71,11 +72,18 @@ git clone --recursive https://github.com/your-org/prometheus_soc.git
 ```
 
 ### 3.4 Step 4: Setup the Makefile & Environment
-Ollivander provides a ready-to-use Makefile template to automate your entire workflow, including environment setup and simulation.
-```bash
-cp tools/ollivander/Makefile.sample Makefile
+Create a file named `Makefile` in the root of your project directory (`prometheus_soc/Makefile`). Set the environment variables to point to the Ollivander submodule directory, your SoC design YAML, and your environment YAML, and then include the shared `ollivander.mk` file:
+
+```makefile
+OLLIVANDER_ROOT := tools/ollivander
+SOC_YAML        := prometheus.yaml
+ENV_YAML        := prometheus_env.yaml
+OUT_DIR         := generated
+
+include $(OLLIVANDER_ROOT)/ollivander.mk
 ```
-Then, install all the required Python dependencies (it will automatically use `uv` if available, otherwise it falls back to `pip`):
+
+Then, install all the required Python dependencies and tools (it will automatically use `uv` if available, otherwise it falls back to `pip`):
 ```bash
 make setup
 ```
@@ -86,7 +94,7 @@ make setup
 
 The Environment Configuration file (e.g., `prometheus_env.yaml`) is the bridge between the SoC specification and the physical workstation layout. It defines where files are read from, where they are generated, and how third-party dependencies are retrieved and patched.
 
-Ollivander merges this project-specific environment file with the base configuration (`ollivander_config.yaml`). **Your custom settings always take precedence.**
+Ollivander merges this project-specific environment file with the base configuration (`ollivander_config.yml`). **Your custom settings always take precedence.**
 
 Below is a detailed guide on how to configure this file, along with complete examples for each section.
 
@@ -110,7 +118,7 @@ paths:
   templates:
     - "custom_templates"           # Directories with custom *.mako templates (precedes src/templates)
   components:
-    - "hw_ips"                     # Look for local custom isles, tiles, or padframe catalogs here
+    - "hw_ips"                     # Look for local custom isles, tiles, or padframe catalogs (e.g. hw_ips/padframes/) here
   rdl_includes:
     - "custom_regs"                # Search path for priority SystemRDL specs (overrides external registers)
 ```
@@ -146,7 +154,7 @@ dependencies:
       - "simulation"
 ```
 > [!IMPORTANT]
-> Defining `bender_targets` in your custom file will completely replace the targets defined in the base `ollivander_config.yaml`. To append targets, you must list both the defaults and your new additions.
+> Defining `bender_targets` in your custom file will completely replace the targets defined in the base `ollivander_config.yml`. To append targets, you must list both the defaults and your new additions.
 
 #### 4.2.3 Pre-Build Scripting & Commands (`pre_build_cmds` / `pre_build_script`)
 Some hardware components require pre-generation steps (e.g., generating register files or compiling intermediate tooling). Ollivander executes these immediately after downloading the dependency.
@@ -203,6 +211,10 @@ dependencies:
 
 If you want to instantiate your own custom hardware block (e.g., an AES accelerator) inside the SoC, or provide custom Padframe technology catalogs to Padrick, place your files inside your `hw_ips/` folder.
 
+Similarly, if you have a custom padframe technology (e.g., `my_custom_io`), place it in `hw_ips/padframes/my_custom_io/`. Inside this directory, provide the Padrick-compatible technology configuration file (`my_custom_io.yml`) alongside any auxiliary SystemVerilog wrapper/cell files. Ollivander will automatically locate the `.yml` file and glob all `*.sv` files in that folder for compilation.
+
+For details on how to write padframe configurations using the three modalities (CSV, Python, native YAML), see the [Padframe Configuration Guide](padframe_configuration_guide.md).
+
 **Rule:** You must never modify the files inside `tools/ollivander/components/`.
 
 Instead, register the folder in your `paths.components` list of your environment file (as shown in [Section 4.1](#41-paths-configuration-paths)).
@@ -232,7 +244,7 @@ project:
 
 ## 7. Validation, Generation and Simulation
 
-Open the `Makefile` you copied in Step 4 and ensure the variables (`SOC_YAML`, `ENV_YAML`) match your actual filenames. 
+Ensure the variables (`SOC_YAML`, `ENV_YAML`) in your project's `Makefile` match your actual filenames. 
 
 ### 7.1 Hardware Generation
 To build your SoC and automatically compile the bare-metal software, run:

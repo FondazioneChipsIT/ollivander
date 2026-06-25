@@ -1,0 +1,59 @@
+# Copyright 2026 Fondazione Chips-IT.
+# Licensed under the Solderpad Hardware License, Version 0.51, see LICENSE for details.
+# SPDX-License-Identifier: SHL-0.51
+#
+
+paths:
+  # The {outdir} placeholder is dynamically replaced by the generator
+  bender_manifest: "Bender.yml"
+  components:
+    - "../noc_isle/generated/hw"
+    - "../noc_subtile/generated/hw"
+  rdl_includes:
+    - "../noc_isle/generated/reg"
+    - "../noc_subtile/generated/reg"
+
+overrides:
+  apb: { git: "https://github.com/pulp-platform/apb.git", rev: "4821618d652cb2b219483f037395b902771a44dd" }
+  apb_uart: { git: "https://github.com/pulp-platform/apb_uart.git", rev: "8182a85d234417db46fe833533f8536644d3bee3" }
+  axi: { git: "https://github.com/pulp-platform/axi.git", rev: "02d804468a6fa0be8b7f676e9d83af2f52b671bf" }
+  axi_llc: { git: "https://github.com/pulp-platform/axi_llc.git", rev: "59bb8a681347e1133f11a82190fbf4bc11900d9e" }
+  axi_obi: { git: "https://github.com/pulp-platform/axi_obi.git", rev: "84f21a6524bedcf17a569a62ac01b8a5610819c8" }
+  axi_riscv_atomics: { git: "https://github.com/pulp-platform/axi_riscv_atomics.git", rev: "97a1dd2ac643c276880420a0cf8eea697f228aa9" }
+  axi_rt: { git: "https://github.com/pulp-platform/axi_rt.git", rev: "50153a346b753dc2bc7723c446656a43db35d02d" }
+  axi_stream: { git: "https://github.com/pulp-platform/axi_stream.git", rev: "54891ff40455ca94a37641b9da4604647878cc07" }
+  axi_vga: { git: "https://github.com/pulp-platform/axi_vga.git", rev: "4d3e70d4f47bb74edc1ab68d99ffc02382e0fb9e" }
+  cheshire: { git: "https://github.com/pulp-platform/cheshire.git", rev: "55650af4adf63fa2f445c063983bb91e363b3ff1" }
+  clic: { git: "https://github.com/pulp-platform/clic.git", rev: "6515a71eb4ae3b143ab912d265e79832b3179a76" }
+  clint: { git: "https://github.com/pulp-platform/clint.git", rev: "d5390a805c20f9226758a152ba1645f61da73349" }
+  cluster_icache: { git: "https://github.com/pulp-platform/cluster_icache.git", rev: "1642961b9561513f283674efc2c90f24855e8d39" }
+  cluster_interconnect: { git: "https://github.com/pulp-platform/cluster_interconnect.git", rev: "1284def6c0b7f7e9355eb093d00883ad9dead1b7" }
+  common_cells: { git: "https://github.com/pulp-platform/common_cells.git", rev: "63e1b679a70eca3a1d60d686bc1fa170ec08e1ab" }
+  common_verification: { git: "https://github.com/pulp-platform/common_verification.git", rev: "fb1885f48ea46164a10568aeff51884389f67ae3" }
+  cv32e40p: { git: "https://github.com/pulp-platform/cv32e40p.git", rev: "800a09d97a1e9418e127e8bbf1763c1d1097c92f" }
+  cv32e40x: { git: "https://github.com/pulp-platform/cv32e40x.git", rev: "96b933ac2f723351872da55e7d2e9a82abd5df34" }
+  cva6: { git: "https://github.com/pulp-platform/cva6.git", rev: "4c02b24fe7c04690f626776a92274da24f80d1da" }
+  datamover: { git: "https://github.com/pulp-platform/datamover.git", rev: "f14d4db2a72c08b43b3511013e821a4600f6ef56" }
+  dram_rtl_sim: { git: "https://github.com/pulp-platform/dram_rtl_sim.git", rev: "a764d5200a19cdd72a5237cbfb16985515a3058d" }
+  floo_noc: { git: "https://github.com/pulp-platform/floonoc.git", rev: "d534a2135cfb6db2fa245b7b5dc383b4cf2301a1" }
+  fpnew: { git: "https://github.com/pulp-platform/cvfpu.git", rev: "e5aa6a01b5bbe1675c3aa8872e1203413ded83d1" }
+  fpu_div_sqrt_mvp: { git: "https://github.com/pulp-platform/fpu_div_sqrt_mvp.git", rev: "86e1f558b3c95e91577c41b2fc452c86b04e85ac" }
+  hci: { git: "https://github.com/FondazioneChipsIT/hci.git", rev: "3e63936991569d0b1e315d6914478937b37bb338" }
+  hwpe-ctrl: { git: "https://github.com/pulp-platform/hwpe-ctrl.git", rev: "3690a3c648f120546d8de2bc583d5170c36d2f20" }
+  hwpe-stream: { git: "https://github.com/pulp-platform/hwpe-stream.git", rev: "b3d33afdd27e79bcda1348d0ab5f4afd52c03106" }
+  ibex: { git: "https://github.com/pulp-platform/ibex.git", rev: "b18f7ef178ed07f5085051f96042c670a919fd5c" }
+  idma: { git: "https://github.com/pulp-platform/iDMA.git", rev: "28a36e5e07705549e59fc33db96ab681bc1ca88e" }
+  irq_router: { git: "https://github.com/pulp-platform/irq_router.git", rev: "d1d31350b24f3965b3a51e1bc96c71eb34e94db3" }
+  l2_tcdm_hybrid_interco: { git: "https://github.com/pulp-platform/L2_tcdm_hybrid_interco.git", rev: "fa55e72859dcfb117a2788a77352193bef94ff2b" }
+  obi: { git: "https://github.com/pulp-platform/obi.git", rev: "6a724da5c8d6412b88b6948746e04c1adf39d017" }
+  obi_peripherals: { git: "https://github.com/pulp-platform/obi_peripherals.git", rev: "079894a6cbd4e544c477643d184a4c340bd4e391" }
+  opentitan_peripherals: { git: "https://github.com/pulp-platform/opentitan_peripherals.git", rev: "cd3153de2783abd3d03d0595e6c4b32413c62f14" }
+  redmule: { git: "https://github.com/pulp-platform/redmule.git", rev: "51cd0647fac7d2ccf6aea955255a0021bfb1b056" }
+  redundancy_cells: { git: "https://github.com/pulp-platform/redundancy_cells.git", rev: "c37bdb47339bf70e8323de8df14ea8bbeafb6583" }
+  register_interface: { git: "https://github.com/pulp-platform/register_interface.git", rev: "d6e1d4cdaab7870f4faf3f88a1c788eaf5ac129d" }
+  riscv-dbg: { git: "https://github.com/pulp-platform/riscv-dbg.git", rev: "358f90110220adf7a083f8b65d157e836d706236" }
+  scm: { git: "https://github.com/pulp-platform/scm.git", rev: "1976c7efb4979271eee2abe262fde0f9a20e2557" }
+  serial_link: { git: "https://github.com/pulp-platform/serial_link.git", rev: "d4e513aebd368d77808c5e6629a1e2729c16eba0" }
+  snitch_cluster: { git: "https://github.com/pulp-platform/snitch_cluster.git", rev: "2fa38482c2c822bfbedfdfd87abb3ed45521646e" }
+  tech_cells_generic: { git: "https://github.com/pulp-platform/tech_cells_generic.git", rev: "7968dd6e6180df2c644636bc6d2908a49f2190cf" }
+  unbent: { git: "https://github.com/pulp-platform/unbent.git", rev: "e9c9d5cfb635f2d4668c816ce9235798cfecb297" }

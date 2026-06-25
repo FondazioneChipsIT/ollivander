@@ -145,16 +145,32 @@ system_controller:
 # automatically handles the top-level RegBus and signal wiring.
 padframe:
   name: "crux_padframe"
-  description: "Global ASIC Padframe and Pinmux"
   base_addr: 0x200A0000       # Memory mapped base address for pinmux CSRs
   sync_domain: false          # Generates an async RegBus CDC adapter for the exported ports
+  # --- Alternative 1: CSV Padlist (Default) ---
+  pad_csv: "crux_pads.csv"
   domains:
     - name: "domain_1v8"
       tech: "behavioral"
-      pad_list: "crux_pad_list_1v8.yml"
     - name: "domain_3v3"
       tech: "behavioral"
-      pad_list: "crux_pad_list_3v3.yml"
+
+  # --- Alternative 2: Python Dynamic Padlist ---
+  # pad_py: "crux_pads.py"
+  # domains:
+  #   - name: "domain_1v8"
+  #     tech: "behavioral"
+  #   - name: "domain_3v3"
+  #     tech: "behavioral"
+
+  # --- Alternative 3: YAML Padlists ---
+  # domains:
+  #   - name: "domain_1v8"
+  #     tech: "behavioral"
+  #     pad_list: "crux_pad_list_1v8.yml"
+  #   - name: "domain_3v3"
+  #     tech: "behavioral"
+  #     pad_list: "crux_pad_list_3v3.yml"
 
 # ------------------------------------------------------------------------------
 # 6. HOST SYSTEM (Manager)
@@ -166,7 +182,7 @@ host:
   description: "Main application processor (Cheshire host)"
   type: "cheshire_isle"       # Must match a SystemVerilog wrapper (e.g., cheshire_isle.sv)
   clock_domain: "host"        # Automatically wires clk_i/rst_ni to the 'host' clock tree
-  export_interfaces: ["jtag", "uart", "spi", "i2c"] # Routes these physical pins to the Top-Level
+  export_interfaces: ["jtag", "uart", "spi", "i2c", "gpio"] # Routes these physical pins to the Top-Level
   interfaces:
     axi_master: true          # The Host initiates transactions
     axi_slave:
@@ -304,6 +320,8 @@ components:
     description: "Multicore array for integer math acceleration"
     type: "pulp_cluster_isle"
     clock_domain: "pulp"
+    defines:
+      - "FEATURE_ICACHE_STAT"
     interfaces:
       axi_master: true
       axi_slave:

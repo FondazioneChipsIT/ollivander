@@ -349,8 +349,14 @@ def main():
     bender_exe = shutil.which("bender") or (str(base_dir / "bender") if (base_dir / "bender").is_file() else "bender")
     lock_file = env.bender_dir / "Bender.lock"
     try:
-        if lock_file.is_file() and env.bender_manifest_path.is_file() and lock_file.stat().st_mtime >= env.bender_manifest_path.stat().st_mtime:
-            subprocess.run([bender_exe, "checkout"], cwd=env.bender_dir, check=True)
+        if lock_file.is_file():
+            try:
+                # Attempt to use the existing locked dependency versions first
+                subprocess.run([bender_exe, "checkout"], cwd=env.bender_dir, check=True)
+            except subprocess.CalledProcessError:
+                # If checkout fails (e.g. missing dependencies in lockfile), fall back to update
+                print("  [WARNING] 'bender checkout' failed. Attempting 'bender update' to resolve dependencies...")
+                subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True)
         else:
             subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True)
     except subprocess.CalledProcessError:
@@ -408,6 +414,11 @@ def main():
     # 13. PHASE 7: PADFRAME GENERATION (PADRICK)
     # =========================================================================
     run_padrick(env, soc_config, config_path.parent.resolve())
+
+    # Re-render top-level manifests (specifically Bender.yml) now that Padrick
+    # has generated the padframe source files list (src_files.yml).
+    if soc_config.padframe:
+        generator.render_top_level(comp_info, wiring_matrix, global_defines)
 
     # =========================================================================
     # 14. PHASE 8: CHIP WRAPPER ENGINE

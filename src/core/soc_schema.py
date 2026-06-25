@@ -223,13 +223,173 @@ class SystemController(BaseModel):
 # 5. PADFRAME & PINMUX (Padrick Integration)
 # ==============================================================================
 
+def parse_pad_csv(csv_path: Path, domains_list: list) -> dict:
+    import csv
+    if not csv_path.is_file():
+        print(f"\n[ERROR] Pad CSV file not found: {csv_path}")
+        sys.exit(1)
+        
+    domain_names = {dom.name for dom in domains_list}
+    result = {name: [] for name in domain_names}
+    
+    core_columns = {"domain", "pad name", "type", "multiple", "is static", "default port", "description"}
+    
+    with open(csv_path, mode='r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            print(f"\n[ERROR] Pad CSV file '{csv_path.name}' is empty or invalid.")
+            sys.exit(1)
+            
+        header_map = {h.strip().lower(): h for h in reader.fieldnames}
+        
+        required = ["domain", "pad name", "type", "is static"]
+        for req in required:
+            if req not in header_map:
+                print(f"\n[ERROR] Pad CSV file is missing required column: '{req}'. Available: {reader.fieldnames}")
+                sys.exit(1)
+                
+        connection_cols = []
+        for h in reader.fieldnames:
+            h_strip = h.strip()
+            if h_strip.lower() not in core_columns:
+                connection_cols.append(h_strip)
+                
+        for row_idx, row in enumerate(reader, start=2):
+            domain_key = header_map.get("domain")
+            domain_val = row[domain_key].strip() if row.get(domain_key) else ""
+            if not domain_val:
+                continue
+                
+            if domain_val not in domain_names:
+                print(f"\n[ERROR] [CSV Error] Row {row_idx}: Domain '{domain_val}' is not defined in the SoC configuration domains: {list(domain_names)}")
+                sys.exit(1)
+                
+            name_key = header_map.get("pad name")
+            pad_name = row[name_key].strip() if row.get(name_key) else ""
+            if not pad_name:
+                print(f"\n[ERROR] [CSV Error] Row {row_idx}: Missing 'Pad Name'.")
+                sys.exit(1)
+                
+            type_key = header_map.get("type")
+            pad_type = row[type_key].strip() if row.get(type_key) else ""
+            if not pad_type:
+                print(f"\n[ERROR] [CSV Error] Row {row_idx}: Missing 'Type' for pad '{pad_name}'.")
+                sys.exit(1)
+                
+            is_static_key = header_map.get("is static")
+            is_static_str = row[is_static_key].strip().lower() if row.get(is_static_key) else "false"
+            is_static = is_static_str in ("true", "1", "yes")
+            
+            multiple_key = header_map.get("multiple")
+            multiple_val = 1
+            if multiple_key and row.get(multiple_key):
+                m_str = row[multiple_key].strip()
+                if m_str:
+                    try:
+                        multiple_val = int(m_str)
+                    except ValueError:
+                        print(f"\n[ERROR] [CSV Error] Row {row_idx}: Invalid 'Multiple' value '{m_str}'. Must be an integer.")
+                        sys.exit(1)
+                        
+            default_port_key = header_map.get("default port")
+            default_port_val = row[default_port_key].strip() if (default_port_key and row.get(default_port_key)) else ""
+            
+            description_key = header_map.get("description")
+            desc_val = row[description_key].strip() if (description_key and row.get(description_key)) else ""
+            
+            connections = {}
+            for col in connection_cols:
+                val = row[col].strip() if row.get(col) else ""
+                if val:
+                    connections[col] = val
+                    
+            if not is_static and connections:
+                print(f"\n[ERROR] [CSV Error] Row {row_idx}: Pad '{pad_name}' is marked multiplexed (Is Static = False) but has static connections: {connections}. Multiplexed pads must have empty connection columns.")
+                sys.exit(1)
+                
+            if is_static and default_port_val:
+                print(f"\n[ERROR] [CSV Error] Row {row_idx}: Pad '{pad_name}' is marked static (Is Static = True) but has a 'Default Port' specified: '{default_port_val}'. Default ports are only for multiplexed pads.")
+                sys.exit(1)
+                
+            pad_dict = {
+                "name": pad_name,
+                "pad_type": pad_type,
+                "is_static": is_static,
+            }
+            if multiple_val > 1:
+                pad_dict["multiple"] = multiple_val
+            if desc_val:
+                pad_dict["description"] = desc_val
+            if default_port_val:
+                pad_dict["default_port"] = default_port_val
+            if connections:
+                pad_dict["connections"] = connections
+                
+            result[domain_val].append(pad_dict)
+            
+    return result
+
+def parse_pad_py(py_path: Path) -> dict:
+    import importlib.util
+    import sys
+    
+    if not py_path.is_file():
+        print(f"\n[ERROR] Pad Python file not found: {py_path}")
+        sys.exit(1)
+        
+    try:
+        spec = importlib.util.spec_from_file_location("dynamic_pad_config", py_path)
+        if spec is None or spec.loader is None:
+            print(f"\n[ERROR] [Python Error] Failed to load spec for script '{py_path.name}'.")
+            sys.exit(1)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["dynamic_pad_config"] = module
+        spec.loader.exec_module(module)
+    except Exception as e:
+        import traceback
+        print(f"\n[ERROR] [Python Error] Execution of user padlist script '{py_path.name}' failed:")
+        traceback.print_exc()
+        sys.exit(1)
+        
+    if not hasattr(module, "pad_domains"):
+        print(f"\n[ERROR] [Python Error] Script '{py_path.name}' must define a global variable 'pad_domains' containing the padlist mapping.")
+        sys.exit(1)
+        
+    pad_domains = getattr(module, "pad_domains")
+    if not isinstance(pad_domains, dict):
+        print(f"\n[ERROR] [Python Error] 'pad_domains' in script '{py_path.name}' must be a dictionary.")
+        sys.exit(1)
+        
+    for dom_name, pads in pad_domains.items():
+        if not isinstance(pads, list):
+            print(f"\n[ERROR] [Python Error] 'pad_domains[\"{dom_name}\"]' must be a list of dictionaries.")
+            sys.exit(1)
+        for idx, pad in enumerate(pads):
+            if not isinstance(pad, dict):
+                print(f"\n[ERROR] [Python Error] Pad at index {idx} in domain '{dom_name}' must be a dictionary. Found type: {type(pad)}")
+                sys.exit(1)
+            if "name" not in pad or "pad_type" not in pad:
+                print(f"\n[ERROR] [Python Error] Pad at index {idx} in domain '{dom_name}' is missing required fields 'name' or 'pad_type': {pad}")
+                sys.exit(1)
+            is_static = pad.get("is_static", False)
+            connections = pad.get("connections", {})
+            default_port = pad.get("default_port", "")
+            if not is_static and connections:
+                print(f"\n[ERROR] [Python Error] Pad '{pad['name']}' in domain '{dom_name}' is marked multiplexed but has static connections: {connections}.")
+                sys.exit(1)
+            if is_static and default_port:
+                print(f"\n[ERROR] [Python Error] Pad '{pad['name']}' in domain '{dom_name}' is marked static but has default_port: '{default_port}'.")
+                sys.exit(1)
+                
+    return pad_domains
+
 class PadDomainConfig(BaseModel):
     """
     Configuration for a single Padframe domain (power/voltage domain).
     """
     name: str
     tech: str
-    pad_list: str
+    pad_list: Optional[str] = None
 
 class PadframeConfig(BaseModel):
     """
@@ -244,13 +404,38 @@ class PadframeConfig(BaseModel):
     sync_domain: Optional[bool] = False        # True = Host Clock, False = Uses async CDC adapter
     domains: Optional[List[PadDomainConfig]] = None
     padrick_cfg: Optional[str] = None          # Path to a custom Padrick config_top.yml (overrides domains)
+    pad_csv: Optional[str] = None              # Path to a CSV file defining the padlist dynamically
+    pad_py: Optional[str] = None               # Path to a Python file defining the padlist dynamically
     header_file: Optional[str] = None          # Path to a text file for the RTL header (auto-generates standard license if None)
 
     @model_validator(mode='after')
     def check_padrick_config(self) -> 'PadframeConfig':
-        if not self.padrick_cfg and not self.domains:
-            raise ValueError("Padframe requires either 'padrick_cfg' or a 'domains' list.")
+        if not self.padrick_cfg:
+            if not self.domains:
+                raise ValueError("Padframe requires either 'padrick_cfg' or a 'domains' list.")
+            for dom in self.domains:
+                if not self.pad_csv and not self.pad_py and not dom.pad_list:
+                    raise ValueError(f"Domain '{dom.name}' requires 'pad_list' since neither 'pad_csv' nor 'pad_py' is specified.")
         return self
+
+    def get_pad_list_data(self, domain_name: str, config_dir: Path) -> list:
+        if self.pad_csv:
+            csv_path = config_dir / self.pad_csv
+            csv_pads = parse_pad_csv(csv_path, self.domains or [])
+            return csv_pads.get(domain_name, [])
+        elif self.pad_py:
+            py_path = config_dir / self.pad_py
+            py_pads = parse_pad_py(py_path)
+            return py_pads.get(domain_name, [])
+        else:
+            dom = next((d for d in (self.domains or []) if d.name == domain_name), None)
+            if not dom or not dom.pad_list:
+                return []
+            import yaml
+            pl_file = config_dir / dom.pad_list
+            if not pl_file.is_file():
+                return []
+            return yaml.safe_load(pl_file.read_text(encoding='utf-8')) or []
 
 # ==============================================================================
 # 5. HOST & COMPONENTS

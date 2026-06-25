@@ -56,6 +56,13 @@ sources:
   - ${rel_hw_dir}/${top_level_module_name}_sys_regs.sv
 % endif
 
+  # --- Padframe Sources ---
+% if config.padframe and padframe_files:
+% for f in padframe_files:
+  - ${f}
+% endfor
+% endif
+
   # --- Component Wrappers ---
   # The intermediate Isle/Tile SystemVerilog wrappers bridging the IPs to the SoC.
 % if generated_module_files:

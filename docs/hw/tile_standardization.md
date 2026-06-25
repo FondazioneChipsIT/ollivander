@@ -96,7 +96,7 @@ Ollivander features an automated dependency resolution engine that scans your Ti
 ### Static Dependencies (SystemVerilog Files)
 For standard `.sv` files, declare dependencies using special comments anywhere in the file (typically at the top):
 
-*   **Bender Packages**: Use `// BENDER: name="<package_name>"` to link an external repository. Ollivander will look up the git URL and version in the `ollivander_config.yaml` registry.
+*   **Bender Packages**: Use `// BENDER: name="<package_name>"` to link an external repository. Ollivander will look up the git URL and version in the `ollivander_config.yml` registry.
     ```systemverilog
     // BENDER: name="axi"
     // BENDER: name="floo_noc"

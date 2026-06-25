@@ -4,6 +4,5 @@
 #
 
 OLLIVANDER_ROOT := $(shell pwd)
-OLLIVANDER := $(OLLIVANDER_ROOT)/src/ollivander.py
 
 include ollivander.mk

@@ -1,4 +1,4 @@
-﻿# Copyright 2026 Fondazione Chips-IT.
+# Copyright 2026 Fondazione Chips-IT.
 # Solderpad Hardware License, Version 0.51, see LICENSE for details.
 # SPDX-License-Identifier: SHL-0.51
 
@@ -428,11 +428,7 @@ class RTLGenerator:
         pad_domains = []
         for dom in domains_config:
             config_dir = self.env.config_file_path.parent if (hasattr(self.env, 'config_file_path') and self.env.config_file_path) else Path.cwd()
-            pl_file = config_dir / dom.pad_list
-            if pl_file.is_file():
-                raw_list = yaml.safe_load(pl_file.read_text(encoding='utf-8')) or []
-            else:
-                raw_list = []
+            raw_list = self.soc_config.padframe.get_pad_list_data(dom.name, config_dir)
 
             expanded_list = []
             for pad in raw_list:
@@ -450,6 +446,40 @@ class RTLGenerator:
             pad_domains.append({"name": dom.name, "pad_list": expanded_list})
         return pad_domains
 
+    def get_signal_domain(self, sig_name, core_sig_to_domain, default_dom="domain_0"):
+        if not sig_name:
+            return default_dom
+        # 1. Direct lookup
+        if sig_name in core_sig_to_domain:
+            return core_sig_to_domain[sig_name]
+        # 2. Normalize signal name
+        base = sig_name
+        for suffix in ("_en_o", "_oe_o", "_oe", "_no", "_ni", "_o", "_i"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        if base in core_sig_to_domain:
+            return core_sig_to_domain[base]
+        # Handle index suffix, e.g., gpio_i_31 -> gpio_31 -> domain_3v3
+        m = re.match(r"^([a-zA-Z0-9_]+)_([0-9]+)$", sig_name)
+        if m:
+            prefix, idx = m.group(1), m.group(2)
+            for suffix in ("_en_o", "_oe_o", "_oe", "_no", "_ni", "_o", "_i"):
+                if prefix.endswith(suffix):
+                    prefix = prefix[: -len(suffix)]
+                    break
+            norm_with_idx = f"{prefix}_{idx}"
+            if norm_with_idx in core_sig_to_domain:
+                return core_sig_to_domain[norm_with_idx]
+            if prefix in core_sig_to_domain:
+                return core_sig_to_domain[prefix]
+        # 3. Fallback to first dynamic domain if default_dom is "domain_0"
+        if default_dom == "domain_0":
+            dynamic_domains = [dom["name"] for dom in self._get_pad_domains() if any(not pad.get("is_static") for pad in dom["pad_list"])]
+            if dynamic_domains:
+                return dynamic_domains[0]
+        return default_dom
+
     def generate_port_groups(self, comp_info):
         """
         Auto-generates the Padrick port_groups YAML configuration by inspecting
@@ -462,6 +492,29 @@ class RTLGenerator:
 
         cfg_dir = self.env.outdir_path / self.env.cfg_sub
         port_groups_file = cfg_dir / f"{self.soc_config.project.name}_soc_port_groups.yml"
+        
+        oe_signal_name = "paden2chip"
+        domains_config = self.soc_config.padframe.domains or []
+        for dom in domains_config:
+            tech_file = None
+            search_dirs = self.env.component_paths + [self.env.base_dir / "components"]
+            for d in search_dirs:
+                candidate = d / "padframes" / dom.tech / f"{dom.tech}.yml"
+                if candidate.is_file():
+                    tech_file = candidate
+                    break
+                candidate = d / "padframes" / "tech" / f"{dom.tech}.yml"
+                if candidate.is_file():
+                    tech_file = candidate
+                    break
+            if tech_file:
+                tech_data = yaml.safe_load(tech_file.read_text(encoding='utf-8')) or []
+                for p_type in tech_data:
+                    signals = p_type.get("pad_signals", [])
+                    signal_names = {sig["name"] for sig in signals if isinstance(sig, dict) and "name" in sig}
+                    if "output_en" in signal_names:
+                        oe_signal_name = "output_en"
+                        break
         
         lines = []
         lines.append("port_groups:")
@@ -479,22 +532,20 @@ class RTLGenerator:
         
         for dom in domains_config:
             config_dir = self.env.config_file_path.parent if (hasattr(self.env, 'config_file_path') and self.env.config_file_path) else Path.cwd()
-            pl_file = config_dir / dom.pad_list
-            if pl_file.is_file():
-                raw_list = yaml.safe_load(pl_file.read_text(encoding='utf-8')) or []
-                for pad in raw_list:
-                    dp = pad.get("default_port", "")
-                    if dp.startswith("soc_exports."):
-                        p_name = dp.split(".")[-1]
-                        p_base = p_name.replace('_{i}', '').replace('[{i}]', '')
-                        port_multiples[p_base] = pad.get("multiple", 1)
-                    elif "connections" in pad:
-                        for k, v in pad["connections"].items():
-                            soc_sig = k if v in ["pad2chip", "paden2chip", "chip2pad"] else v
-                            if "_{i}" in soc_sig or "[{i}]" in soc_sig:
-                                p_name = soc_sig.replace('_{i}', '').replace('[{i}]', '')
-                                p_base = get_base_name(p_name)
-                                port_multiples[p_base] = pad.get("multiple", 1)
+            raw_list = self.soc_config.padframe.get_pad_list_data(dom.name, config_dir)
+            for pad in raw_list:
+                dp = pad.get("default_port", "")
+                if dp.startswith("soc_exports."):
+                    p_name = dp.split(".")[-1]
+                    p_base = p_name.replace('_{i}', '').replace('[{i}]', '')
+                    port_multiples[p_base] = pad.get("multiple", 1)
+                elif "connections" in pad:
+                    for k, v in pad["connections"].items():
+                        soc_sig = k if v in ["pad2chip", "paden2chip", "chip2pad"] else v
+                        if "_{i}" in soc_sig or "[{i}]" in soc_sig:
+                            p_name = soc_sig.replace('_{i}', '').replace('[{i}]', '')
+                            p_base = get_base_name(p_name)
+                            port_multiples[p_base] = pad.get("multiple", 1)
 
         grouped_ports = {}
         port_mapping = {}
@@ -509,7 +560,7 @@ class RTLGenerator:
                 soc_sig = soc_port_name
                 if direction == "output":
                     if name.endswith("_en_o") or name.endswith("_oe_o") or name.endswith("_oe"):
-                        grouped_ports[base]["paden2chip"] = soc_sig
+                        grouped_ports[base][oe_signal_name] = soc_sig
                     else:
                         grouped_ports[base]["chip2pad"] = soc_sig
                 elif direction == "input":
@@ -524,7 +575,7 @@ class RTLGenerator:
                     soc_sig = f"{soc_port_name}{suf}"
                     if direction == "output":
                         if name.endswith("_en_o") or name.endswith("_oe_o") or name.endswith("_oe"):
-                            grouped_ports[base]["paden2chip"] = soc_sig
+                            grouped_ports[base][oe_signal_name] = soc_sig
                         else:
                             grouped_ports[base]["chip2pad"] = soc_sig
                     elif direction == "input":
@@ -930,7 +981,7 @@ class RTLGenerator:
 
         # Resolve all collected Bender dependencies against the environment registry.
         # If a dependency was declared in a pragma without git/rev/version details,
-        # we look it up in the central registry (e.g., ollivander_config.yaml).
+        # we look it up in the central registry (e.g., ollivander_config.yml).
         resolved_dependencies = {}
         for dep_name in sorted(self.project_dependencies.keys()):
             dep_info = self.project_dependencies[dep_name]
@@ -945,8 +996,43 @@ class RTLGenerator:
                     version = version or self.env.registry_dependencies[dep_name].get('version')
                 else:
                     print(f"[WARNING] Dependency '{dep_name}' is missing git/rev/version information and is not found in the environment registry.")
+            
             resolved_dependencies[dep_name] = {'git': git, 'rev': rev, 'version': version}
                 
+        # Collect padframe files if padframe is enabled
+        padframe_files = []
+        if self.soc_config.padframe:
+            seen_techs = set()
+            domains_config = self.soc_config.padframe.domains or []
+            for dom in domains_config:
+                if dom.tech in seen_techs:
+                    continue
+                seen_techs.add(dom.tech)
+                
+                padframe_dir = self.env.base_dir / "components" / "padframes" / dom.tech
+                if not padframe_dir.is_dir():
+                    padframe_dir = self.env.base_dir / "components" / "padframe"
+                
+                if padframe_dir.is_dir():
+                    for f_path in padframe_dir.glob("*.sv"):
+                        rel_f = os.path.relpath(f_path, self.env.bender_dir).replace('\\', '/')
+                        if rel_f not in padframe_files:
+                            padframe_files.append(rel_f)
+            
+            pf_src_files_path = self.env.outdir_path / self.env.hw_sub / "padframe" / "src_files.yml"
+            if pf_src_files_path.is_file():
+                try:
+                    pf_src_files = yaml.safe_load(pf_src_files_path.read_text(encoding='utf-8'))
+                    pf_name = self.soc_config.padframe.name
+                    if pf_name in pf_src_files and "files" in pf_src_files[pf_name]:
+                        for f in pf_src_files[pf_name]["files"]:
+                            abs_f = self.env.outdir_path / self.env.hw_sub / "padframe" / f
+                            rel_f = os.path.relpath(abs_f, self.env.bender_dir).replace('\\', '/')
+                            padframe_files.append(rel_f)
+                except Exception as e:
+                    print(f"[WARNING] Failed to parse padframe src_files.yml: {e}")
+
+        template_kwargs["padframe_files"] = padframe_files
         template_kwargs["project_dependencies"] = resolved_dependencies
 
         # Render Bender.yml as the very last step, now that all dependencies are known
@@ -972,19 +1058,6 @@ class RTLGenerator:
                     rendered_code = rendered_code.replace(noc_line, '')
                     rendered_code = re.sub(soc_pkg_pattern, lambda m: noc_line + m.group(1), rendered_code)
                     
-                # Inject Padframe sub-project dependency if enabled
-                if self.soc_config.padframe and self.soc_config.project.build_mode == "standalone":
-                    hw_dir_rel = os.path.relpath(self.env.outdir_path / self.env.hw_sub, self.env.bender_dir).replace('\\', '/')
-                    padframe_path = f"{hw_dir_rel}/padframe"
-                    padframe_dep = f"  {self.soc_config.padframe.name}: {{ path: \"{padframe_path}\" }}\n"
-                    rendered_code = re.sub(r'(\ndependencies:\s*\n)', rf'\g<1>{padframe_dep}', rendered_code)
-                    
-                    # Create a dummy Bender manifest so Bender doesn't crash during Phase 4 dependency resolution.
-                    # Padrick will overwrite this with the real manifest later in Phase 7.
-                    pf_dir = self.env.outdir_path / self.env.hw_sub / "padframe"
-                    pf_dir.mkdir(parents=True, exist_ok=True)
-                    (pf_dir / "Bender.yml").write_text(f"package:\n  name: {self.soc_config.padframe.name}\n", encoding='utf-8')
-
                 if self.soc_config.project.build_mode == "macro":
                     rendered_code = re.sub(rf'hw/{self.soc_config.project.name}\.sv', f'hw/{top_level_filename}', rendered_code)
 
@@ -1142,7 +1215,7 @@ class RTLGenerator:
                     if norm_type(core_type) != norm_type(pad_type):
                         fatal_errors.append(f"Width/Type mismatch on '{core_sig}': Core expects '{core_type}', Padframe provides '{pad_type}'")
                     else:
-                        dom_name = core_sig_to_domain.get(core_sig, "domain_0")
+                        dom_name = self.get_signal_domain(core_sig, core_sig_to_domain)
                         struct_path = f"static_pad2soc.{dom_name}.{pad_sig}" if is_input_to_soc else f"static_soc2pad.{dom_name}.{pad_sig}"
                         validated_connections.append({
                             'sig_name': core_sig,
@@ -1171,7 +1244,7 @@ class RTLGenerator:
                     elif pad_sig not in padframe_fields:
                         missing_pads.append((pad_sig, core_sig, core_type, p_dir))
                     else:
-                        dom_name = core_sig_to_domain.get(pad_sig, "domain_0")
+                        dom_name = self.get_signal_domain(pad_sig, core_sig_to_domain)
                         struct_path = f"port_pad2soc.{dom_name}.soc_exports.{pad_sig}" if is_input_to_soc else f"port_soc2pad.{dom_name}.soc_exports.{pad_sig}"
                         validated_connections.append({
                             'sig_name': core_sig,
@@ -1194,7 +1267,7 @@ class RTLGenerator:
                             missing_pads.append((pad_sig_i, f"{core_sig}[{idx}]", "logic", p_dir))
                             found_all = False
                         else:
-                            dom_name = core_sig_to_domain.get(pad_sig_i, "domain_0")
+                            dom_name = self.get_signal_domain(pad_sig_i, core_sig_to_domain)
                             if pad_sig_i in statically_routed_wires:
                                 struct_path = f"static_pad2soc.{dom_name}.{pad_sig_i}" if is_input_to_soc else f"static_soc2pad.{dom_name}.{pad_sig_i}"
                             else:
@@ -1238,7 +1311,7 @@ class RTLGenerator:
                                 missing_pads.append((pad_sig_i, f"{core_sig}[{out_idx}{display_suf}", "logic", p_dir))
                                 found_all = False
                             else:
-                                dom_name = core_sig_to_domain.get(pad_sig_i, "domain_0")
+                                dom_name = self.get_signal_domain(pad_sig_i, core_sig_to_domain)
                                 if pad_sig_i in statically_routed_wires:
                                     struct_path = f"static_pad2soc.{dom_name}.{pad_sig_i}" if is_input_to_soc else f"static_soc2pad.{dom_name}.{pad_sig_i}"
                                 else:

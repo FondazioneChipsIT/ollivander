@@ -12,6 +12,9 @@
 # 3. Adjust the variables below to match your project's YAML files.
 # 4. Run 'make generate' to build your SoC.
 
+# --- Ollivander Python script path ---
+OLLIVANDER := $(OLLIVANDER_ROOT)/src/ollivander.py
+
 # --- Project Configurations ---
 VENV_DIR   := $(OLLIVANDER_ROOT)/.venv
 

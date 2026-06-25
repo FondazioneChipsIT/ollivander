@@ -38,9 +38,9 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     env = OllivanderEnv()
     
     env.base_dir = base_dir
-    # 1. Load the base environment configuration (usually ollivander_config.yaml).
+    # 1. Load the base environment configuration (usually ollivander_config.yml).
     # This provides the default paths and the base dependency registry.
-    env_config_path = Path(args.env_config) if args.env_config else base_dir / "ollivander_config.yaml"
+    env_config_path = Path(args.env_config) if args.env_config else base_dir / "ollivander_config.yml"
     env_cfg = {}
     if env_config_path.is_file():
         try:
@@ -57,7 +57,7 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     
     # 2. Load an optional secondary environment file to be merged.
     # This allows users to override paths or add project-specific dependencies
-    # without modifying the global ollivander_config.yaml.
+    # without modifying the global ollivander_config.yml.
     append_env_cfg = {}
     append_env_base = None
     if args.append_env:

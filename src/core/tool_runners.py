@@ -308,6 +308,10 @@ def run_padrick(env, soc_config, project_dir: Path):
             tech_file = None
             search_dirs = env.component_paths + [env.base_dir / "components"]
             for d in search_dirs:
+                candidate = d / "padframes" / dom.tech / f"{dom.tech}.yml"
+                if candidate.is_file():
+                    tech_file = candidate
+                    break
                 candidate = d / "padframes" / "tech" / f"{dom.tech}.yml"
                 if candidate.is_file():
                     tech_file = candidate
@@ -316,18 +320,19 @@ def run_padrick(env, soc_config, project_dir: Path):
                 print(f"\n[ERROR] Padframe technology catalog '{dom.tech}' not found.")
                 sys.exit(1)
                 
-            pad_list_file = project_dir / dom.pad_list
-            if not pad_list_file.is_file():
-                print(f"  [WARNING] Pad list file not found: {pad_list_file}. Treating as empty.")
-                pad_list_data = []
-            else:
-                pad_list_data = yaml.safe_load(pad_list_file.read_text(encoding='utf-8')) or []
+            pad_list_data = soc_config.padframe.get_pad_list_data(dom.name, project_dir)
                 
             top_dict["pad_domains"].append({
                 "name": dom.name,
                 "pad_types": yaml.safe_load(tech_file.read_text(encoding='utf-8')),
                 "pad_list": pad_list_data
             })
+            
+            # Save the intermediate domain-specific padlist YAML for debugging
+            if soc_config.padframe.pad_csv or soc_config.padframe.pad_py:
+                domain_list_file = cfg_dir / f"{soc_config.project.name}_pad_list_{dom.name}.yml"
+                with open(domain_list_file, 'w', encoding='utf-8') as f:
+                    yaml.dump(pad_list_data, f, sort_keys=False, default_flow_style=False)
             
         if port_groups_file.is_file():
             pg_dict = yaml.safe_load(port_groups_file.read_text(encoding='utf-8'))

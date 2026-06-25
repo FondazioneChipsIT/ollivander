@@ -98,9 +98,10 @@ config = OllivanderConfig(
         description="Global ASIC Padframe and Pinmux",
         base_addr=0x200A0000,
         sync_domain=False,
+        pad_py="super_crux_pads.py",
         domains=[
-            PadDomainConfig(name="domain_1v8", tech="behavioral", pad_list="crux_pad_list_1v8.yml"),
-            PadDomainConfig(name="domain_3v3", tech="behavioral", pad_list="crux_pad_list_3v3.yml")
+            PadDomainConfig(name="domain_1v8", tech="behavioral"),
+            PadDomainConfig(name="domain_3v3", tech="behavioral")
         ]
     ),
     
@@ -112,7 +113,7 @@ config = OllivanderConfig(
         description="Main application processor (Cheshire host)",
         type="cheshire_isle",
         clock_domain="host",
-        export_interfaces=["jtag", "uart", "spi", "i2c"],
+        export_interfaces=["jtag", "uart", "spi", "i2c", "gpio"],
         interfaces={
             "axi_master": True,
             "axi_slave": [
