@@ -1,0 +1,4 @@
+# Copiright Fondazione Chips-IT
+paths:
+  # The {outdir} placeholder is dynamically replaced by the generator
+  bender_manifest: "Bender.yml"
