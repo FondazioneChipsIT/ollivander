@@ -283,6 +283,9 @@ config = OllivanderConfig(
             clock_domain="host",
             interfaces={
                 "axi_slave": [{"base_addr": 0x40000000, "size": 0x00001000, "sync_domain": True}]
+            },
+            parameters={
+                "NumMailboxes": 16
             }
         ),
         

@@ -118,3 +118,61 @@ def simplify_port_ranges(decl: str) -> str:
             return f"[{evaluate_simple_arithmetic(content)}]"
             
     return re.sub(r'\[([^\]]+)\]', replace_bracket, decl)
+
+
+class Spinner:
+    """
+    A lightweight, thread-based CLI spinner context manager to provide
+    visual feedback for long-running operations.
+    """
+    def __init__(self, message="  -> Processing..."):
+        self.message = message
+        self.spinner_chars = ["|", "/", "-", "\\"]
+        import threading
+        self.stop_running = threading.Event()
+        self.thread = None
+
+    def _spin(self):
+        import sys
+        import time
+        idx = 0
+        while not self.stop_running.is_set():
+            char = self.spinner_chars[idx]
+            sys.stdout.write(f"\r{self.message} {char}")
+            sys.stdout.flush()
+            idx = (idx + 1) % len(self.spinner_chars)
+            time.sleep(0.1)
+        # Clear the spinner line
+        import sys
+        sys.stdout.write("\r" + " " * (len(self.message) + 4) + "\r")
+        sys.stdout.flush()
+
+    def __enter__(self):
+        import threading
+        self.stop_running.clear()
+        self.thread = threading.Thread(target=self._spin)
+        self.thread.daemon = True
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop_running.set()
+        if self.thread:
+            self.thread.join()
+
+
+def draw_progress_bar(iteration, total, prefix='', suffix='', length=30, fill='█'):
+    """
+    Draws a single-line progress bar with percentage and custom messages.
+    """
+    if total <= 0:
+        return
+    import sys
+    percent = f"{100 * (iteration / float(total)):.1f}"
+    filled_length = int(length * iteration // total)
+    bar = fill * filled_length + '-' * (length - filled_length)
+    sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix}')
+    sys.stdout.flush()
+    if iteration >= total:
+        sys.stdout.write('\n')
+        sys.stdout.flush()

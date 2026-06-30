@@ -45,19 +45,19 @@ The `paths` section defines directories for inputs and outputs. All relative pat
 ### Input Search Paths
 These define where Ollivander looks when you declare a component `type` or a `require` pragma.
 
-| Field        | Type            | Default                       | Description                                  |
-| :----------- | :-------------- | :---------------------------- | :------------------------------------------- |
-| `templates`  | List of Strings | `["src/templates"]`           | Directories containing `.mako` templates.    |
-| `components` | List of Strings | `["components"]`              | Directories containing SystemVerilog IP      |
-|              |                 |                               | wrappers (`*_isle.sv` or `*_tile.sv`). To    |
-|              |                 |                               | inject your custom IPs, add your project's   |
-|              |                 |                               | hardware folder here. Ollivander also looks  |
-|              |                 |                               | in these paths for custom Padframe           |
-|              |                 |                               | technology catalogs (`padframes/tech/`).     |
-| `rdl_includes`| List of Strings| `[]`                          | Directories where PeakRDL should search for  |
-|              |                 |                               | custom `.rdl` files. Files found here have   |
-|              |                 |                               | absolute priority and will override external |
-|              |                 |                               | IP registers with the same name.             |
+| Field         | Type            | Default                       | Description                                  |
+| :------------ | :-------------- | :---------------------------- | :------------------------------------------- |
+| `templates`   | List of Strings | `["src/templates"]`           | Directories containing `.mako` templates.    |
+| `components`  | List of Strings | `["components"]`              | Directories containing SystemVerilog IP      |
+|               |                 |                               | wrappers (`*_isle.sv` or `*_tile.sv`). To    |
+|               |                 |                               | inject your custom IPs, add your project's   |
+|               |                 |                               | hardware folder here. Ollivander also looks  |
+|               |                 |                               | in these paths for custom Padframe           |
+|               |                 |                               | technology catalogs (`padframes/tech/`).     |
+| `rdl_includes`| List of Strings | `[]`                          | Directories where PeakRDL should search for  |
+|               |                 |                               | custom `.rdl` files. Files found here have   |
+|               |                 |                               | absolute priority and will override external |
+|               |                 |                               | IP registers with the same name.             |
 
 **Example of appending custom paths:**
 ```yaml
@@ -150,3 +150,24 @@ dependencies:
         search: "prim_flop_macros.svh"
         replace: "prim_flop_macros.sv"
 ```
+
+---
+
+## 4. Fast-Check Simulator Configuration (`fast_check_tool`)
+
+Ollivander supports multiple verification backends for structural fast-check compilation validation. You can declare the simulator of choice directly in your environment configuration YAML file.
+
+### 4.1 Configuration YAML Field
+You can add `fast_check_tool` at the root level of your environment YAML file:
+
+```yaml
+# my_project_env.yaml
+fast_check_tool: "verilator"  # Options: "questa" (default) or "verilator"
+```
+
+### 4.2 Configuration Precedence & Command-Line Override
+1. **YAML Files**: Ollivander evaluates the base `ollivander_config.yml` first, and overrides it with your custom appended environment file (passed via `-a`). The resulting simulator is used when you run `make generate` to write the compilation script targets inside the output `Makefile.vsim`.
+2. **Command Line**: You can override the tool selection at run-time without re-generating the codebase by passing `FAST_CHECK_TOOL` directly to the `make` command:
+   ```bash
+   make fast-check FAST_CHECK_TOOL=verilator
+   ```

@@ -18,6 +18,8 @@ VSIM     ?= vsim
 BENDER   ?= bender
 PYTHON   ?= python3
 MAKE     ?= make
+FAST_CHECK_TOOL ?= ${env_config.get("fast_check_tool", "questa")}
+VERILATOR ?= verilator
 <%
   # Base standard targets for simulation
   b_targets = ["rtl", "simulation", "sim", "test"]
@@ -79,10 +81,10 @@ build-sw:
 % endif
 
 prep-sim: update-hw
-	@echo "\n[MAKE] Extracting SystemVerilog compilation script for QuestaSim via Bender..."
+	@echo "\n[MAKE] Extracting SystemVerilog compilation script via Bender..."
 	$(BENDER) script vsim $(BENDER_TARGETS) > $(OUT_DIR)/compile_vsim.tcl
 % if global_defines:
-	@echo "\n[MAKE] Injecting compilation macros (+define+) into QuestaSim script..."
+	@echo "\n[MAKE] Injecting compilation macros (+define+) into compilation script..."
 	@python3 -c "$$INJECT_MACROS_SCRIPT" $(OUT_DIR)/compile_vsim.tcl
 % endif
 
@@ -91,12 +93,17 @@ build-sim: prep-sim build-sw
 	$(VSIM) -c -do "if {[source $(OUT_DIR)/compile_vsim.tcl]} {quit -code 1}; quit"
 
 fast-check: prep-sim
-	@echo "\n[MAKE] Generating exact stubs for heavy external IPs..."
-	@$(PYTHON) $(OLLIVANDER) -c $(SOC_YAML) $$(if [ -n "$(ENV_YAML)" ]; then echo "-a $(ENV_YAML)"; fi) -o $(OUT_DIR) --generate-stubs || { echo "\n[ERROR] Stub generation failed!"; exit 1; }
-	@echo "\n[MAKE] Compiling fast RTL (packages and stubs) with QuestaSim..."
-	$(VSIM) -c -do "source $(OUT_DIR)/compile_vsim_fast.tcl; quit"
-	@echo "\n[MAKE] Elaborating top-level with Unresolved Blackboxes..."
-	$(VSIM) -c -do "if {[catch {vopt -suppress 13314,2912,2241 +bbox_u ${top_level_module_name} -o ${top_level_module_name}_fast_check}]} {quit -code 1}; quit"
+	@echo "\n[MAKE] Generating exact stubs for external IPs..."
+	@FAST_CHECK_TOOL=$(FAST_CHECK_TOOL) $(PYTHON) $(OLLIVANDER) -c $(SOC_YAML) $$(if [ -n "$(ENV_YAML)" ]; then echo "-a $(ENV_YAML)"; fi) -o $(OUT_DIR) --generate-stubs || { echo "\n[ERROR] Stub generation failed!"; exit 1; }
+	@if [ "$(FAST_CHECK_TOOL)" = "verilator" ]; then \
+		echo "\n[MAKE] Linting/Checking fast RTL with Verilator..."; \
+		$(VERILATOR) -Wno-TIMESCALEMOD -Wno-ASCRANGE -Wno-SYMRSVDWORD -f $(OUT_DIR)/compile_verilator_fast.f --top-module $(TOP_MOD); \
+	else \
+		echo "\n[MAKE] Compiling fast RTL (packages and stubs) with QuestaSim..."; \
+		$(VSIM) -c -suppress 13233 -do "source $(OUT_DIR)/compile_vsim_fast.tcl; quit"; \
+		echo "\n[MAKE] Elaborating top-level with Unresolved Blackboxes..."; \
+		$(VSIM) -c -do "if {[catch {vopt -suppress 13314,2912,2241,13233 +bbox_u ${top_level_module_name} -o ${top_level_module_name}_fast_check}]} {quit -code 1}; quit"; \
+	fi
 	@echo "\n[SUCCESS] Fast architecture check passed!"
 
 run-sim:

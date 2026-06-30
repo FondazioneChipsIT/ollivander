@@ -1,7 +1,12 @@
 # Ollivander Default Environment Configuration
 # Do NOT modify this file directly. To customize your environment, create a separate
 # YAML file (e.g., project_env.yaml) and pass it to Ollivander via the -a (--append-env) flag.
-# All paths are resolved relative to the location of this file.
+# Default tool to use for fast architectural and connectivity checks.
+# Supported options:
+# - "questa": Compiles stubs and top-level using QuestaSim (default).
+# - "verilator": Performs structural lint check using Verilator.
+fast_check_tool: "questa"
+
 paths:
   outdir: "generated"
   # Subdirectories created inside the 'outdir'

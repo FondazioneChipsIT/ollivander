@@ -260,6 +260,22 @@ make fast-check
 ```
 This command stubs all the external modules, avoiding their complete compilation.
 
+#### Simulator Backend Selection
+Ollivander supports two different backend engines for compiling and validating your fast-check:
+1. **QuestaSim** (`questa`): Default incremental compile validation.
+2. **Verilator** (`verilator`): Fast monolithic lint compile validation.
+
+You can configure the tool of choice by defining `fast_check_tool` inside your `*_env.yml` file, or dynamically override it at command-line:
+```bash
+# Run fast-check forcing Verilator
+make fast-check FAST_CHECK_TOOL=verilator
+
+# Run fast-check forcing QuestaSim
+make fast-check FAST_CHECK_TOOL=questa
+```
+
+See the [Environment Configuration Guide](file:///s:/ollivander/docs/env_configuration_guide.md) for more details.
+
 > [!WARNING]
 > The `fast-check` mode is intended primarily for the development of Ollivander itself. It performs "dirty" in-place operations on the source files of external libraries to resolve dependencies.
 > * It requires that the RTL code has already been generated at least once.

@@ -829,7 +829,10 @@ class RTLGenerator:
             "components": [c.model_dump(exclude_none=True) for c in self.soc_config.components] if self.soc_config.components else [],
             "comp_info": comp_info,
             "global_defines": sorted(list(global_defines)),
-            "env_config": {"dependencies": self.env.registry_dependencies},
+            "env_config": {
+                "dependencies": self.env.registry_dependencies,
+                "fast_check_tool": self.env.fast_check_tool
+            },
             "grouped_ports": grouped_ports,
             "port_mapping": port_mapping,
             "top_ports": top_ports,

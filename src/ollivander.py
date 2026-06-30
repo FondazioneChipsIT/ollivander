@@ -96,6 +96,18 @@ def main():
     env = setup_environment(args, base_dir)
     env.config_file_path = config_path.resolve()
     env.outdir_path.mkdir(parents=True, exist_ok=True)
+    
+    # Clean output directory to avoid stale generated files from previous runs
+    if not args.generate_stubs:
+        import shutil
+        for child in env.outdir_path.iterdir():
+            try:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            except Exception as e:
+                print(f"[WARNING] Could not clean stale generated item '{child.name}': {e}")
     bender_work = env.bender_dir / "bender_work"
     bender_work.mkdir(parents=True, exist_ok=True)
     
@@ -169,7 +181,7 @@ def main():
 
     if args.generate_stubs:
         print("\n[*] Starting Fast-Check Stub Generation...")
-        generate_stubs(env.outdir_path, soc_config, env.registry_dependencies, base_dir)
+        generate_stubs(env.outdir_path, soc_config, env.registry_dependencies, base_dir, env.fast_check_tool)
         print("  [SUCCESS] Faithful stubs and fast-compile scripts generated.")
         sys.exit(0)
 
@@ -348,19 +360,24 @@ def main():
     print("[*] Starting Phase 4: Fetching External IPs via Bender...\n")
     bender_exe = shutil.which("bender") or (str(base_dir / "bender") if (base_dir / "bender").is_file() else "bender")
     lock_file = env.bender_dir / "Bender.lock"
+    from core.utils import Spinner
     try:
         if lock_file.is_file():
             try:
                 # Attempt to use the existing locked dependency versions first
-                subprocess.run([bender_exe, "checkout"], cwd=env.bender_dir, check=True)
+                with Spinner("  -> Running 'bender checkout' to verify local cache..."):
+                    subprocess.run([bender_exe, "checkout"], cwd=env.bender_dir, check=True, capture_output=True)
             except subprocess.CalledProcessError:
                 # If checkout fails (e.g. missing dependencies in lockfile), fall back to update
                 print("  [WARNING] 'bender checkout' failed. Attempting 'bender update' to resolve dependencies...")
-                subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True)
+                with Spinner("  -> Running 'bender update' (this may take a minute)..."):
+                    subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True, capture_output=True)
         else:
-            subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True)
-    except subprocess.CalledProcessError:
-        print("\n[ERROR] Failed to fetch dependencies with Bender.")
+            with Spinner("  -> Running 'bender update' (this may take a minute)..."):
+                subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True, capture_output=True)
+        print("  [SUCCESS] External IPs successfully fetched and resolved.")
+    except subprocess.CalledProcessError as e:
+        print(f"\n[ERROR] Failed to fetch dependencies with Bender.\nStdout: {e.stdout.decode(errors='ignore')}\nStderr: {e.stderr.decode(errors='ignore')}")
         sys.exit(1)
         
     # Merge custom patches and pre-build commands from Environment YAMLs

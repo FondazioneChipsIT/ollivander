@@ -144,6 +144,12 @@ make build-sim
 make run-sim
 ```
 
+6. **Fast-Check (Structural Validation)**: For rapid structural validation during iterative development, compile and lint the generated SoC using stubbed external dependencies:
+```bash
+make fast-check
+```
+*Note: You can select the backend simulator (QuestaSim or Verilator) in your environment configuration YAML file via `fast_check_tool`, or temporarily override it at command-line (e.g., `make fast-check FAST_CHECK_TOOL=verilator`).*
+
 The output will be cleanly organized into subdirectories inside `<outdir>` (e.g., `generated/` or the path specified by `-o`):
 
 ```text

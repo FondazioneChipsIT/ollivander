@@ -28,6 +28,7 @@ class OllivanderEnv:
         self.search_paths = []
         self.exclude_dir = ""
         self.base_dir = None
+        self.fast_check_tool = "questa"
 
 def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     """
@@ -158,4 +159,20 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     env.search_paths = [env.outdir_path] + env.component_paths + [base_dir]
     env.exclude_dir = env.outdir_path.name
     
+    # Load fast_check_tool from config files. We only respect the environment variable 
+    # FAST_CHECK_TOOL during stub generation (--generate-stubs) to prevent circular 
+    # lock-in issues from pre-existing Makefile.vsim.
+    import os
+    env.fast_check_tool = ""
+    if getattr(args, "generate_stubs", False):
+        env.fast_check_tool = os.environ.get("FAST_CHECK_TOOL", "")
+        
+    if not env.fast_check_tool:
+        if "fast_check_tool" in append_env_cfg:
+            env.fast_check_tool = append_env_cfg["fast_check_tool"]
+        elif "fast_check_tool" in env_cfg:
+            env.fast_check_tool = env_cfg["fast_check_tool"]
+        else:
+            env.fast_check_tool = "questa"
+
     return env
