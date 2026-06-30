@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import yaml
 from pathlib import Path
+from core.utils import get_generation_comment
 
 def run_pre_build_steps(env):
     """
@@ -332,6 +333,7 @@ def run_padrick(env, soc_config, project_dir: Path):
             if soc_config.padframe.pad_csv or soc_config.padframe.pad_py:
                 domain_list_file = cfg_dir / f"{soc_config.project.name}_pad_list_{dom.name}.yml"
                 with open(domain_list_file, 'w', encoding='utf-8') as f:
+                    f.write(get_generation_comment("#", soc_config.padframe.header_file))
                     yaml.dump(pad_list_data, f, sort_keys=False, default_flow_style=False)
             
         if port_groups_file.is_file():
@@ -388,6 +390,7 @@ def run_padrick(env, soc_config, project_dir: Path):
                         unmapped_ports.append(p_name)
             
         with open(top_cfg, 'w', encoding='utf-8') as f:
+            f.write(get_generation_comment("#", Path(top_cfg).parent))
             yaml.dump(top_dict, f, sort_keys=False, default_flow_style=False)
 
     # Output directories
@@ -410,6 +413,7 @@ def run_padrick(env, soc_config, project_dir: Path):
             "// Copyright 2026 Fondazione Chips-IT.\n"
             "// Licensed under the Solderpad Hardware License, Version 0.51, see LICENSE for details.\n"
             "// SPDX-License-Identifier: SHL-0.51\n"
+            + get_generation_comment("//", Path(padframe_rtl_dir).parent)
         )
         header_path.write_text(header_content, encoding='utf-8')
 

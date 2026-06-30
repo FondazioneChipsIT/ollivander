@@ -13,7 +13,7 @@ import core.interfaces
 from core.interfaces import get_interface_ports
 from core.sv_parser import get_isle_info
 from core.wiring import build_connection_matrix
-from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_import_sv_packages, write_if_changed, strip_comments, simplify_port_ranges
+from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_import_sv_packages, write_if_changed, strip_comments, simplify_port_ranges, get_ollivander_version, get_ollivander_git_hash
 from core.sv_ir import SVArchitectureIR, PortConnection
 from core.rtl_helpers import get_base_name, extract_dims, get_suffixes, norm_type, sv_dependency_sort, PORT_PATTERN
 from core.rtl_ir_builder import build_crossbar_ir, build_noc_ir
@@ -26,6 +26,8 @@ class RTLGenerator:
     and extracts PeakRDL specifications from the generated hardware.
     """
     def __init__(self, env, soc_config, template_lookup):
+        self.gen_version = get_ollivander_version()
+        self.git_hash = get_ollivander_git_hash(env.base_dir)
         self.env = env
         self.soc_config = soc_config
         self.template_lookup = template_lookup
@@ -131,7 +133,7 @@ class RTLGenerator:
                     print(f"  -> Rendering Isle {tpl_path.name} into {out_file.name}")
                     try:
                         template = Template(filename=str(tpl_path), lookup=self.template_lookup)
-                        rendered_code = template.render(apb_peripherals=apb_peripherals, c_type=c.type, p_name=self.soc_config.project.name, comp=c, config=self.soc_config, require_file=self.require_file_helper, require_bender=self.require_bender_helper)
+                        rendered_code = template.render(apb_peripherals=apb_peripherals, c_type=c.type, p_name=self.soc_config.project.name, comp=c, config=self.soc_config, require_file=self.require_file_helper, require_bender=self.require_bender_helper, gen_version=self.gen_version, git_hash=self.git_hash)
                         self.required_local_files.update(self.req_pattern.findall(rendered_code))
                         
                         # Replace placeholder package names with the project-specific ones.
@@ -290,7 +292,7 @@ class RTLGenerator:
                     print(f"  -> Rendering Tile {tpl_path.name} into {out_file.name}")
                     try:
                         template = Template(filename=str(tpl_path), lookup=self.template_lookup)
-                        rendered_code = template.render(comp=c, config=self.soc_config, search_paths=self.env.search_paths, original_type=isle_type, peakrdl_pragma=peakrdl_pragma, require_file=self.require_file_helper, require_bender=self.require_bender_helper, top_level_module_name=self.top_level_module_name)
+                        rendered_code = template.render(comp=c, config=self.soc_config, search_paths=self.env.search_paths, original_type=isle_type, peakrdl_pragma=peakrdl_pragma, require_file=self.require_file_helper, require_bender=self.require_bender_helper, top_level_module_name=self.top_level_module_name, gen_version=self.gen_version, git_hash=self.git_hash)
                         self.required_local_files.update(self.req_pattern.findall(rendered_code))
                         if out_file.suffix == '.sv':
                             rendered_code = auto_import_sv_packages(rendered_code)
@@ -833,6 +835,8 @@ class RTLGenerator:
                 "dependencies": self.env.registry_dependencies,
                 "fast_check_tool": self.env.fast_check_tool
             },
+            "gen_version": self.gen_version,
+            "git_hash": self.git_hash,
             "grouped_ports": grouped_ports,
             "port_mapping": port_mapping,
             "top_ports": top_ports,
@@ -1407,7 +1411,9 @@ class RTLGenerator:
             "project_name": self.soc_config.project.name,
             "pad_domains": pad_domains,
             "core_sig_to_domain": core_sig_to_domain,
-            "validated_connections": validated_connections
+            "validated_connections": validated_connections,
+            "gen_version": self.gen_version,
+            "git_hash": self.git_hash,
         }
         
         out_file = hw_dir / f"{self.soc_config.project.name}_chip.sv"

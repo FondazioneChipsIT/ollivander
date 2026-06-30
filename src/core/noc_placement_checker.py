@@ -11,6 +11,7 @@ exporting a detailed report in Markdown format.
 """
 
 from pathlib import Path
+from core.utils import get_generation_comment
 
 def parse_coord_val(v):
     """
@@ -243,4 +244,5 @@ def run_noc_placement_check(soc_config, env):
     doc_dir.mkdir(parents=True, exist_ok=True)
     report_file = doc_dir / "noc_placement_report.md"
     with open(report_file, 'w', encoding='utf-8') as rf:
+        rf.write(get_generation_comment("<!--", env.base_dir).rstrip() + " -->\n\n")
         rf.write("\n".join(report) + "\n")

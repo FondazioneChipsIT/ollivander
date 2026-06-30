@@ -5,7 +5,7 @@
 import sys
 import re
 from pathlib import Path
-from core.utils import strip_comments
+from core.utils import strip_comments, get_generation_comment
 
 
 def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_check_tool="questa"):
@@ -1084,8 +1084,9 @@ endmodule
         targets.remove("can_top_apb")
 
 
+    comment = get_generation_comment("//", base_dir)
     with open(stubs_dir / f"{project_name}_stubs.sv", "w") as f:
-        stubs_content = "// AUTO-GENERATED STUBS FOR FAST-CHECK\n\n" + "\n\n".join(stubs_out)
+        stubs_content = "// AUTO-GENERATED STUBS FOR FAST-CHECK\n" + comment + "\n" + "\n\n".join(stubs_out)
         if fast_check_tool == "verilator":
             stubs_content = decompose_struct_params(stubs_content)
         f.write(stubs_content)
@@ -1095,7 +1096,7 @@ endmodule
         if fast_check_tool == "verilator":
             stub_content = decompose_struct_params(stub_content)
         with open(stubs_dir / stub["name"], "w") as f:
-            f.write(stub_content)
+            f.write("// AUTO-GENERATED STUB FILE\n" + comment + "\n" + stub_content)
 
 
     # (Active files were resolved early at the start of generate_stubs)
@@ -1196,8 +1197,9 @@ endmodule
     for stub in fast_check_stubs:
         fast_tcl.append(f'vlog -suppress 13314,13233 {opts_str} -sv {outdir_path}/.stubs/{stub["name"]}')
 
+    comment_hash = get_generation_comment("#", base_dir)
     with open(outdir_path / "compile_vsim_fast.tcl", "w") as f:
-        f.write('\n'.join(fast_tcl))
+        f.write(comment_hash + "\n" + '\n'.join(fast_tcl))
 
     # 5. Create compile_verilator_fast.f
     # We compile a Verilator argument file (.f) containing include paths,
@@ -1274,4 +1276,4 @@ endmodule
         verilator_f.append(f'{outdir_path.resolve()}/.stubs/{stub["name"]}')
 
     with open(outdir_path / "compile_verilator_fast.f", "w") as f:
-        f.write('\n'.join(verilator_f))
+        f.write(comment_hash + "\n" + '\n'.join(verilator_f))
