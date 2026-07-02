@@ -1,4 +1,4 @@
-﻿# Copyright 2026 Fondazione Chips-IT.
+# Copyright 2026 Fondazione Chips-IT.
 # Solderpad Hardware License, Version 0.51, see LICENSE for details.
 # SPDX-License-Identifier: SHL-0.51
 
@@ -301,7 +301,7 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 inst.connections.append(PortConnection("clk_i", host_clk))
                 inst.connections.append(PortConnection("rst_ni", "host_pwr_on_rst_n"))
                 inst.connections.append(PortConnection("test_mode_i", "test_mode_i"))
-                inst.connections.append(PortConnection("id_i", f"{{ x: {x}, y: {y}, port_id: 0 }}"))
+                inst.connections.append(PortConnection("id_i", f"'{{ x: {x}, y: {y}, port_id: 0 }}"))
                 inst.connections.append(PortConnection("floo_req_o", f"tile_req_o[{x}][{y}]"))
                 inst.connections.append(PortConnection("floo_rsp_i", f"tile_rsp_i[{x}][{y}]"))
                 inst.connections.append(PortConnection("floo_wide_o", f"tile_wide_o[{x}][{y}]"))
@@ -334,7 +334,7 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                     inst.connections.append(PortConnection("sys_regs_hwif_out_o", "sys_regs_hwif_out"))
                     inst.connections.append(PortConnection("sys_regs_hwif_in_i", "sys_regs_hwif_in"))
                     inst.connections.append(PortConnection("boot_mode_i", "boot_mode_i"))
-                    inst.connections.append(PortConnection("rtc_i", "rtc_i"))
+                    inst.connections.append(PortConnection("rt_clk_i", "rt_clk_i"))
                     has_ext_regs = any(is_external(comp) for comp in comps)
                     inst.connections.append(PortConnection("reg_req_o", "host_reg_req" if has_ext_regs else "/* unused */"))
                     inst.connections.append(PortConnection("reg_rsp_i", "host_reg_rsp" if has_ext_regs else "'0"))

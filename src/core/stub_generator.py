@@ -4,8 +4,94 @@
 
 import sys
 import re
+import pyslang
 from pathlib import Path
 from core.utils import strip_comments, get_generation_comment
+
+def is_testbench_file(p_clean):
+    """
+    Identifies whether a file is a testbench or verification file that should be
+    completely excluded from compilation and stubbing during the fast compile flow.
+    """
+    # Exclude all simulation, UVM verification, and testbench directories/files
+    if 'bender_work' in p_clean and (
+        re.search(r'/(?:test|tests|tb|testbench|dv|verif|vip|cov|env)/', p_clean, re.IGNORECASE) or
+        re.search(r'(?:^|/|_)(?:test|tests|tb|testbench|dv|verif|vip|cov|env)(?:_|\.|$)', p_clean, re.IGNORECASE) or
+        'riscv-dv' in p_clean
+    ):
+        return True
+    return False
+
+
+def is_fast_compile_target(p_clean, outdir_path, fast_check_tool="questa", bld_dir=None):
+    """
+    Evaluates whether a given source file should be kept intact during a fast compile,
+    or if its contents should be replaced by a stub.
+    We want to compile ONLY the top-level structure, while dropping the RTL
+    implementation of all leaves to maximize speed.
+    """
+    # Always keep generated files and headers intact
+    try:
+        p_clean_resolved = p_clean.replace('$ROOT', '.')
+        p_path_resolved = Path(p_clean_resolved).resolve()
+        outdir_resolved = outdir_path.resolve()
+        if outdir_resolved in p_path_resolved.parents or p_clean.endswith('.svh') or p_clean.endswith('_pkg.sv'):
+            return True
+    except Exception:
+        if outdir_path.name in p_clean or p_clean.endswith('.svh') or p_clean.endswith('_pkg.sv'):
+            return True
+
+
+    # Compile infrastructure primitives completely to avoid stubbing issues
+    if 'infrastructure' in p_clean:
+        return True
+
+    # Compile pad reference/behavioral models completely (unless using Verilator)
+    if ('components/padframe' in p_clean or 'components/padframes' in p_clean) and fast_check_tool != 'verilator':
+        return True
+
+    # External testbench files are not required for structural SoC elaboration.
+    if is_testbench_file(p_clean):
+        return False
+
+    # Resolve the actual file path
+    if p_clean.startswith('$ROOT'):
+        p_path = Path(p_clean.replace('$ROOT', '.')).resolve()
+    else:
+        p_path = Path(p_clean).resolve()
+        if not p_path.exists() and bld_dir and (bld_dir / p_path).exists():
+            p_path = (bld_dir / p_path).resolve()
+
+    try:
+        # Read and sanitize file content
+        c = p_path.read_text(encoding='utf-8', errors='ignore')
+        c_clean = strip_comments(c)
+
+        c_clean = re.sub(r'"[^"]*"', '', c_clean) # Ignore string literals
+
+        # Verilator cannot elaborate constant unpacked structs, so we stub any files defining them
+        if fast_check_tool == 'verilator' and re.search(r'\blocalparam\s+[a-zA-Z_0-9]+\s+[a-zA-Z_0-9]+\s*=\s*\'{', c_clean):
+            return False
+
+        # If the file contains a module/interface wrapper/etc. that we want to stub, we do not compile it completely.
+        # (We will extract any packages/interfaces defined inside it during stub generation).
+        if re.search(r'\b(?:module|macromodule|program)\b', c_clean):
+            return False
+
+        # If the file only defines a package or an interface (no module), keep it completely.
+        if re.search(r'\b(?:package|interface)\s+[a-zA-Z_0-9]+', c_clean):
+            return True
+
+        # If the file does not contain any module, macromodule, or program, keep it intact
+        if not re.search(r'\b(?:module|macromodule|program)\b', c_clean):
+            return True
+    except Exception:
+        # If we cannot read or resolve the file (e.g., due to env vars in the path),
+        # keep it intact and let QuestaSim handle it.
+        return True
+
+    # Default behavior: replace with a stub
+    return False
 
 
 def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_check_tool="questa"):
@@ -14,42 +100,12 @@ def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_
     Returns a set of files that are actually referenced (imported or instantiated)
     by the active hierarchy, filtering out unused files/packages from dependencies.
     """
-    def get_expanded_content(file_path, visited_includes=None):
-        if visited_includes is None:
-            visited_includes = set()
-        file_path_abs = str(Path(file_path).resolve())
-        if file_path_abs in visited_includes:
-            return ""
-        visited_includes.add(file_path_abs)
-
-        try:
-            content = Path(file_path_abs).read_text(encoding='utf-8', errors='ignore')
-            content_clean = strip_comments(content)
-
-            # Find all includes and expand them inline using the active include directories
-            expanded_parts = []
-            last_end = 0
-            for match in re.finditer(r'`include\s+"([^"]+)"', content_clean):
-                expanded_parts.append(content_clean[last_end:match.start()])
-                inc_match = match.group(1)
-                # Resolve inc_match using the include search paths
-                for opt in global_options:
-                    opt_str = opt.strip('\"\'')
-                    if opt_str.startswith('+incdir+'):
-                        inc_dir = Path(opt_str[8:].replace('$ROOT', '.')).resolve()
-                        resolved = inc_dir / inc_match
-                        if resolved.exists():
-                            expanded_parts.append(get_expanded_content(resolved, visited_includes))
-                            break
-                last_end = match.end()
-            expanded_parts.append(content_clean[last_end:])
-            return "".join(expanded_parts)
-        except Exception:
-            return ""
-
     module_to_file = {}
     package_to_file = {}
-
+    
+    # Pre-parse all files to build a mapping of module/package declarations and their references
+    parsed_files = {}
+    
     total_files = len(files)
     from core.utils import draw_progress_bar
     for idx, f in enumerate(files):
@@ -57,23 +113,72 @@ def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_
         f_path = Path(f_clean).resolve()
         if not f_path.is_file():
             continue
+            
         draw_progress_bar(idx + 1, total_files, prefix="  -> Mapping active hierarchy        ", suffix=f"({idx+1}/{total_files})")
         try:
-            content_clean = get_expanded_content(f_path)
-            for m in re.findall(r'\b(?:module|interface)\s+([a-zA-Z_0-9]+)\b', content_clean):
+            tree = pyslang.syntax.SyntaxTree.fromFile(str(f_path))
+            
+            defined_mods = set()
+            defined_pkgs = set()
+            insts = set()
+            imports = set()
+            
+            def traverse(node):
+                if node is None:
+                    return
+                node_type = type(node).__name__
+                
+                # Check declarations
+                if node_type == "ModuleDeclarationSyntax":
+                    kind_name = node.kind.name
+                    name_text = ""
+                    if hasattr(node, 'header') and node.header and hasattr(node.header, 'name'):
+                        name_text = node.header.name.valueText
+                    
+                    if name_text:
+                        if kind_name in ("ModuleDeclaration", "InterfaceDeclaration"):
+                            defined_mods.add(name_text)
+                        elif kind_name == "PackageDeclaration":
+                            defined_pkgs.add(name_text)
+                
+                # Check instantiations and imports
+                elif node_type == "HierarchyInstantiationSyntax":
+                    if hasattr(node, 'type') and node.type:
+                        insts.add(node.type.valueText)
+                elif node_type == "PackageImportItemSyntax":
+                    if hasattr(node, 'package') and node.package:
+                        imports.add(node.package.valueText)
+                elif node_type == "ScopedNameSyntax":
+                    if hasattr(node, 'left') and node.left:
+                        if type(node.left).__name__ == "IdentifierNameSyntax":
+                            imports.add(node.left.identifier.valueText)
+                            
+                try:
+                    for child in node:
+                        if child is not None and type(child).__name__ != 'Token':
+                            traverse(child)
+                except TypeError:
+                    pass
+            
+            traverse(tree.root)
+            parsed_files[str(f_path)] = (defined_mods, defined_pkgs, insts, imports)
+            
+            for m in defined_mods:
                 if fast_check_tool == "verilator":
                     module_to_file[m] = [str(f_path)]
                 else:
                     if m not in module_to_file:
                         module_to_file[m] = []
                     module_to_file[m].append(str(f_path))
-            for p in re.findall(r'\bpackage\s+([a-zA-Z_0-9]+)\b', content_clean):
+                    
+            for p in defined_pkgs:
                 if fast_check_tool == "verilator":
                     package_to_file[p] = [str(f_path)]
                 else:
                     if p not in package_to_file:
                         package_to_file[p] = []
                     package_to_file[p].append(str(f_path))
+                    
         except Exception:
             pass
 
@@ -87,28 +192,40 @@ def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_
     if stubs_dir.is_dir():
         for stub_path in stubs_dir.glob("*.sv"):
             try:
-                content_clean = get_expanded_content(stub_path)
-
-                # Find defined modules/interfaces in stubs
-                for m in re.findall(r'\b(?:module|interface)\s+([a-zA-Z_0-9]+)\b', content_clean):
-                    queue.append(m)
-
-                # Find instantiations in stubs
-                insts = re.findall(r'\b([a-zA-Z_0-9]+)\s*#\s*\(', content_clean)
-                insts.extend(re.findall(r'\b([a-zA-Z_0-9]+)\s+[a-zA-Z_0-9]+\s*\(', content_clean))
-                # Find interface port declarations
-                insts.extend(re.findall(r'\b([a-zA-Z_0-9]+)\.[a-zA-Z_0-9]+\s+[a-zA-Z_0-9]+\b', content_clean))
-                # Find virtual interfaces (e.g., virtual AXI_BUS_DV)
-                insts.extend(re.findall(r'\bvirtual\s+([a-zA-Z_0-9]+)\b', content_clean))
-
-                # Find package imports and scope references (my_pkg::...)
-                imports = re.findall(r'\bimport\s+([a-zA-Z_0-9]+)::', content_clean)
-                imports.extend(re.findall(r'\b([a-zA-Z_0-9]+)::', content_clean))
-
-                keywords = {'if', 'case', 'for', 'while', 'always', 'always_comb', 'always_ff', 'always_latch', 'assign', 'logic', 'wire', 'reg', 'bit', 'int', 'struct', 'typedef', 'enum', 'return', 'else', 'begin', 'end'}
-                for item in insts + imports:
-                    if item not in visited and item not in keywords:
-                        queue.append(item)
+                tree = pyslang.syntax.SyntaxTree.fromFile(str(stub_path))
+                
+                def traverse_stub(node):
+                    if node is None:
+                        return
+                    node_type = type(node).__name__
+                    
+                    if node_type == "ModuleDeclarationSyntax":
+                        kind_name = node.kind.name
+                        name_text = ""
+                        if hasattr(node, 'header') and node.header and hasattr(node.header, 'name'):
+                            name_text = node.header.name.valueText
+                        if name_text:
+                            queue.append(name_text)
+                            
+                    elif node_type == "HierarchyInstantiationSyntax":
+                        if hasattr(node, 'type') and node.type:
+                            queue.append(node.type.valueText)
+                    elif node_type == "PackageImportItemSyntax":
+                        if hasattr(node, 'package') and node.package:
+                            queue.append(node.package.valueText)
+                    elif node_type == "ScopedNameSyntax":
+                        if hasattr(node, 'left') and node.left:
+                            if type(node.left).__name__ == "IdentifierNameSyntax":
+                                queue.append(node.left.identifier.valueText)
+                                
+                    try:
+                        for child in node:
+                            if child is not None and type(child).__name__ != 'Token':
+                                traverse_stub(child)
+                    except TypeError:
+                        pass
+                
+                traverse_stub(tree.root)
             except Exception:
                 pass
 
@@ -126,30 +243,55 @@ def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_
                 continue
             needed_files.add(defining_file)
 
-            # Parse dependencies of the resolved file
-            f_path = Path(defining_file).resolve()
-            try:
-                content_clean = get_expanded_content(f_path)
-
-                # Find instantiations (handling both parameterized with '#' and unparameterized)
-                insts = re.findall(r'\b([a-zA-Z_0-9]+)\s*#\s*\(', content_clean)
-                insts.extend(re.findall(r'\b([a-zA-Z_0-9]+)\s+[a-zA-Z_0-9]+\s*\(', content_clean))
-                # Find interface port declarations like REG_BUS.out reg_o
-                insts.extend(re.findall(r'\b([a-zA-Z_0-9]+)\.[a-zA-Z_0-9]+\s+[a-zA-Z_0-9]+\b', content_clean))
-
-                keywords = {'if', 'case', 'for', 'while', 'always', 'always_comb', 'always_ff', 'always_latch', 'assign', 'logic', 'wire', 'reg', 'bit', 'int', 'struct', 'typedef', 'enum', 'return', 'else', 'begin', 'end'}
-                for inst in insts:
-                    if inst not in visited and inst not in keywords:
-                        queue.append(inst)
-
-                # Find package imports and scope references (my_pkg::...)
-                imports = re.findall(r'\bimport\s+([a-zA-Z_0-9]+)::', content_clean)
-                imports.extend(re.findall(r'\b([a-zA-Z_0-9]+)::', content_clean))
-                for imp in imports:
-                    if imp not in visited:
-                        queue.append(imp)
-            except Exception:
-                pass
+            if defining_file in parsed_files:
+                defined_mods, defined_pkgs, insts, imports = parsed_files[defining_file]
+                is_fast = is_fast_compile_target(defining_file, outdir_path, fast_check_tool)
+                
+                if is_fast:
+                    for inst in insts:
+                        if inst not in visited:
+                            queue.append(inst)
+                    for imp in imports:
+                        if imp not in visited:
+                            queue.append(imp)
+                else:
+                    # Stub target: only trace package references in module/interface header declarations or package bodies
+                    try:
+                        tree = pyslang.syntax.SyntaxTree.fromFile(defining_file)
+                        
+                        def traverse_stub_target(node, in_header=False):
+                            if node is None:
+                                return
+                            node_type = type(node).__name__
+                            
+                            if node_type == "ModuleDeclarationSyntax":
+                                kind_name = node.kind.name
+                                if kind_name in ("ModuleDeclaration", "InterfaceDeclaration"):
+                                    if hasattr(node, 'header') and node.header:
+                                        traverse_stub_target(node.header, in_header=True)
+                                    return
+                                elif kind_name == "PackageDeclaration":
+                                    in_header = True
+                                    
+                            if in_header:
+                                if node_type == "PackageImportItemSyntax":
+                                    if hasattr(node, 'package') and node.package:
+                                        queue.append(node.package.valueText)
+                                elif node_type == "ScopedNameSyntax":
+                                    if hasattr(node, 'left') and node.left:
+                                        if type(node.left).__name__ == "IdentifierNameSyntax":
+                                            queue.append(node.left.identifier.valueText)
+                                            
+                            try:
+                                for child in node:
+                                    if child is not None and type(child).__name__ != 'Token':
+                                        traverse_stub_target(child, in_header)
+                            except TypeError:
+                                pass
+                                
+                        traverse_stub_target(tree.root)
+                    except Exception:
+                        pass
 
     sys.stdout.write(f"\r  -> Tracing active dependencies: Done! ({len(needed_files)} active files resolved)     \n")
     sys.stdout.flush()
@@ -167,69 +309,6 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
     allowing developers to quickly check if the Top-Level wiring generated by
     Ollivander is syntactically and dimensionally correct.
     """
-
-
-    def is_fast_compile_target(p_clean, outdir_path, bld_dir=None):
-        """
-        Evaluates whether a given source file should be kept intact during a fast compile,
-        or if its contents should be replaced by a stub.
-        We want to compile ONLY the top-level structure, while dropping the RTL
-        implementation of all leaves to maximize speed.
-        """
-        # Always keep generated files (like packages or top-level) and headers intact
-        if outdir_path.name in p_clean or p_clean.endswith('.svh'):
-            return True
-
-        # Compile infrastructure primitives completely to avoid stubbing issues
-        if 'infrastructure' in p_clean:
-            return True
-
-        # Compile pad reference/behavioral models completely (unless using Verilator)
-        if ('components/padframe' in p_clean or 'components/padframes' in p_clean) and fast_check_tool != 'verilator':
-            return True
-
-        # External testbench files are not required for structural SoC elaboration.
-        if 'bender_work' in p_clean and re.search(r'/(?:test|tests|tb)/', p_clean, re.IGNORECASE):
-            return False
-
-        # Resolve the actual file path
-        if p_clean.startswith('$ROOT'):
-            p_path = Path(p_clean.replace('$ROOT', '.')).resolve()
-        else:
-            p_path = Path(p_clean).resolve()
-            if not p_path.exists() and bld_dir and (bld_dir / p_path).exists():
-                p_path = (bld_dir / p_path).resolve()
-
-        try:
-            # Read and sanitize file content
-            c = p_path.read_text(encoding='utf-8', errors='ignore')
-            c_clean = strip_comments(c)
-
-            c_clean = re.sub(r'"[^"]*"', '', c_clean) # Ignore string literals
-
-            # Verilator cannot elaborate constant unpacked structs, so we stub any files defining them
-            if fast_check_tool == 'verilator' and re.search(r'\blocalparam\s+[a-zA-Z_0-9]+\s+[a-zA-Z_0-9]+\s*=\s*\'{', c_clean):
-                return False
-
-            # If the file contains a module/interface wrapper/etc. that we want to stub, we do not compile it completely.
-            # (We will extract any packages/interfaces defined inside it during stub generation).
-            if re.search(r'\b(?:module|macromodule|program)\b', c_clean):
-                return False
-
-            # If the file only defines a package or an interface (no module), keep it completely.
-            if re.search(r'\b(?:package|interface)\s+[a-zA-Z_0-9]+', c_clean):
-                return True
-
-            # If the file does not contain any module, macromodule, or program, keep it intact
-            if not re.search(r'\b(?:module|macromodule|program)\b', c_clean):
-                return True
-        except Exception:
-            # If we cannot read or resolve the file (e.g., due to env vars in the path),
-            # keep it intact and let QuestaSim handle it.
-            return True
-
-        # Default behavior: replace with a stub
-        return False
 
     def parse_struct_literal(body):
         fields = {}
@@ -543,28 +622,47 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
 
     defined_modules = set()
     inst_modules = set()
+    imported_packages = set()
 
-    # Scan generated code to build a list of all instantiated modules
+    # Scan generated code to build a list of all instantiated modules and packages
     for f in our_files:
         if 'stubs.sv' in f.name: continue
         try:
-            content = f.read_text(encoding='utf-8', errors='ignore')
-            # Strip strings and comments to avoid false positive matches
-            clean = strip_comments(content)
-
-
-            # Track declared modules
-            for m in re.finditer(r'\bmodule\s+([a-zA-Z_][a-zA-Z0-9_]*)\b', clean):
-                defined_modules.add(m.group(1))
-
-            # Track instantiated modules (handling both parameterized with '#' and unparameterized)
-            for m in re.finditer(r'\b([a-zA-Z_0-9]+)\s*#\s*\(', clean):
-                inst_modules.add(m.group(1))
-            for m in re.finditer(r'\b([a-zA-Z_0-9]+)\s+[a-zA-Z_0-9]+\s*\(', clean):
-                inst_modules.add(m.group(1))
-            # Track interface port declarations like REG_BUS.out reg_o
-            for m in re.finditer(r'\b([a-zA-Z_0-9]+)\.[a-zA-Z_0-9]+\s+[a-zA-Z_0-9]+\b', clean):
-                inst_modules.add(m.group(1))
+            tree = pyslang.syntax.SyntaxTree.fromFile(str(f))
+            
+            def traverse_our(node):
+                if node is None:
+                    return
+                node_type = type(node).__name__
+                
+                if node_type == "ModuleDeclarationSyntax":
+                    kind_name = node.kind.name
+                    name_text = ""
+                    if hasattr(node, 'header') and node.header and hasattr(node.header, 'name'):
+                        name_text = node.header.name.valueText
+                    if name_text:
+                        if kind_name in ("ModuleDeclaration", "InterfaceDeclaration"):
+                            defined_modules.add(name_text)
+                            
+                elif node_type == "HierarchyInstantiationSyntax":
+                    if hasattr(node, 'type') and node.type:
+                        inst_modules.add(node.type.valueText)
+                elif node_type == "PackageImportItemSyntax":
+                    if hasattr(node, 'package') and node.package:
+                        imported_packages.add(node.package.valueText)
+                elif node_type == "ScopedNameSyntax":
+                    if hasattr(node, 'left') and node.left:
+                        if type(node.left).__name__ == "IdentifierNameSyntax":
+                            imported_packages.add(node.left.identifier.valueText)
+                            
+                try:
+                    for child in node:
+                        if child is not None and type(child).__name__ != 'Token':
+                            traverse_our(child)
+                except TypeError:
+                    pass
+            
+            traverse_our(tree.root)
         except Exception:
             pass
 
@@ -752,27 +850,45 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
     for idx, f in enumerate(sv_files):
         f_clean = f.strip('\"\'')
         draw_progress_bar(idx + 1, total_hier, prefix="  -> Analyzing module hierarchies    ", suffix=f"({idx+1}/{total_hier})")
-        if is_fast_compile_target(f_clean, outdir_path):
+        if is_fast_compile_target(f_clean, outdir_path, fast_check_tool):
             f_path = Path(f_clean.replace('$ROOT', '.'))
             if f_path.is_file():
                 try:
-                    content = f_path.read_text(encoding='utf-8', errors='ignore')
-                    content_clean = strip_comments(content)
-
-                    # Track declared modules
-                    for m in re.findall(r'\bmodule\s+([a-zA-Z_0-9]+)\b', content_clean):
-                        defined_modules.add(m)
-                    for i in re.findall(r'\binterface\s+([a-zA-Z_0-9]+)\b', content_clean):
-                        defined_modules.add(i)
-
-                    # Track instantiated modules (handling both parameterized with '#' and unparameterized)
-                    for m in re.finditer(r'\b([a-zA-Z_0-9]+)\s*#\s*\(', content_clean):
-                        inst_modules.add(m.group(1))
-                    for m in re.finditer(r'\b([a-zA-Z_0-9]+)\s+[a-zA-Z_0-9]+\s*\(', content_clean):
-                        inst_modules.add(m.group(1))
-                    # Track interface port declarations like REG_BUS.out reg_o
-                    for m in re.finditer(r'\b([a-zA-Z_0-9]+)\.[a-zA-Z_0-9]+\s+[a-zA-Z_0-9]+\b', content_clean):
-                        inst_modules.add(m.group(1))
+                    tree = pyslang.syntax.SyntaxTree.fromFile(str(f_path))
+                    
+                    def traverse_fast(node):
+                        if node is None:
+                            return
+                        node_type = type(node).__name__
+                        
+                        if node_type == "ModuleDeclarationSyntax":
+                            kind_name = node.kind.name
+                            name_text = ""
+                            if hasattr(node, 'header') and node.header and hasattr(node.header, 'name'):
+                                name_text = node.header.name.valueText
+                            if name_text:
+                                if kind_name in ("ModuleDeclaration", "InterfaceDeclaration"):
+                                    defined_modules.add(name_text)
+                                    
+                        elif node_type == "HierarchyInstantiationSyntax":
+                            if hasattr(node, 'type') and node.type:
+                                inst_modules.add(node.type.valueText)
+                        elif node_type == "PackageImportItemSyntax":
+                            if hasattr(node, 'package') and node.package:
+                                imported_packages.add(node.package.valueText)
+                        elif node_type == "ScopedNameSyntax":
+                            if hasattr(node, 'left') and node.left:
+                                if type(node.left).__name__ == "IdentifierNameSyntax":
+                                    imported_packages.add(node.left.identifier.valueText)
+                                    
+                        try:
+                            for child in node:
+                                if child is not None and type(child).__name__ != 'Token':
+                                    traverse_fast(child)
+                        except TypeError:
+                            pass
+                    
+                    traverse_fast(tree.root)
                 except Exception:
                     pass
 
@@ -795,7 +911,7 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
     targets -= excludes
 
     # Resolve transitively active dependencies starting from top-level seeds early
-    seeds = [project_name, f'{project_name}_chip']
+    seeds = [project_name, f'{project_name}_chip'] + list(inst_modules) + list(imported_packages)
     if fast_check_tool != 'verilator':
         seeds.append(f'tb_{project_name}')
     active_files = resolve_active_dependencies(sv_files, seeds, outdir_path, global_options, fast_check_tool)
@@ -805,7 +921,7 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
     for idx, f in enumerate(active_files):
         draw_progress_bar(idx + 1, total_active, prefix="  -> Pre-scanning active files       ", suffix=f"({idx+1}/{total_active})")
         try:
-            if is_fast_compile_target(f, outdir_path):
+            if is_fast_compile_target(f, outdir_path, fast_check_tool):
                 content_clean = strip_comments(Path(f).read_text(encoding='utf-8', errors='ignore'))
                 for m in re.findall(r'\b(?:module|interface)\s+([a-zA-Z_0-9]+)\b', content_clean):
                     completely_compiled_names.add(m)
@@ -954,7 +1070,10 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
         # Only generate stubs for active files
         if p_abs not in active_files:
             continue
-        if not is_fast_compile_target(f_clean, outdir_path):
+        # Skip generating stubs for testbench and verification files
+        if is_testbench_file(f_clean):
+            continue
+        if not is_fast_compile_target(f_clean, outdir_path, fast_check_tool):
             p_abs = str(p_path.resolve())
 
             pkg_stub = extract_packages_and_interfaces(p_abs)
@@ -1118,7 +1237,10 @@ endmodule
                 # Process standalone Verilog/SystemVerilog sources
                 if (p_clean.endswith('.sv') or p_clean.endswith('.v')) and not p.startswith('+'):
                     p_resolved_abs = str(Path(p_clean.replace('$ROOT', '.')).resolve())
-                    if is_fast_compile_target(p_clean, outdir_path):
+                    # Completely ignore testbench/verification files
+                    if is_testbench_file(p_clean):
+                        continue
+                    if is_fast_compile_target(p_clean, outdir_path, fast_check_tool):
                         if p_resolved_abs in active_files or 'generated/' in p_clean or 'components/infrastructure/' in p_clean:
                             new_tokens.append(p)
                             verilator_files.append(p_clean)
@@ -1141,8 +1263,11 @@ endmodule
                                 if not Path(bp_resolved).exists() and (bld_path.parent / bp_resolved).exists():
                                     bp_resolved = str((bld_path.parent / bp_resolved).resolve())
                                 bp_resolved_abs = str(Path(bp_resolved).resolve())
+                                # Completely ignore testbench/verification files
+                                if is_testbench_file(bp_clean):
+                                    continue
 
-                                if is_fast_compile_target(bp_clean, outdir_path, bld_path.parent):
+                                if is_fast_compile_target(bp_clean, outdir_path, fast_check_tool, bld_path.parent):
                                     if bp_resolved_abs in active_files or 'generated/' in bp_resolved or 'components/infrastructure/' in bp_resolved:
                                         bld_tokens.append(bp)
                                         verilator_files.append(bp_resolved)

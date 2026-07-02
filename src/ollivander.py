@@ -370,7 +370,7 @@ def main():
             try:
                 # Attempt to use the existing locked dependency versions first
                 with Spinner("  -> Running 'bender checkout' to verify local cache..."):
-                    subprocess.run([bender_exe, "checkout"], cwd=env.bender_dir, check=True, capture_output=True)
+                    subprocess.run([bender_exe, "checkout", "--force"], cwd=env.bender_dir, check=True, capture_output=True)
             except subprocess.CalledProcessError:
                 # If checkout fails (e.g. missing dependencies in lockfile), fall back to update
                 print("  [WARNING] 'bender checkout' failed. Attempting 'bender update' to resolve dependencies...")

@@ -35,7 +35,7 @@
   // Real-Time domains bypass SW control (always-on, fixed source).
   // Typically used for RTCs or Always-On Timers.
   logic ${dom.name};
-  assign ${dom.name} = ${f"domain_clk_i[{dom.source_gen}]" if config.clock_tree.generators > 0 and dom.source_gen is not None else "rtc_i"};
+  assign ${dom.name} = ${f"domain_clk_i[{dom.source_gen}]" if config.clock_tree.generators > 0 and dom.source_gen is not None else "rt_clk_i"};
  % else:
   logic ${dom.name}_muxed;
   logic ${dom.name}; // Final gated/divided clock

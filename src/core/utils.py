@@ -168,12 +168,21 @@ def draw_progress_bar(iteration, total, prefix='', suffix='', length=30, fill='â
     if total <= 0:
         return
     import sys
+    
+    # Throttle printing to avoid blocking stdout over high-latency SSH
+    last_pct = getattr(draw_progress_bar, "_last_pct", -1)
+    current_pct = int(100 * iteration // total)
+    if iteration != 1 and iteration < total and current_pct == last_pct:
+        return
+    draw_progress_bar._last_pct = current_pct
+
     percent = f"{100 * (iteration / float(total)):.1f}"
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
     sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix}')
     sys.stdout.flush()
     if iteration >= total:
+        draw_progress_bar._last_pct = -1
         sys.stdout.write('\n')
         sys.stdout.flush()
 

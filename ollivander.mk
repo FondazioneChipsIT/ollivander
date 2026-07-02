@@ -91,6 +91,7 @@ setup:
 .PHONY: generate
 generate:
 	@echo "\n[MAKE] Generating the SoC with Ollivander..."
+	@echo "[DEBUG] PATH inside sub-make: \$\${PATH}"
 	@if [ ! -f $(PYTHON) ]; then echo "[ERROR] Virtual environment not found. Run 'make setup' first."; exit 1; fi
 	$(PYTHON) $(OLLIVANDER) -c $(SOC_YAML) -a $(ENV_YAML) -o $(OUT_DIR)
 

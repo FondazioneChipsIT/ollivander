@@ -206,7 +206,7 @@ module ${top_level_module_name}
 % endif
   input  logic pwr_on_rst_ni,
   input  logic test_mode_i,
-  input  logic rtc_i,
+  input  logic rt_clk_i,
   input  logic [1:0] boot_mode_i\
 <%
     top_ports_list = list(top_ports)

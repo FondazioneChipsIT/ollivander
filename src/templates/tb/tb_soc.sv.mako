@@ -24,7 +24,7 @@ module tb_${config.project.name}();
   logic pwr_on_rst_ni;
   logic test_mode_i;
   logic [1:0] boot_mode_i;
-  logic rtc_i;
+  logic rt_clk_i;
 % if config.clock_tree.generators > 0:
   logic [${config.clock_tree.generators - 1}:0] domain_clk_i;
   logic [${config.clock_tree.generators - 1}:0] clk_gen_lock_i;
@@ -55,8 +55,8 @@ module tb_${config.project.name}();
   end
 % endif
   initial begin
-    rtc_i = 1'b0;
-    forever #500 rtc_i = ~rtc_i;
+    rt_clk_i = 1'b0;
+    forever #500 rt_clk_i = ~rt_clk_i;
   end
 
   // ===========================================================================
@@ -94,7 +94,7 @@ module tb_${config.project.name}();
     .pwr_on_rst_ni (pwr_on_rst_ni),
     .test_mode_i   (test_mode_i),
     .boot_mode_i   (boot_mode_i),
-    .rtc_i         (rtc_i)
+    .rt_clk_i      (rt_clk_i)
 % if config.clock_tree.generators > 0:
     ,.domain_clk_i  (domain_clk_i)
     ,.${'fll_lock_i' if config.topology.type == "noc" else 'clk_gen_lock_i'} (clk_gen_lock_i)

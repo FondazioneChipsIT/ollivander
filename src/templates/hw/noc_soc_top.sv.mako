@@ -164,7 +164,7 @@ module ${top_level_module_name}
 % endif
   input  logic test_mode_i,
   input  logic [1:0] boot_mode_i,
-  input  logic rtc_i,
+  input  logic rt_clk_i,
   input  logic clk_rst_bypass_i,
   
   // JTAG and Debug (Host)
@@ -246,6 +246,11 @@ ${"," if all_extra_ports_list else ""}
   // =========================================================================
   // 2. CLOCK AND RESET TREE
   // =========================================================================
+  // Global reset lines (driven by clock_and_reset_tree)
+  logic host_pwr_on_rst_n;
+  logic [${pkg}::NumDomains-1:0] pwr_on_rsts_n;
+  logic [${pkg}::NumDomains-1:0] rsts_n;
+
 <%namespace file="/hw/infrastructure/clock_reset.mako" import="clock_and_reset_tree"/>\
 ${clock_and_reset_tree(config, p_name)}
 

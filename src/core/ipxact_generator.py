@@ -199,7 +199,7 @@ def get_top_level_ports(config, generator, comp_info):
         
     ports.append({"name": "test_mode_i", "dir": "in", "left": None, "right": None})
     ports.append({"name": "boot_mode_i", "dir": "in", "left": "1", "right": "0"})
-    ports.append({"name": "rtc_i", "dir": "in", "left": None, "right": None})
+    ports.append({"name": "rt_clk_i", "dir": "in", "left": None, "right": None})
     ports.append({"name": "clk_rst_bypass_i", "dir": "in", "left": None, "right": None})
     
     # 2. JTAG

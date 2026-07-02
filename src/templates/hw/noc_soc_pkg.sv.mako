@@ -178,6 +178,19 @@ package ${pkg};
   localparam int unsigned NoCAxiRWidth  = (2**LogDepth)*axi_pkg::r_width(AxiDataWidth, AxiIdWidth, AxiUserWidth);
 
   // =========================================================================
+  // 0c. CLOCK AND RESET DOMAINS
+  // =========================================================================
+  // Number of clock/reset domains in the system
+<%
+  gateable_domains = []
+  for c in config.components:
+      clk_tree = getattr(c, 'clock_tree', None)
+      if clk_tree and getattr(clk_tree, 'clock_gating', False):
+          gateable_domains.append(c.clock_domain)
+%>
+  localparam int unsigned NumDomains = ${len(gateable_domains) if len(gateable_domains) > 0 else 1};
+
+  // =========================================================================
   // 1. MESH DIMENSIONS AND TOPOLOGY
   // =========================================================================
   // Defines the physical limits of the Network-on-Chip and provides a static

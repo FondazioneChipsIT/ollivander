@@ -6,3 +6,7 @@
 OLLIVANDER_ROOT := $(shell pwd)
 
 include ollivander.mk
+
+# Include the test suite to run validation checks on the Ollivander 
+# development environment using the provided example projects.
+include soc_cfg_examples/ollivander_test.mk

@@ -146,7 +146,7 @@ module spm_isle #(
   // -----------------------------------------------------------------------
   // SPM SRAM Macros & Address Multiplexing
   // -----------------------------------------------------------------------
-  typedef logic [(SpmRowSelWidth > 0) ? SpmRowSelWidth-1 : 0] row_sel_t;
+  typedef logic [((SpmRowSelWidth > 0) ? SpmRowSelWidth-1 : 0) : 0] row_sel_t;
 
   logic      [SpmNumBanksPerWord-1:0]                         spm_req;
   logic      [SpmNumBanksPerWord-1:0]                         spm_we;
