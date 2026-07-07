@@ -20,6 +20,20 @@ PYTHON   ?= python3
 MAKE     ?= make
 FAST_CHECK_TOOL ?= ${env_config.get("fast_check_tool", "questa")}
 VERILATOR ?= verilator
+VSIM_FLAGS ?= +fast_boot
+VSIM_OPT_FLAGS ?= -voptargs="-O5"
+
+# Assertions control (set ASSERTIONS=0 to disable SVA)
+ASSERTIONS ?= 1
+ifeq ($(ASSERTIONS),0)
+  VSIM_OPT_FLAGS += -nosva -noimmedassert -nopsl
+endif
+<%
+import os
+with open("/data2/alessio.mangone/ollivander/debug_testbench.txt", "w") as f:
+    f.write(f"cwd: {os.getcwd()}\n")
+    f.write(f"config.testbench: {config.testbench}\n")
+%>
 <%
   # Base standard targets for simulation
   b_targets = ["rtl", "simulation", "sim", "test"]
@@ -33,6 +47,8 @@ VERILATOR ?= verilator
           
   # Remove duplicates preserving order
   b_targets = list(dict.fromkeys(b_targets))
+  # Filter out FPGA-specific target for simulation
+  b_targets = [t for t in b_targets if t != "scm_use_fpga_scm"]
   bender_targets_str = " ".join([f"-t {t}" for t in b_targets])
 %>\
 BENDER_TARGETS ?= ${bender_targets_str}
@@ -76,6 +92,143 @@ build-sw:
 % if config.get("software_stack"):
 	@echo "\n[MAKE] Compiling C firmware..."
 	@$(MAKE) -C $(OUT_DIR)/sw all || { echo "\n[ERROR] Software compilation failed!"; exit 1; }
+<%
+testbench_cfg = config.testbench or {}
+preload_mems = testbench_cfg.get("preload_memories", [])
+app_name = config.get("software_stack", {}).get("test_app", {}).get("name", "hello_world")
+all_comps = [config.host] + (config.components if config.components else [])
+
+def find_component(comp_name, config):
+    if config.topology.type == "noc" and "i_tile_" in comp_name:
+        parts = comp_name.split('.')
+        tile_part = [p for p in parts if p.startswith("i_tile_")]
+        if tile_part:
+            tile_sub = tile_part[0].replace("i_tile_", "")
+            coords = tile_sub.split('_')
+            if len(coords) >= 2:
+                try:
+                    tx, ty = int(coords[0]), int(coords[1])
+                    comps = [config.host] + (config.components if config.components else [])
+                    for c in comps:
+                        p = getattr(c, 'placement', None)
+                        if not p or 'logical' not in p: continue
+                        log = p['logical']
+                        items = log if isinstance(log, list) else [log]
+                        for item in items:
+                            if 'box' in item:
+                                b = item['box']
+                                if b['x_start'] <= tx <= b['x_end'] and b['y_start'] <= ty <= b['y_end']:
+                                    return c
+                            else:
+                                if (item or {}).get('x') == tx and (item or {}).get('y') == ty:
+                                    return c
+                except ValueError:
+                    pass
+    clean_name = comp_name
+    if '.' in clean_name:
+        clean_name = clean_name.split('.')[0]
+    if clean_name.startswith("i_"):
+        clean_name = clean_name[2:]
+    for comp in config.components:
+        if comp.name == clean_name:
+            return comp
+    return None
+
+def resolve_param_val(val, comp, fixed_params=None):
+    import re
+    if not val:
+        return 0
+    if str(val).isdigit():
+        return int(val)
+    params = {}
+    if comp and comp.parameters:
+        params.update(comp.parameters)
+    if fixed_params:
+        for k, v in fixed_params.items():
+            if k not in params:
+                params[k] = v
+    if "AxiDataWidth" not in params:
+        if config.topology.type == "noc":
+            interfaces = getattr(comp, "interfaces", {}) or {}
+            noc_nets = interfaces.get("noc_networks", {}) or {}
+            noc_mode = noc_nets.get("noc_mode", "")
+            slv_nets = noc_nets.get("slave", [])
+            mst_nets = noc_nets.get("master", [])
+            if "wide" in slv_nets or "wide" in mst_nets or noc_mode == "joined":
+                params["AxiDataWidth"] = 512
+            else:
+                params["AxiDataWidth"] = 64
+        else:
+            params["AxiDataWidth"] = 64
+    val_str = str(val)
+    for pk, pv in params.items():
+        val_str = re.sub(rf'\b{pk}\b', str(pv), val_str)
+    val_str = re.sub(rf'\(int unsigned\)|\(int\)', '', val_str)
+    try:
+        val_str = val_str.replace('/', '//')
+        return int(eval(val_str, {"__builtins__": None}, {}))
+    except Exception:
+        digits = re.findall(r'\d+', val_str)
+        if digits:
+            return int(digits[0])
+        return 1
+
+# Query explicit HasEcc and EccType properties from the memory component wrappers
+has_ecc = False
+ecc_scheme = "none"
+for mem in preload_mems:
+    comp_name = mem['instance']
+    clean_name = comp_name[2:] if comp_name.startswith("i_") else comp_name
+    c_info = comp_info.get(comp_name) or comp_info.get(clean_name) or {}
+    fixed_params = c_info.get("fixed_params") or {}
+    if fixed_params.get("HasEcc", "0").strip('"\'') == "1":
+        has_ecc = True
+        ecc_scheme = fixed_params.get("EccType", "none").strip('"\'')
+        break
+%>
+  % for mem in preload_mems:
+    <%
+    comp_name = mem['instance']
+    matched_comp = find_component(comp_name, config)
+    comp_key = matched_comp.name if matched_comp else comp_name
+    c_info = comp_info.get(comp_name) or comp_info.get(comp_key) or {}
+    fixed_params = c_info.get("fixed_params") or {}
+    supported_params = c_info.get("supported_params") or {}
+    preload_type = fixed_params.get("PreloadType", "").strip('"\'')
+    with open("debug_vsim.txt", "a") as f:
+        f.write(f"mem={mem}, matched_comp={matched_comp.name if matched_comp else None}, preload_type={preload_type}\n")
+    %>
+    % if preload_type == "interleaved":
+      <%
+      bank_width = resolve_param_val(fixed_params.get("PreloadBankWidth"), matched_comp, fixed_params)
+      data_width = resolve_param_val("AxiDataWidth", matched_comp, fixed_params)
+      mem_size = None
+      if matched_comp:
+          mem_size = (matched_comp.parameters or {}).get("MemSize") or (matched_comp.parameters or {}).get("L2MemSize")
+          if not mem_size:
+              for slv in matched_comp.interfaces.get("axi_slave", []):
+                  mem_size = slv.get("size", mem_size)
+      mem_size = resolve_param_val(fixed_params.get("L2MemSize") or mem_size, matched_comp, fixed_params)
+      base_addr = "0x78000000"
+      if matched_comp:
+          for slv in matched_comp.interfaces.get("axi_slave", []):
+               base_addr = slv.get("base_addr", base_addr)
+      num_groups = resolve_param_val(fixed_params.get("PreloadNumGroups"), matched_comp, fixed_params)
+      num_banks_per_group = resolve_param_val(fixed_params.get("PreloadBanksPerGroup"), matched_comp, fixed_params)
+      %>
+	@if [ -f ../../src/core/split_hex.py ]; then \
+		echo "  -> Splitting hex for interleaved preloading: ${comp_name}..."; \
+		$(PYTHON) ../../src/core/split_hex.py $(OUT_DIR)/sw/${app_name}.hex $(OUT_DIR)/sw/ \
+			--base-addr ${base_addr} \
+			--num-groups ${num_groups} \
+			--data-width ${data_width} \
+			--bank-width ${bank_width} \
+			--mem-size ${mem_size} \
+			--num-banks-per-group ${num_banks_per_group} \
+			${f"--ecc-scheme {ecc_scheme} --ecc-dir {ecc_schemes_dir}" if has_ecc else ""}; \
+	fi
+    % endif
+  % endfor
 % else:
 	@echo "\n[MAKE] No software stack configured. Skipping firmware compilation."
 % endif
@@ -90,7 +243,8 @@ prep-sim: update-hw
 
 build-sim: prep-sim build-sw
 	@echo "\n[MAKE] Compiling RTL with QuestaSim (vlog)..."
-	$(VSIM) -c -do "if {[source $(OUT_DIR)/compile_vsim.tcl]} {quit -code 1}; quit"
+	@mkdir -p logs
+	$(VSIM) -c -l logs/compile.log -suppress 13233 -do "set err [source $(OUT_DIR)/compile_vsim.tcl]; if {\$$err == 1} {quit -code 1}; quit"
 
 fast-check: prep-sim
 	@echo "\n[MAKE] Generating exact stubs for external IPs..."
@@ -100,16 +254,33 @@ fast-check: prep-sim
 		$(VERILATOR) -Wno-TIMESCALEMOD -Wno-ASCRANGE -Wno-SYMRSVDWORD -f $(OUT_DIR)/compile_verilator_fast.f --top-module $(TOP_MOD); \
 	else \
 		echo "\n[MAKE] Compiling fast RTL (packages and stubs) with QuestaSim..."; \
-		$(VSIM) -c -suppress 13233 -do "source $(OUT_DIR)/compile_vsim_fast.tcl; quit"; \
+		mkdir -p logs; \
+		$(VSIM) -c -l logs/fast_compile.log -suppress 13233 -do "source $(OUT_DIR)/compile_vsim_fast.tcl; quit"; \
 		echo "\n[MAKE] Elaborating top-level with Unresolved Blackboxes..."; \
-		$(VSIM) -c -do "if {[catch {vopt -suppress 13314,2912,2241,13233 +bbox_u ${top_level_module_name} -o ${top_level_module_name}_fast_check}]} {quit -code 1}; quit"; \
+		$(VSIM) -c -l logs/fast_check.log -do "if {[catch {vopt -suppress 13314,2912,2241,13233 +bbox_u ${top_level_module_name} -o ${top_level_module_name}_fast_check}]} {quit -code 1}; quit"; \
 	fi
 	@echo "\n[SUCCESS] Fast architecture check passed!"
 
 run-sim:
 	@echo "\n[MAKE] Running simulation in QuestaSim..."
-	$(VSIM) -c tb_$(TOP_MOD) -suppress 13314 -do "run -all; quit"
+	@# Suppressed warnings/errors:
+	@# - 13314: Default SV input port kind relaxed warning
+	@# - 2732: Timeunit/timeprecision warning
+	@# - 3009: Missing timeunit/timeprecision error in third-party IPs (e.g. hci, ibex)
+	@# - 3999: Connection type incompatible with enum port in OpenTitan IPs (e.g. u_RoT, i_watchdog)
+	@# - 8602: Replication multiplier (0) in common_cells/sync.sv when Stages=0 (parameterized bypass)
+	@mkdir -p logs/stdout
+	@ln -snf ../generated logs/generated
+	cd logs && $(VSIM) -c -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,2732,3009,3999,8602 -do "run -all; quit"
 
 gui:
 	@echo "\n[MAKE] Launching QuestaSim GUI..."
-	$(VSIM) -gui tb_$(TOP_MOD) -suppress 13314
+	@# Suppressed warnings/errors:
+	@# - 13314: Default SV input port kind relaxed warning
+	@# - 2732: Timeunit/timeprecision warning
+	@# - 3009: Missing timeunit/timeprecision error in third-party IPs (e.g. hci, ibex)
+	@# - 3999: Connection type incompatible with enum port in OpenTitan IPs (e.g. u_RoT, i_watchdog)
+	@# - 8602: Replication multiplier (0) in common_cells/sync.sv when Stages=0 (parameterized bypass)
+	@mkdir -p logs/stdout
+	@ln -snf ../generated logs/generated
+	cd logs && $(VSIM) -gui -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,2732,3009,3999,8602

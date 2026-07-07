@@ -11,8 +11,8 @@ CC      = ${toolchain}gcc
 OBJCOPY = ${toolchain}objcopy
 OBJDUMP = ${toolchain}objdump
 
-# Default compilation flags for Cheshire (RV64)
-CFLAGS  = -march=rv64imafdc -mabi=lp64d -mcmodel=medany -ffunction-sections -fdata-sections -g -O0
+# Default compilation flags for Host (dynamic based on ISA/ABI/cmodel)
+CFLAGS  = -march=${config.host.isa or "rv64imafdc"} -mabi=${config.host.abi or "lp64d"} -mcmodel=${config.host.cmodel or "medany"} -ffunction-sections -fdata-sections -g -O0
 LDFLAGS = -T linker.ld -nostartfiles -Wl,--gc-sections
 
 .PHONY: all clean

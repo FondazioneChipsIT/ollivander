@@ -114,6 +114,9 @@ module spatz_cluster_isle
   localparam int unsigned NumIntOutstandingLoads   [NumCores] = '{default: 1};
   localparam int unsigned NumIntOutstandingMem     [NumCores] = '{default: 4};
   localparam int unsigned NumSpatzOutstandingLoads [NumCores] = '{default: 4};
+  localparam int unsigned NumSpatzFPUs             [NumCores] = '{default: 4};
+  localparam int unsigned NumSpatzIPUs             [NumCores] = '{default: 1};
+  localparam int unsigned NumSpatzTCDMPorts        [NumCores] = '{default: 4};
 
   axi_iwc_out_req_t axi_from_cluster_iwc_req;
   axi_iwc_out_resp_t axi_from_cluster_iwc_resp;
@@ -346,6 +349,9 @@ module spatz_cluster_isle
     .BootAddr                 ( 32'h1000                 ),
     .ClusterPeriphSize        ( 64                       ),
     .NrCores                  ( NumCores                 ),
+    .NumSpatzFPUs             ( NumSpatzFPUs             ),
+    .NumSpatzIPUs             ( NumSpatzIPUs             ),
+    .NumSpatzTCDMPorts        ( NumSpatzTCDMPorts        ),
     .TCDMDepth                ( 1024                     ),
     .NrBanks                  ( 16                       ),
     .ICacheLineWidth          ( ICacheLineWidth          ),

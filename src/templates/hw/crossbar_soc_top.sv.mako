@@ -192,6 +192,11 @@ module ${top_level_module_name}
   // Macro Types
   parameter type axi_req_t  = ${pkg}::soc_axi_req_t,
   parameter type axi_resp_t = ${pkg}::soc_axi_resp_t
+%   if config.project.macro_settings and config.project.macro_settings.masters:
+  ,
+  parameter type axi_master_req_t  = ${pkg}::soc_axi_slv_req_t,
+  parameter type axi_master_resp_t = ${pkg}::soc_axi_slv_resp_t
+%   endif
 % endif
 ) (
   // ---------------------------------------------------------
@@ -206,7 +211,12 @@ module ${top_level_module_name}
 % endif
   input  logic pwr_on_rst_ni,
   input  logic test_mode_i,
+<%
+  has_rt_clk = any(dom.is_real_time and (dom.source_gen is None or config.clock_tree.generators == 0) for dom in config.clock_tree.domains)
+%>\
+% if has_rt_clk:
   input  logic rt_clk_i,
+% endif
   input  logic [1:0] boot_mode_i\
 <%
     top_ports_list = list(top_ports)
@@ -241,8 +251,8 @@ module ${top_level_module_name}
             top_ports_list.append("input  axi_req_t  axi_req_i")
             top_ports_list.append("output axi_resp_t axi_resp_o")
         if config.project.macro_settings.masters:
-            top_ports_list.append("output axi_req_t  axi_req_o")
-            top_ports_list.append("input  axi_resp_t axi_resp_i")
+            top_ports_list.append("output axi_master_req_t  axi_req_o")
+            top_ports_list.append("input  axi_master_resp_t axi_resp_i")
 %>\
 % if top_ports_list:
 ,
@@ -262,6 +272,11 @@ module ${top_level_module_name}
   logic host_pwr_on_rst_n;
   logic [${pkg}::NumDomains-1:0] pwr_on_rsts_n;
   logic [${pkg}::NumDomains-1:0] rsts_n;
+
+% if not has_rt_clk:
+  logic rt_clk_i;
+  assign rt_clk_i = 1'b0;
+% endif
 
   // Physical Interconnect Wires
 % for (c_name, prt_name), dim in out_ports.items():
@@ -327,7 +342,7 @@ ${clock_and_reset_tree(config, p_name)}
   ${top_level_module_name}_sys_regs i_sys_ctrl_regs (
     .clk            ( host_clk ),
     .arst_n         ( host_pwr_on_rst_n ), // Async active-low reset
-    .s_apb_paddr    ( pcrs_apb_req.paddr ),
+    .s_apb_paddr    ( pcrs_apb_req.paddr[${sys_regs_addr_width-1}:0] ),
     .s_apb_pprot    ( pcrs_apb_req.pprot ),
     .s_apb_psel     ( pcrs_apb_req.psel ),
     .s_apb_penable  ( pcrs_apb_req.penable ),

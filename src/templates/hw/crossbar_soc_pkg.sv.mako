@@ -40,22 +40,31 @@
                   if not is_sync and "async_axi_in_aw_data_i" not in c_info["ports"]:
                       is_sync = True
               ports = slv.get('ports', 1)
+              raw_base = slv['base_addr']
+              base_int = int(raw_base, 16) if isinstance(raw_base, str) and raw_base.startswith('0x') else int(raw_base)
+              raw_size = slv.get('size', slv.get('size_per_instance', '0x1000'))
+              size_int = int(raw_size, 16) if isinstance(raw_size, str) and raw_size.startswith('0x') else int(raw_size)
+              
+              port_size = size_int // ports
               for p in range(ports):
                   name_suffix = f"_{p}" if ports > 1 else ""
+                  port_base = base_int + p * port_size
                   obj = {
                       'name': f"{c.name}{name_suffix}",
-                      'base': slv['base_addr'],
-                      'size': slv.get('size', slv.get('size_per_instance', '0x1000'))
+                      'base': f"0x{port_base:08X}",
+                      'size': f"0x{port_size:08X}"
                   }
                   if is_sync: axi_slaves_sync.append(obj)
                   else: axi_slaves_async.append(obj)
                   
   if config.project.build_mode == "macro" and config.project.macro_settings and config.project.macro_settings.masters:
+      addr_width = getattr(config.topology.global_bus, 'addr_width', 48)
       for idx, mst in enumerate(config.project.macro_settings.masters):
+          dummy_base = (1 << addr_width) - 0x100000 - (idx * 0x1000)
           axi_slaves_sync.append({
               'name': f'macro_export_{idx}',
-              'base': '0',
-              'size': '0'
+              'base': f'0x{dummy_base:X}',
+              'size': '0x1000'
           })
 
   axi_slaves = axi_slaves_async + axi_slaves_sync
@@ -129,20 +138,22 @@ package ${pkg};
   localparam int unsigned AxiUserWidth     = ${config.topology.global_bus.user_width};
   localparam int unsigned AxiIdWidth       = ${config.topology.global_bus.mst_id_width};
   
-  localparam int unsigned ExtSlvIdWidth    = AxiIdWidth + $clog2(${len(axi_masters)} > 1 ? ${len(axi_masters)} : 2);
+<%
+  # Calculate host's internal AXI masters to adjust ExtSlvIdWidth
+  host_params = config.host.parameters or {}
+  num_cores = host_params.get('NumCores', 1)
+  has_dbg = 1 # Always present
+  has_dma = 1 if host_params.get('Dma', True) else 0
+  has_slink = 1 if host_params.get('SerialLink', True) else 0
+  has_vga = 1 if host_params.get('Vga', True) else 0
+  has_usb = 1 if host_params.get('Usb', True) else 0
+  num_internal_masters = num_cores + has_dbg + has_dma + has_slink + has_vga + has_usb
+  total_masters = len(axi_masters) + num_internal_masters
+%>
+  localparam int unsigned ExtSlvIdWidth    = AxiIdWidth + $clog2(${total_masters} > 1 ? ${total_masters} : 2);
   localparam int unsigned LlcIdWidth       = ExtSlvIdWidth + 1; // Margin for LLC bypass bit
 
-  // L2 Memory Base Addresses (Extracted from components)
-<%
-  l2_slv = next((s for s in axi_slaves if 'l2' in s['name']), None)
-  l2_base = l2_slv['base'] if l2_slv else 0
-  l2_size = l2_slv['size'] if l2_slv else 0
-%>\
-  localparam logic [63:0] L2Port0InterlBase    = 64'h${parse_hex(l2_base)};
-  localparam logic [63:0] L2Port0NonInterlBase = 64'h${parse_hex(l2_base)} + 64'h${parse_hex(l2_size)}/2;
-  localparam logic [63:0] L2Port1InterlBase    = 64'h${parse_hex(l2_base)};
-  localparam logic [63:0] L2Port1NonInterlBase = 64'h${parse_hex(l2_base)} + 64'h${parse_hex(l2_size)}/2;
-  
+
   localparam int unsigned AxiUserAmoMsb    = ${config.system_settings.user_mapping.amo_msb};
   localparam int unsigned AxiUserAmoLsb    = ${config.system_settings.user_mapping.amo_lsb};
   localparam int unsigned AxiUserEccErrBit = ${config.system_settings.user_mapping.ecc_err_bit};
@@ -209,9 +220,9 @@ package ${pkg};
   // =========================================================================
   // Master and Slave enumeration indices. These are crucial to correctly wire 
   // components to specific ports of the central multidimensional AXI crossbar.
-  localparam int unsigned NumAxiMasters = ${len(axi_masters)};
-  localparam int unsigned NumAxiMastersSync = ${config.host.parameters.get('AxiNumMstSync', 0)};
-  localparam int unsigned NumAxiMastersAsync = NumAxiMasters - NumAxiMastersSync;
+  localparam int unsigned NumAxiMastersAsync = ${len(axi_masters_async)};
+  localparam int unsigned NumAxiMastersSync  = ${config.host.parameters.get('AxiNumMstSync', len(axi_masters_sync))};
+  localparam int unsigned NumAxiMasters      = NumAxiMastersAsync + NumAxiMastersSync;
   typedef enum int {
 % for mst in axi_masters:
     AxiMstIdx_${camel_case(mst)} = ${loop.index}${"," if not loop.last else ""}

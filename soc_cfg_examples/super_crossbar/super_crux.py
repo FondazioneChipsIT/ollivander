@@ -64,6 +64,7 @@ config = OllivanderConfig(
     # --------------------------------------------------------------------------
     clock_tree=ClockTree(
         generators=4,
+        generator_periods_ns=[10.0, 10.0, 10.0, 10.0],
         domains=[
             ClockDomain(name="rt", description="Real-Time Clock for CLINT and AON timers", is_real_time=True, source_gen=0, static_div=100, has_mux=False, has_divider=False),
             ClockDomain(name="host", description="Main Host Clock for Cheshire CPU", has_divider=False, has_debug_divider=True, source_gen=1, has_mux=False),
@@ -113,6 +114,9 @@ config = OllivanderConfig(
         description="Main application processor (Cheshire host)",
         type="cheshire_isle",
         clock_domain="host",
+        isa="rv64imafdc",
+        abi="lp64d",
+        cmodel="medany",
         export_interfaces=["jtag", "uart", "spi", "i2c", "gpio"],
         interfaces={
             "axi_master": True,
@@ -123,7 +127,9 @@ config = OllivanderConfig(
         parameters={
             "NumCores": 1, "RtcFreq": 1000000, "Bootrom": True, "Uart": True,
             "I2c": True, "SpiHost": True, "Dma": True, "SerialLink": False,
-            "Vga": False, "Snooper": True, "IrqRouter": True
+            "Vga": False, "Snooper": True, "IrqRouter": True,
+            "Cva6ExtCieOnTop": True,
+            "Cva6ExtCieLength": 0x08000000
         },
         interrupts={
             "intr_ext_i": {
@@ -172,8 +178,9 @@ config = OllivanderConfig(
             description="Level 2 shared SRAM with ECC",
             type="l2_isle",
             clock_domain="l2",
+            system_config={"is_l2_mem": True},
             interfaces={
-                "axi_slave": [{"ports": 2, "base_addr": 0x78000000, "size": 0x00200000, "sync_domain": False}],
+                "axi_slave": [{"ports": 2, "base_addr": 0x88000000, "size": 0x00200000, "sync_domain": False}],
                 "regbus_slave": [{"base_addr": 0x2000B000, "size": 0x00001000, "sync_domain": False}]
             }
         ),
@@ -230,6 +237,7 @@ config = OllivanderConfig(
             description="Multicore array for integer math acceleration",
             type="pulp_cluster_isle",
             clock_domain="pulp",
+            defines=["FEATURE_ICACHE_STAT"],
             interfaces={
                 "axi_master": True,
                 "axi_slave": [{"base_addr": 0x50000000, "size": 0x00800000, "sync_domain": False}],
@@ -371,12 +379,14 @@ config = OllivanderConfig(
         )
     ],
     
-    # --------------------------------------------------------------------------
-    # TESTBENCH CONFIGURATION
-    # --------------------------------------------------------------------------
     testbench={
+        "boot_force_delay_ns": 5000000,
+        "boot_force_fast_delay_ns": 1000000,
+        "boot_timeout_ns": 10000000,
+        "boot_timeout_fast_ns": 2000000,
+        "sim_timeout_ns": 10000000,
         "preload_memories": [
-            {"instance": "l2_shared_memory.sram_array", "file": "generated/sw/hello_world.hex"}
+            {"instance": "i_l2_shared_memory", "file": "generated/sw/hello_world.hex"}
         ]
     },
     

@@ -211,6 +211,8 @@ module snitch_hwpe_subsystem
     .clk_o    (hwpe_clk[1])
   );
 
+  cv32e40x_if_xif dummy_xif();
+
   redmule_top #(
     .ID_WIDTH     (IdWidth),
     .N_CORES      (NrCores),
@@ -222,6 +224,10 @@ module snitch_hwpe_subsystem
     .test_mode_i(test_mode_i),
     .evt_o      (evt[0]),
     .busy_o     (busy),
+    .xif_issue_if_i      (dummy_xif.coproc_issue),
+    .xif_result_if_o     (dummy_xif.coproc_result),
+    .xif_compressed_if_i (dummy_xif.coproc_compressed),
+    .xif_mem_if_o        (dummy_xif.coproc_mem),
     .tcdm       (tcdm_to_mux[0]),
     .periph     (periph[0])
   );

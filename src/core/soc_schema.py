@@ -174,6 +174,8 @@ class ClockDomain(BaseModel):
 class ClockTree(BaseModel):
     """Root definition for the SoC clock generation and distribution tree."""
     generators: int                            # Total number of analog Clock Generators (PLLs/FLLs) available
+    generator_periods_ns: Optional[List[float]] = None
+    rt_clk_period_ns: Optional[float] = 1000.0  # Real-Time Clock simulation period in ns (testbench only)
     domains: List[ClockDomain]
 
 # ==============================================================================
@@ -468,6 +470,9 @@ class Component(BaseModel):
     logical_placement: Optional[Any] = None        # For NoC Tiles
     noc_connections: Optional[List[str]] = None    # For NoC Tiles
     memory_map: Optional[List[Dict[str, Any]]] = None # For NoC Tiles
+    isa: Optional[str] = None                      # Compiler ISA override (e.g. rv64imafdc)
+    abi: Optional[str] = None                      # Compiler ABI override (e.g. lp64d)
+    cmodel: Optional[str] = None                   # Compiler code model override (e.g. medany)
     
     @model_validator(mode='after')
     def normalize_domains(self) -> 'Component':

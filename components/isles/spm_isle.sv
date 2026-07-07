@@ -18,11 +18,28 @@ module spm_isle #(
   parameter int unsigned AxiInIdWidth    = 5,
   parameter int unsigned AxiUserWidth    = 2,
   parameter int unsigned AxiMaxWriteTxns = 1,
-  parameter int unsigned SpmTileSize     = 32'h00040000,
+  parameter int unsigned L2MemSize      = 32'h00040000,
+  parameter int unsigned SpmTileSize     = L2MemSize,
+  parameter logic [63:0] L2BaseAddr     = 64'h00000000,
   parameter int unsigned SpmWordsPerBank = 1024,
   parameter int unsigned SpmDataWidth    = 64,
   parameter type         axi_req_t       = logic,
-  parameter type         axi_resp_t      = logic
+  parameter type         axi_resp_t      = logic,
+  // Memory preloading standardization parameters
+  // PreloadType: Tells the generator that this memory uses interleaved multi-bank preloading.
+  localparam string PreloadType = "interleaved",
+  // PreloadTemplate: Hierarchical path from module top to individual tc_sram array instances.
+  localparam string PreloadTemplate = "gen_spm_bank_col[{group}].gen_spm_bank_row[{bank}].i_spm.sram",
+  // PreloadNumGroups: Number of bank groups (columns) inside the interleaved memory.
+  localparam int unsigned PreloadNumGroups = AxiDataWidth / SpmDataWidth,
+  // PreloadBankWidth: Data width of a single physical SRAM bank in bits.
+  localparam int unsigned PreloadBankWidth = SpmDataWidth,
+  // PreloadBanksPerGroup: Number of physical SRAM banks in each group (rows).
+  localparam int unsigned PreloadBanksPerGroup = (SpmTileSize / (AxiDataWidth / 8)) / SpmWordsPerBank,
+  // HasEcc: 0 indicates this memory does not implement Error Correction Codes (ECC)
+  localparam bit HasEcc = 0,
+  // EccType: Set to 'none' since ECC is disabled
+  localparam string EccType = "none"
 ) (
   input  logic      clk_i,
   input  logic      rst_ni,

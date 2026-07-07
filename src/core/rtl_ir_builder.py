@@ -18,6 +18,23 @@ from core.sv_ir import PortConnection
 from core.utils import fmt_rst, is_external
 
 
+def get_l2_instance_params(comp, inst_idx=0):
+    """
+    Calculate the instance-specific base address and size for an L2 memory component.
+    """
+    base_addr = 0
+    size_val = 0
+    if comp.interfaces and 'axi_slave' in comp.interfaces:
+        slvs = comp.interfaces['axi_slave']
+        if isinstance(slvs, list) and len(slvs) > 0:
+            b_addr = slvs[0].get('base_addr', 0)
+            b_val = int(b_addr, 16) if isinstance(b_addr, str) else b_addr
+            raw_size = slvs[0].get('size_per_instance', slvs[0].get('size', 0))
+            size_val = int(raw_size, 16) if isinstance(raw_size, str) and raw_size.startswith('0x') else int(raw_size)
+            base_addr = b_val + inst_idx * size_val
+    return f"64'h{base_addr:X}", str(size_val)
+
+
 def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns):
     """
     Populate *ir* with instances and connections for a Crossbar topology.
@@ -125,6 +142,15 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                     b_addr = comp.base_addr
                 b_val = int(b_addr, 16) if isinstance(b_addr, str) else b_addr
                 inst.parameters[p] = f"64'h{b_val:X}"
+            elif p == 'L2BaseAddr':
+                b_val, _ = get_l2_instance_params(comp)
+                if soc_config.project.build_mode == "macro":
+                    inst.parameters[p] = f"MACRO_BASE_ADDR + {b_val}"
+                else:
+                    inst.parameters[p] = b_val
+            elif p == 'L2MemSize':
+                _, size_val = get_l2_instance_params(comp)
+                inst.parameters[p] = size_val
             elif p.startswith('AsyncAxiLlc'):
                 if p == 'AsyncAxiLlcAwWidth': inst.parameters[p] = f'{pkg}::LlcAwWidth'
                 elif p == 'AsyncAxiLlcWWidth': inst.parameters[p] = f'{pkg}::LlcWWidth'
@@ -312,6 +338,19 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 is_host = (c.name == soc_config.host.name)
                 module_type = f"{soc_config.project.name}_{c.type}"
                 inst = ir.add_instance(t_name, module_type)
+
+                # Overrides for L2 parameters to support scaling of multiple instances
+                if 'l2' in c.name or (c.system_config and c.system_config.get('is_l2_mem')):
+                    b_val, size_val = get_l2_instance_params(c, inst_idx)
+                    info = comp_info.get(module_type) or {}
+                    supported = info.get('supported_params', {})
+                    if 'L2BaseAddr' in supported:
+                        if soc_config.project.build_mode == "macro":
+                            inst.parameters['L2BaseAddr'] = f"MACRO_BASE_ADDR + {b_val}"
+                        else:
+                            inst.parameters['L2BaseAddr'] = b_val
+                    if 'L2MemSize' in supported:
+                        inst.parameters['L2MemSize'] = size_val
 
                 # Note: tile coordinates are passed via id_i port (below), not as
                 # module parameters. Tiles do not declare x/y parameters.

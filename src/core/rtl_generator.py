@@ -819,8 +819,22 @@ class RTLGenerator:
         cfg_dir = self.env.outdir_path / self.env.cfg_sub
         reg_dir = self.env.outdir_path / self.env.reg_sub
         tb_dir = self.env.outdir_path / self.env.tb_sub
+
+        sys_regs_addr_width = 8
+        try:
+            sys_regs_info = get_isle_info(f"{top_level_module_name}_sys_regs", [reg_dir])
+            if sys_regs_info and "ports" in sys_regs_info:
+                p_info = sys_regs_info["ports"].get("s_apb_paddr")
+                if p_info:
+                    decl = p_info.get("decl", "")
+                    m_range = re.search(r'\[\s*([0-9]+)\s*:\s*([0-9]+)\s*\]', decl)
+                    if m_range:
+                        sys_regs_addr_width = int(m_range.group(1)) - int(m_range.group(2)) + 1
+        except Exception as e:
+            print(f"[WARNING] Could not parse system registers address width: {e}. Falling back to 8.")
         
         template_kwargs = {
+            "sys_regs_addr_width": sys_regs_addr_width,
             "config": self.soc_config,
             "ir": ir,
             "top_level_module_name": top_level_module_name,
@@ -830,6 +844,7 @@ class RTLGenerator:
             "domains": [d.model_dump(exclude_none=True) for d in self.soc_config.clock_tree.domains],
             "components": [c.model_dump(exclude_none=True) for c in self.soc_config.components] if self.soc_config.components else [],
             "comp_info": comp_info,
+            "ecc_schemes_dir": str(self.env.ecc_schemes_dir) if self.env.ecc_schemes_dir else None,
             "global_defines": sorted(list(global_defines)),
             "env_config": {
                 "dependencies": self.env.registry_dependencies,
@@ -841,6 +856,7 @@ class RTLGenerator:
             "port_mapping": port_mapping,
             "top_ports": top_ports,
             "all_extra_ports": all_extra_ports,
+            "top_level_params": {},
             "pad_domains": pad_domains,
             "macro_pragmas": macro_pragmas,
             "original_isle_types": self.original_isle_types,
@@ -895,6 +911,18 @@ class RTLGenerator:
                 templates_to_render["sw/main.c.mako"] = sw_dir / "main.c"
 
         for tpl_name, out_file in templates_to_render.items():
+            if tpl_name == "tb/tb_soc.sv.mako":
+                top_info = get_isle_info(top_level_module_name, [self.env.outdir_path / self.env.hw_sub])
+                if top_info:
+                    template_kwargs["top_level_ports"] = top_info.get("ports", {})
+                    top_params = {}
+                    top_params.update(top_info.get("supported_params", {}))
+                    top_params.update(top_info.get("fixed_params", {}))
+                    template_kwargs["top_level_params"] = top_params
+                else:
+                    template_kwargs["top_level_ports"] = {}
+                    template_kwargs["top_level_params"] = {}
+
             tpl_path = self.find_file_in_paths(tpl_name, self.env.template_paths)
             if not tpl_path:
                 print(f"[WARNING] Template '{tpl_name}' not found in provided template paths. Skipping.")

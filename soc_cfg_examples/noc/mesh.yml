@@ -66,6 +66,12 @@ system_settings:
 clock_tree:
   generators: 0 # 0 means no clock generators are instantiated in the chip wrapper (clocks are supplied directly from pads)
   domains:
+    - name: "rt"
+      description: "Real-Time Clock for CLINT and AON timers"
+      is_real_time: true
+      has_mux: false
+      has_divider: false
+
     - name: "system"
       description: "Main synchronous clock domain for the entire NoC"
       is_real_time: false
@@ -114,6 +120,9 @@ host:
   description: "Main application processor (Cheshire host)"
   type: "cheshire_isle"
   clock_domain: "system"
+  isa: "rv64imafdc"           # Host Instruction Set Architecture (ISA) for software compiler
+  abi: "lp64d"                # Host Application Binary Interface (ABI) for software compiler
+  cmodel: "medany"            # Host Code Model for software compiler
   placement:
     logical: { x: 9, y: 3 } # Physical 2D coordinate on the FlooNoC mesh
   export_interfaces: ["gpio", "slink", "uart", "spi", "i2c"]
@@ -241,8 +250,15 @@ components:
 # ------------------------------------------------------------------------------
 # Instructions for the simulation environment.
 testbench:
+  # Duration in ns to hold scratchpad register force values during boot.
+  # This must be long enough to survive internal Host reset sequences.
+  boot_force_delay_ns: 5000000
+  boot_force_fast_delay_ns: 1000000
+  boot_timeout_ns: 10000000
+  boot_timeout_fast_ns: 2000000
+  sim_timeout_ns: 10000000
   preload_memories:
-    - instance: "i_tile_0_0.sram_array" # Hierarchical RTL path to the first L2 tile
+    - instance: "i_tile_0_0.i_isle" # Hierarchical RTL path to the first L2 tile
       file: "generated/sw/hello_world.hex"    # Path to the compiled hex binary
 
 # ------------------------------------------------------------------------------

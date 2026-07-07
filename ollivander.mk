@@ -113,4 +113,4 @@ generate:
 .PHONY: clean
 clean:
 	@echo "\n[MAKE] Cleaning generated files..."
-	rm -rf $(OUT_DIR) Bender.yml bender_work/ work/
+	rm -rf $(OUT_DIR) Bender.yml Bender.lock Bender.local bender_work/ work/

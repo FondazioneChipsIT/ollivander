@@ -2,6 +2,8 @@
   p_name = config.project.name
   pkg = "ollivander_soc_pkg"
 
+  def fmt_name(name): return name.replace('_clk', '').replace('_rst', '').lower()
+
   # ============================================================================
   # 1. NOC MESH GRID CALCULATION
   # ============================================================================
@@ -110,17 +112,7 @@ package ${pkg};
   localparam int unsigned ExtSlvIdWidth    = AxiIdWidth + $clog2(${len(axi_masters)} > 1 ? ${len(axi_masters)} : 2);
   localparam int unsigned LlcIdWidth       = ExtSlvIdWidth + 1; // Margin for LLC bypass bit
 
-  // L2 Memory Base Addresses (Extracted from components for memory interleaving)
-<%
-  l2_slv = next((s for s in axi_slaves if 'l2' in s['name']), None)
-  l2_base = l2_slv['base'] if l2_slv else 0
-  l2_size = l2_slv['size'] if l2_slv else 0
-%>\
-  localparam logic [63:0] L2Port0InterlBase    = 64'h${parse_hex(l2_base)};
-  localparam logic [63:0] L2Port0NonInterlBase = 64'h${parse_hex(l2_base)} + 64'h${parse_hex(l2_size)}/2;
-  localparam logic [63:0] L2Port1InterlBase    = 64'h${parse_hex(l2_base)};
-  localparam logic [63:0] L2Port1NonInterlBase = 64'h${parse_hex(l2_base)} + 64'h${parse_hex(l2_size)}/2;
-  
+
   localparam int unsigned AxiUserAmoMsb    = ${config.system_settings.user_mapping.amo_msb};
   localparam int unsigned AxiUserAmoLsb    = ${config.system_settings.user_mapping.amo_lsb};
   localparam int unsigned AxiUserEccErrBit = ${config.system_settings.user_mapping.ecc_err_bit};
@@ -188,7 +180,13 @@ package ${pkg};
       if clk_tree and getattr(clk_tree, 'clock_gating', False):
           gateable_domains.append(c.clock_domain)
 %>
-  localparam int unsigned NumDomains = ${len(gateable_domains) if len(gateable_domains) > 0 else 1};
+  localparam int unsigned NumDomains = ${len(config.clock_tree.domains)};
+
+  typedef enum int unsigned {
+% for dom in config.clock_tree.domains:
+    DomainIdx_${fmt_name(dom.name)} = ${loop.index}${"," if not loop.last else ""}
+% endfor
+  } domain_idx_e;
 
   // =========================================================================
   // 1. MESH DIMENSIONS AND TOPOLOGY
@@ -243,10 +241,14 @@ package ${pkg};
     return (dir == West) ? East : (dir == East) ? West : (dir == South) ? North : South;
   endfunction
 
-  // =========================================================================
-  // 3. MULTICAST CONFIGURATIONS
-  // =========================================================================
-  localparam floo_pkg::route_cfg_t RouteCfgNoMcast = floo_ollivander_noc_pkg::RouteCfg;
+  function automatic floo_pkg::route_cfg_t gen_nomcast_route_cfg();
+    floo_pkg::route_cfg_t ret = floo_ollivander_noc_pkg::RouteCfg;
+    // Disable multicast for non-cluster tiles
+    ret.CollectiveCfg = floo_pkg::CollectiveDefaultCfg;
+    return ret;
+  endfunction
+
+  localparam floo_pkg::route_cfg_t RouteCfgNoMcast = gen_nomcast_route_cfg();
 
   // =========================================================================
   // 4. AXI CROSSBAR RULES (HOST -> CHIMNEY)

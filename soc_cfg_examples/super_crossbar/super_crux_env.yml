@@ -34,7 +34,7 @@ overrides:
   cluster_peripherals: { git: "https://github.com/FondazioneChipsIT/cluster_peripherals.git", rev: "6e55d0a74ff33ce9aac9fcd44ad702f323ace644" }
   common_cells: { git: "https://github.com/pulp-platform/common_cells.git", rev: "63e1b679a70eca3a1d60d686bc1fa170ec08e1ab" }
   common_verification: { git: "https://github.com/pulp-platform/common_verification.git", rev: "fb1885f48ea46164a10568aeff51884389f67ae3" }
-  cv32e40p: { git: "https://github.com/pulp-platform/cv32e40p.git", rev: "800a09d97a1e9418e127e8bbf1763c1d1097c92f" }
+  cv32e40p: { git: "https://github.com/pulp-platform/cv32e40p.git", rev: "1a93f340e9dadb9f7c8c471f27a40932c8b1c62e" }
   cv32e40x: { git: "https://github.com/pulp-platform/cv32e40x.git", rev: "96b933ac2f723351872da55e7d2e9a82abd5df34" }
   cva6: { git: "https://github.com/pulp-platform/cva6.git", rev: "4c02b24fe7c04690f626776a92274da24f80d1da" }
   dram_rtl_sim: { git: "https://github.com/pulp-platform/dram_rtl_sim.git", rev: "a764d5200a19cdd72a5237cbfb16985515a3058d" }
@@ -58,7 +58,7 @@ overrides:
   neureka: { git: "https://github.com/pulp-platform/neureka.git", rev: "2e076f7d25cdfba38821ee95595bb27aec53c764" }
   obi: { git: "https://github.com/pulp-platform/obi.git", rev: "0155fc34e900c7c884e081c0a1114a247937ff69" }
   obi_peripherals: { git: "https://github.com/pulp-platform/obi_peripherals.git", rev: "079894a6cbd4e544c477643d184a4c340bd4e391" }
-  opentitan: { git: "https://github.com/AlSaqr-platform/opentitan.git", rev: "9c7296b8cd4107497ace82895b44acb2bd360265" }
+  opentitan: { git: "https://github.com/AlSaqr-platform/opentitan.git", rev: "212974d8a61c45de6f61354adc55cc08e100ed58" }
   opentitan_peripherals: { git: "https://github.com/pulp-platform/opentitan_peripherals.git", rev: "cd3153de2783abd3d03d0595e6c4b32413c62f14" }
   per2axi: { git: "https://github.com/pulp-platform/per2axi.git", rev: "18cf4f2ad51b73de0448843ce0def54ab5fb274b" }
   pulp-ethernet: { git: "https://github.com/pulp-platform/pulp-ethernet.git", rev: "db9a90dd27fa85ddbe9b7cd22e03bf43b2c14838" }
@@ -76,3 +76,33 @@ overrides:
   timer_unit: { git: "https://github.com/pulp-platform/timer_unit.git", rev: "4c69615c89db9397a9747d6f6d6a36727854f0bc" }
   unbent: { git: "https://github.com/pulp-platform/unbent.git", rev: "e9c9d5cfb635f2d4668c816ce9235798cfecb297" }
   zeroriscy: { git: "https://github.com/yvantor/ibex.git", rev: "cc4068a0ccb7691cd062b809c34b2304e7fbfa36" }
+
+dependencies:
+  cheshire:
+    patches:
+      - file: "{bender_work}/cheshire/hw/cheshire_pkg.sv"
+        search: "    ret.apb_mask[ret.slink] = 1'b1;"
+        replace: "    if (cfg.SerialLink) begin\\n      ret.apb_mask[ret.slink] = 1'b1;\\n    end"
+  cva6:
+    patches:
+      - file: "{bender_work}/cva6/Bender.yml"
+        search: "      - core/include/wt_cache_pkg.sv"
+        replace: "      - core/include/aes_pkg.sv\n      - core/include/wt_cache_pkg.sv"
+      - file: "{bender_work}/cva6/Bender.yml"
+        search: "      - core/alu.sv"
+        replace: "      - core/alu.sv\n      - core/aes.sv"
+      - file: "{bender_work}/cva6/core/include/aes_pkg.sv"
+        search: "package aes_pkg;"
+        replace: "package cva6_aes_pkg;"
+      - file: "{bender_work}/cva6/core/aes.sv"
+        search: "import aes_pkg::*;"
+        replace: "import cva6_aes_pkg::*;"
+      - file: "{bender_work}/cva6/core/aes.sv"
+        search: "module aes"
+        replace: "module cva6_aes"
+      - file: "{bender_work}/cva6/core/ex_stage.sv"
+        search: "import aes_pkg::*;"
+        replace: "import cva6_aes_pkg::*;"
+      - file: "{bender_work}/cva6/core/ex_stage.sv"
+        search: "      aes #("
+        replace: "      cva6_aes #("

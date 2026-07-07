@@ -34,8 +34,31 @@
  % if dom.is_real_time:
   // Real-Time domains bypass SW control (always-on, fixed source).
   // Typically used for RTCs or Always-On Timers.
+  % if dom.static_div is not None and dom.static_div > 1:
+  logic ${dom.name}_source;
+  assign ${dom.name}_source = ${f"domain_clk_i[{dom.source_gen}]" if config.clock_tree.generators > 0 and dom.source_gen is not None else "rt_clk_i"};
+  
+  // Real-Time hardwired static divider (always enabled)
+  ${require_file("olli_clk_int_div.sv")}
+  olli_clk_int_div #(
+    .DIV_VALUE_WIDTH(DomainClkDivValueWidth),
+    .DEFAULT_DIV_VALUE(${dom.static_div}),
+    .ENABLE_CLOCK_IN_RESET(1)
+  ) i_${dom.name}_static_div (
+    .clk_i          ( ${dom.name}_source ),
+    .rst_ni         ( host_pwr_on_rst_n ),
+    .en_i           ( 1'b1 ),
+    .test_mode_en_i ( test_mode_i ),
+    .div_i          ( 24'd${dom.static_div} ),
+    .div_valid_i    ( 1'b0 ),
+    .div_ready_o    ( ),
+    .clk_o          ( ${dom.name} ),
+    .cycl_count_o   ( )
+  );
+  % else:
   logic ${dom.name};
   assign ${dom.name} = ${f"domain_clk_i[{dom.source_gen}]" if config.clock_tree.generators > 0 and dom.source_gen is not None else "rt_clk_i"};
+  % endif
  % else:
   logic ${dom.name}_muxed;
   logic ${dom.name}; // Final gated/divided clock
@@ -52,7 +75,12 @@
     .test_clk_i   ( 1'b0 ),
     .test_en_i    ( 1'b0 ),
     .async_rstn_i ( host_pwr_on_rst_n ),
-    .async_sel_i  ( sys_regs_hwif_out.${fmt_reg(dom.name)}_clk_sel.${fmt_reg(dom.name)}_clk_sel.value ),
+    <%
+      num_gen = config.clock_tree.generators if config.clock_tree.generators > 0 else 1
+      import math
+      sel_width = max(1, math.ceil(math.log2(num_gen)))
+    %>
+    .async_sel_i  ( ${sel_width}'(sys_regs_hwif_out.${fmt_reg(dom.name)}_clk_sel.${fmt_reg(dom.name)}_clk_sel.value) ),
     .clk_o        ( ${dom.name}_muxed )
   );
   % else:
@@ -60,7 +88,7 @@
   assign ${dom.name}_muxed = ${f"domain_clk_i[{dom.source_gen}]" if config.clock_tree.generators > 0 and dom.source_gen is not None else "clk_i"};
   % endif
 
-  // 1b. Configurable Integer Divider & Clock Gating
+  // 1b. Configurable/Static Integer Divider & Clock Gating
   % if dom.has_divider:
   logic [DomainClkDivValueWidth-1:0] ${dom.name}_div_value, ${dom.name}_div_synced;
   logic ${dom.name}_div_valid, ${dom.name}_div_ready, ${dom.name}_div_valid_synced, ${dom.name}_div_ready_synced;
@@ -75,7 +103,7 @@
     .clk_i   ( ${host_clk} ),
     .rst_ni  ( host_pwr_on_rst_n ),
     .valid_i ( sys_regs_hwif_out.${fmt_reg(dom.name)}_clk_div_value.${fmt_reg(dom.name)}_clk_div_value.swmod ),
-    .data_i  ( sys_regs_hwif_out.${fmt_reg(dom.name)}_clk_div_value.${fmt_reg(dom.name)}_clk_div_value.value ),
+    .data_i  ( DomainClkDivValueWidth'(sys_regs_hwif_out.${fmt_reg(dom.name)}_clk_div_value.${fmt_reg(dom.name)}_clk_div_value.value) ),
     .valid_o ( ${dom.name}_div_valid ),
     .ready_i ( ${dom.name}_div_ready ),
     .data_o  ( ${dom.name}_div_value ),
@@ -109,11 +137,29 @@
   ) i_${dom.name}_div (
     .clk_i          ( ${dom.name}_muxed ),
     .rst_ni         ( pwr_on_rsts_n[DomainIdx_${fmt_dom(dom.name)}] ),
-    .en_i           ( sys_regs_hwif_out.${fmt_reg(dom.name)}_clk_en.${fmt_reg(dom.name)}_clk_en.value ),
+    .en_i           ( sys_regs_hwif_out.${fmt_reg(dom.name)}_clk_en.${fmt_reg(dom.name)}_clk_en.value[0] ),
     .test_mode_en_i ( test_mode_i ),
     .div_i          ( ${dom.name}_div_synced ),
     .div_valid_i    ( ${dom.name}_div_valid_synced ),
     .div_ready_o    ( ${dom.name}_div_ready_synced ),
+    .clk_o          ( ${dom.name} ),
+    .cycl_count_o   ( )
+  );
+  % elif dom.static_div is not None and dom.static_div > 1:
+  // Hardwired static divider (always enabled)
+  ${require_file("olli_clk_int_div.sv")}
+  olli_clk_int_div #(
+    .DIV_VALUE_WIDTH(DomainClkDivValueWidth),
+    .DEFAULT_DIV_VALUE(${dom.static_div}),
+    .ENABLE_CLOCK_IN_RESET(1)
+  ) i_${dom.name}_static_div (
+    .clk_i          ( ${dom.name}_muxed ),
+    .rst_ni         ( pwr_on_rsts_n[DomainIdx_${fmt_dom(dom.name)}] ),
+    .en_i           ( 1'b1 ),
+    .test_mode_en_i ( test_mode_i ),
+    .div_i          ( 24'd${dom.static_div} ),
+    .div_valid_i    ( 1'b0 ),
+    .div_ready_o    ( ),
     .clk_o          ( ${dom.name} ),
     .cycl_count_o   ( )
   );
@@ -136,9 +182,9 @@
   ) i_${dom.name}_debug_div (
     .clk_i          ( ${dom.name} ),
     .rst_ni         ( host_pwr_on_rst_n ),
-    .en_i           ( sys_regs_hwif_out.${fmt_reg(dom.name)}_debug_clk_en.${fmt_reg(dom.name)}_debug_clk_en.value ),
+    .en_i           ( sys_regs_hwif_out.${fmt_reg(dom.name)}_debug_clk_en.${fmt_reg(dom.name)}_debug_clk_en.value[0] ),
     .test_mode_en_i ( test_mode_i ),
-    .div_i          ( sys_regs_hwif_out.${fmt_reg(dom.name)}_debug_clk_div_value.${fmt_reg(dom.name)}_debug_clk_div_value.value ),
+    .div_i          ( DomainClkDivValueWidth'(sys_regs_hwif_out.${fmt_reg(dom.name)}_debug_clk_div_value.${fmt_reg(dom.name)}_debug_clk_div_value.value) ),
     .div_valid_i    ( sys_regs_hwif_out.${fmt_reg(dom.name)}_debug_clk_div_value.${fmt_reg(dom.name)}_debug_clk_div_value.swmod ),
     .div_ready_o    ( ),
     .clk_o          ( ${dom.name}_debug ),
@@ -221,7 +267,7 @@
     .clk_i   ( ${host_clk} ),
     .rst_ni  ( host_pwr_on_rst_n ),
     .valid_i ( sys_regs_hwif_out.${fmt_reg(div_clk)}_clk_div_value.${fmt_reg(div_clk)}_clk_div_value.swmod ),
-    .data_i  ( sys_regs_hwif_out.${fmt_reg(div_clk)}_clk_div_value.${fmt_reg(div_clk)}_clk_div_value.value ),
+    .data_i  ( DomainClkDivValueWidth'(sys_regs_hwif_out.${fmt_reg(div_clk)}_clk_div_value.${fmt_reg(div_clk)}_clk_div_value.value) ),
     .valid_o ( ${div_clk}_div_valid ),
     .ready_i ( ${div_clk}_div_ready ),
     .data_o  ( ${div_clk}_div_value ),
@@ -254,7 +300,7 @@
   ) i_${div_clk}_div (
     .clk_i          ( ${src_clk} ),
     .rst_ni         ( ${src_rst} ),
-    .en_i           ( sys_regs_hwif_out.${fmt_reg(div_clk)}_clk_en.${fmt_reg(div_clk)}_clk_en.value ),
+    .en_i           ( sys_regs_hwif_out.${fmt_reg(div_clk)}_clk_en.${fmt_reg(div_clk)}_clk_en.value[0] ),
     .test_mode_en_i ( test_mode_i ),
     .div_i          ( ${div_clk}_div_synced ),
     .div_valid_i    ( ${div_clk}_div_valid_synced ),

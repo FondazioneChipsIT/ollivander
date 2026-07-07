@@ -48,7 +48,7 @@ module hyperbus_isle
   parameter int unsigned AsyncAxiInBWidth  = 0,
   parameter int unsigned AsyncAxiInRWidth  = 0,
   parameter int unsigned AsyncAxiInWWidth  = 0,
-  parameter int unsigned CdcSyncStages     = 0
+  parameter int unsigned CdcSyncStages     = 2
 )(
   input  logic clk_i,
   input  logic rst_ni,

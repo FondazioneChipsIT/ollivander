@@ -45,11 +45,20 @@ To guarantee system-wide coherence without introducing tight coupling to a speci
 
 ### 2.4 AXI Struct Parameter Types (Strict Type Equivalence)
 SystemVerilog enforces strict type equivalence for structs. To avoid compilation errors when instantiating Isles in different SoCs (or when exporting an entire SoC as a Macro IP), Isles should expose their AXI structs as `parameter type` in the module header, rather than hardcoding a specific package.
-*   `axi_req_t`: Synchronous AXI request type.
-*   `axi_resp_t`: Synchronous AXI response type.
+*   `axi_req_t`: Synchronous AXI request type for slave interfaces.
+*   `axi_resp_t`: Synchronous AXI response type for slave interfaces.
+*   `axi_master_req_t`: Synchronous AXI request type for master interfaces.
+*   `axi_master_resp_t`: Synchronous AXI response type for master interfaces.
 *   `axi_aw_chan_t`, `axi_w_chan_t`, `axi_b_chan_t`, `axi_ar_chan_t`, `axi_r_chan_t`: Asynchronous channel types (optional, if the IP supports CDC internally).
 
 Ollivander will automatically inject the local SoC package types (e.g., `my_soc_pkg::soc_axi_req_t`) when instantiating the Isle.
+
+### 2.5 Memory Mapping Parameters
+For topology-agnostic memory wrappers (e.g., L2 memory wrapper `l2_isle.sv`), the wrapper should expose standard configurable parameters defining its size and base address:
+*   `L2BaseAddr` (`parameter logic [63:0]`): Base address of the memory mapping range. Defaults to a standard constant (e.g., `64'h88000000`).
+*   `L2MemSize` (`parameter int unsigned`): Size of the memory block in bytes. Defaults to a standard constant (e.g., `32'h00200000` / 2 MB).
+
+These parameters are dynamically overridden at instantiation time by the generator based on the YAML configuration interfaces mapping, ensuring that the local address decoding and interleaving rules computed within the Isle scale correctly.
 
 ---
 
@@ -101,9 +110,9 @@ Depending on the `sync_domain` YAML flag, an Isle can receive AXI requests eithe
     *   **Ollivander Handling**: Component -> Connected to `xbar_slv_r_rptr`. Host -> Array connected to `xbar_mst_r_rptr`.
 
 **Synchronous:**
-*   `axi_req_i` (`axi_pkg::axi_req_t`): Synchronous AXI request struct.
+*   `axi_req_i` (`axi_req_t`): Synchronous AXI request struct.
     *   **Ollivander Handling**: Component -> Connected to `xbar_sync_slv_req`. Host -> Array connected to `xbar_sync_mst_req`.
-*   `axi_resp_o` (`axi_pkg::axi_resp_t`): Synchronous AXI response struct.
+*   `axi_resp_o` (`axi_resp_t`): Synchronous AXI response struct.
     *   **Ollivander Handling**: Component -> Connected to `xbar_sync_slv_rsp`. Host -> Array connected to `xbar_sync_mst_rsp`.
 
 ### 3.2 AXI Master (`axi_master`)
@@ -140,9 +149,9 @@ Depending on the `sync_domain` YAML flag, an Isle can receive AXI requests eithe
     *   **Ollivander Handling**: Component -> Connected to `xbar_mst_r_rptr`. Host -> Array connected to `xbar_slv_r_rptr`.
 
 **Synchronous:**
-*   `axi_req_o` (`axi_pkg::axi_req_t`): Synchronous AXI request struct.
+*   `axi_req_o` (`axi_master_req_t`): Synchronous AXI request struct.
     *   **Ollivander Handling**: Component -> Connected to `xbar_sync_mst_req`. Host -> Array connected to `xbar_sync_slv_req`.
-*   `axi_resp_i` (`axi_pkg::axi_resp_t`): Synchronous AXI response struct.
+*   `axi_resp_i` (`axi_master_resp_t`): Synchronous AXI response struct.
     *   **Ollivander Handling**: Component -> Connected to `xbar_sync_mst_rsp`. Host -> Array connected to `xbar_sync_slv_rsp`.
 
 ### 3.3 Dedicated LLC Port (`llc_port`)
@@ -352,6 +361,14 @@ Ollivander infers the required size of the Host's interrupt aggregators by inspe
 
 This auto-sizing mechanism ensures that the Host's interrupt interface is always correctly dimensioned to match the system's connectivity, removing the burden of manual calculation from the user.
 
+### 6.4 Simulation Force-Boot Parameters
+To support dynamic force-booting in simulation, a Host Isle wrapper (e.g., `cheshire_isle.sv`) can optionally expose standard parameters defining the startup control:
+*   `HasForceBoot` (`localparam bit`): Set to `1` if this host supports software force-booting in simulation.
+*   `ForceBootPath` (`localparam string`): Hierarchical path from the host wrapper top to the entry point scratch register (e.g., `"i_cheshire_soc.i_regs.field_storage.scratch[0].scratch.value"`).
+*   `ForceBootVal` (`localparam string`): Force value template (e.g., `"32'h00000000"`).
+
+These parameters are read by the testbench generator to automatically drive the boot entry sequence.
+
 ---
 
 ## 7. Dependency Management
@@ -390,3 +407,26 @@ Instead, use the injected Python functions to dynamically register dependencies 
   ${require_bender("axi")}
 % endif
 ```
+
+---
+
+## 8. Memory Preloading Standardization
+
+For memory Isles that require simulation-only binary preloading (via `$readmemh`), the wrapper can optionally expose standard `localparam` values in its SystemVerilog module declaration. This allows Ollivander to automatically determine how to format and load firmware files without any hardcoded component knowledge.
+
+### 8.1 Parameters Definition
+Declare the following localparams inside your memory wrapper's parameter list:
+
+*   **`PreloadType`** (`string`): The preload mode. Supported values:
+    *   `"interleaved"`: Indicates the memory contains multiple physical SRAM banks in an interleaved arrangement, requiring a split firmware HEX binary.
+    *   If omitted or set to any other value, a standard flat preloading is performed.
+*   **`PreloadTemplate`** (`string`): The internal hierarchical path template from the Isle wrapper top to the individual physical SRAM array. It supports bracket formatting variables `{group}` and `{bank}`:
+    *   Example: `"i_l2_top.gen_bank_group[{group}].i_dyn_mem_bank_group.genblk1[{bank}].i_ecc_sram_wrap.i_bank.sram"`
+*   **`PreloadNumGroups`** (`int unsigned`): The number of bank groups.
+*   **`PreloadBankWidth`** (`int unsigned`): The data width of a single physical SRAM bank in bits.
+*   **`PreloadBanksPerGroup`** (`int unsigned`): The number of physical SRAM banks in each group (optional, dynamically calculated as `AxiDataWidth / PreloadBankWidth` if omitted or set to 0).
+
+### 8.2 Execution Workflow
+When Ollivander parses a YAML configuration where `preload_memories` refers to a component wrapper declaring `PreloadType = "interleaved"`, the generator:
+1.  **Testbench Generation**: Automatically iterates over `PreloadNumGroups` and `PreloadBanksPerGroup` (falling back to `AxiDataWidth / PreloadBankWidth` if undefined) to generate individual `$readmemh` statements targeted at each physical bank using the resolved hierarchical path from `PreloadTemplate`.
+2.  **Hex Splitting Target**: Automatically appends a call to the generic `split_hex.py` script under the Makefile's `build-sw` target, passing the base address, size, and parsed width/group parameters.

@@ -141,7 +141,7 @@ class Spinner:
             sys.stdout.write(f"\r{self.message} {char}")
             sys.stdout.flush()
             idx = (idx + 1) % len(self.spinner_chars)
-            time.sleep(0.1)
+            time.sleep(1.0)
         # Clear the spinner line
         import sys
         sys.stdout.write("\r" + " " * (len(self.message) + 4) + "\r")

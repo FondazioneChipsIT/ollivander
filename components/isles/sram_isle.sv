@@ -24,11 +24,28 @@ module sram_isle
   parameter bit          AxiUserAtop    = 1'b1,
   parameter int unsigned AxiUserAtopMsb = 1,
   parameter int unsigned AxiUserAtopLsb = 0,
-  parameter int unsigned MemSize        = 32'h00100000,
+  parameter int unsigned L2MemSize      = 32'h00100000,
+  parameter int unsigned MemSize        = L2MemSize,
+  parameter logic [63:0] L2BaseAddr     = 64'h00000000,
   parameter int unsigned SramDataWidth  = 128,
   parameter int unsigned SramNumWords   = 1024,
   parameter type         axi_req_t      = logic,
-  parameter type         axi_resp_t     = logic
+  parameter type         axi_resp_t     = logic,
+  // Memory preloading standardization parameters
+  // PreloadType: Tells the generator that this memory uses interleaved multi-bank preloading.
+  localparam string PreloadType = "interleaved",
+  // PreloadTemplate: Hierarchical path from module top to individual tc_sram array instances.
+  localparam string PreloadTemplate = "gen_sram_banks[{group}].gen_sram_macros[{bank}].i_sram.sram",
+  // PreloadNumGroups: Number of bank groups (columns) inside the interleaved memory.
+  localparam int unsigned PreloadNumGroups = AxiDataWidth / SramDataWidth,
+  // PreloadBankWidth: Data width of a single physical SRAM bank in bits.
+  localparam int unsigned PreloadBankWidth = SramDataWidth,
+  // PreloadBanksPerGroup: Number of physical SRAM banks in each group (rows).
+  localparam int unsigned PreloadBanksPerGroup = (MemSize / (AxiDataWidth / 8)) / SramNumWords,
+  // HasEcc: 0 indicates this memory does not implement Error Correction Codes (ECC)
+  localparam bit HasEcc = 0,
+  // EccType: Set to 'none' since ECC is disabled
+  localparam string EccType = "none"
 ) (
   input  logic      clk_i,
   input  logic      rst_ni,

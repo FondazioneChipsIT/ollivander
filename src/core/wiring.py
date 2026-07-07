@@ -91,6 +91,84 @@ def _infer_interrupts(soc_config, comp_info):
                                     
                                 src_c.interrupts[src_port] = irq_data
 
+def _evaluate_sv_expr(expr, comp_info, comp_name):
+    c_info = comp_info.get(comp_name, {})
+    params = {}
+    params.update(c_info.get("fixed_params", {}))
+    params.update(c_info.get("supported_params", {}))
+    defaults = {
+        "AxiAddrWidth": 48,
+        "AxiDataWidth": 64,
+        "AxiUserWidth": 10,
+        "AxiInIdWidth": 5,
+        "AxiOutIdWidth": 2,
+        "LogDepth": 3,
+        "NumCores": 8
+    }
+    for k, v in defaults.items():
+        if k not in params:
+            params[k] = str(v)
+            
+    clean_expr = expr.strip()
+    
+    def aw_width(addr_width, id_width, user_width):
+        return id_width + addr_width + user_width + 35
+        
+    def w_width(data_width, user_width):
+        return data_width + data_width // 8 + 1 + user_width
+        
+    def b_width(id_width, user_width):
+        return id_width + 2 + user_width
+        
+    def ar_width(addr_width, id_width, user_width):
+        return id_width + addr_width + user_width + 29
+        
+    def r_width(data_width, id_width, user_width):
+        return id_width + data_width + user_width + 3
+
+    sorted_keys = sorted(params.keys(), key=len, reverse=True)
+    for _ in range(5):
+        changed = False
+        for k in sorted_keys:
+            val = params[k]
+            new_expr, count = re.subn(rf'\b{k}\b', str(val), clean_expr)
+            if count > 0:
+                clean_expr = new_expr
+                changed = True
+        if not changed:
+            break
+            
+    clean_expr = clean_expr.replace("axi_pkg::", "")
+    eval_env = {
+        "aw_width": aw_width,
+        "w_width": w_width,
+        "b_width": b_width,
+        "ar_width": ar_width,
+        "r_width": r_width
+    }
+    try:
+        return int(eval(clean_expr, {"__builtins__": None}, eval_env))
+    except Exception as e:
+        return None
+
+def _get_resolved_port_width(comp_name, port_name, comp_info):
+    c_info = comp_info.get(comp_name, {})
+    p_info = c_info.get("ports", {}).get(port_name)
+    if not p_info:
+        return None
+    type_dim = p_info.get("type_dim", "")
+    decl = p_info.get("decl", "")
+    m = re.search(r'\[\s*([a-zA-Z0-9_]+)\s*-\s*1\s*:\s*0\s*\]', type_dim or decl)
+    if m:
+        param_name = m.group(1)
+        val = c_info.get("fixed_params", {}).get(param_name) or c_info.get("supported_params", {}).get(param_name)
+        if val:
+            return _evaluate_sv_expr(val, comp_info, comp_name)
+    m_num = re.search(r'\[\s*([0-9]+)\s*:\s*0\s*\]', type_dim or decl)
+    if m_num:
+        return int(m_num.group(1)) + 1
+    return None
+
 def build_connection_matrix(soc_config, comp_info):
     """
     The Core Wiring Engine.
@@ -230,7 +308,12 @@ def build_connection_matrix(soc_config, comp_info):
                                 concat = ", ".join([f"xbar_slv_{sig}[{base_idx}{p}]" for p in reversed(range(num_ports))])
                                 ports.append(f".async_axi_in_{sig}_{d} ( {{ {concat} }} )")
                             else:
-                                ports.append(f".async_axi_in_{sig}_{d} ( xbar_slv_{sig}[{base_idx}] )")
+                                port_name = f"async_axi_in_{sig}_{d}"
+                                width = _get_resolved_port_width(comp.name, port_name, comp_info)
+                                if width is not None:
+                                    ports.append(f".{port_name} ( xbar_slv_{sig}[{base_idx}][{width-1}:0] )")
+                                else:
+                                    ports.append(f".{port_name} ( xbar_slv_{sig}[{base_idx}] )")
                     
             if 'axi_master' in comp.interfaces:
                 # In a NoC topology, AXI master ports are internal to the Tile and connected
@@ -248,7 +331,12 @@ def build_connection_matrix(soc_config, comp_info):
                         ports.append(f".axi_resp_i ( xbar_sync_mst_rsp[({idx} - ollivander_soc_pkg::NumAxiMastersAsync)] )")
                     else:
                         for sig, d in mst_ports.items():
-                            ports.append(f".async_axi_out_{sig}_{d} ( xbar_mst_{sig}[{idx}] )")
+                            port_name = f"async_axi_out_{sig}_{d}"
+                            width = _get_resolved_port_width(comp.name, port_name, comp_info)
+                            if width is not None:
+                                ports.append(f".{port_name} ( xbar_mst_{sig}[{idx}][{width-1}:0] )")
+                            else:
+                                ports.append(f".{port_name} ( xbar_mst_{sig}[{idx}] )")
 
         # ----------------------------------------------------------------------
         # 2. PERIPHERAL REGBUS CONNECTIONS

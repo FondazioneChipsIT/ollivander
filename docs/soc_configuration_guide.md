@@ -84,19 +84,21 @@ Microarchitectural definitions for system-wide coherence.
 ### 2.4 Clock Tree (`clock_tree`)
 Defines the hardware clock distribution network, generating glitch-free muxes and dividers.
 
-| Field       | Type    | Description                                                                          |
-| :---------- | :------ | :----------------------------------------------------------------------------------- |
-| `generators`| Integer | Total number of Clock Generators available. Setting to `0` means clocks are          |
-|             |         | external.                                                                            |
-| `domains`   | List    | List of clock domain objects.                                                        |
+| Field                  | Type    | Description                                                                          |
+| :--------------------- | :------ | :----------------------------------------------------------------------------------- |
+| `generators`           | Integer | Total number of Clock Generators available. Setting to `0` means clocks are          |
+|                        |         | external.                                                                            |
+| `generator_periods_ns` | List    | Optional list of floats. Defines the simulation periods (in ns) for each clock        |
+|                        |         | generator. Default is `10.0` ns for all generators.                                  |
+| `domains`              | List    | List of clock domain objects.                                                        |
 
 **Domain Object**:
 *   `name`: String. Name of the clock domain (e.g., `periph`).
-*   `is_real_time`: Boolean. If `true`, the domain bypasses software control (always-on, cannot be gated).
+*   `is_real_time`: Boolean. If `true`, the domain bypasses software control, software gating, and multiplexing (always-on, fixed source, cannot be gated or switched at run-time). It can still have a static, hardwired hardware divider if `static_div` is configured.
 *   `source_gen`: Integer. Hardwired Clock Generator index. Critical for the host clock to ensure it ticks at boot and avoids deadlocks.
-*   `static_div`: Integer. Static, non-programmable division factor (e.g., `100` for an RTC).
-*   `has_mux`: Boolean. Generates a software-controllable glitch-free multiplexer to switch between clock generators.
-*   `has_divider`: Boolean. Generates a software-controllable integer divider with glitch-free gating.
+*   `static_div`: Integer. Static, non-programmable hardware division factor. Instantiates a hardwired clock divider (`olli_clk_int_div`) with a fixed ratio, keeping the clock always-on at a static frequency. Supported for both real-time and managed domains.
+*   `has_mux`: Boolean. Generates a software-controllable glitch-free multiplexer to switch between clock generators (ignored for real-time domains).
+*   `has_divider`: Boolean. Generates a software-controllable integer divider with glitch-free gating (ignored for real-time domains).
 *   `has_debug_divider`: Boolean. Generates a parallel, slower clock branch specifically for JTAG and Debug Module Interfaces.
 *   `default_div`: Integer. Default division factor applied at power-on reset (default `1`).
 
@@ -192,6 +194,9 @@ The `host` block and the items in the `components` list share the **exact same s
 | `clock_domain`      | String  | **Required**. Assigns the component's `clk_i` to a domain in the             |
 |                     |         | `clock_tree`.                                                                |
 | `reset_domain`      | String  | *Optional*. Derived automatically from `clock_domain` if omitted.            |
+| `isa`               | String  | *Optional (Host only)*. Host Instruction Set Architecture (e.g., `rv64imafdc`).|
+| `abi`               | String  | *Optional (Host only)*. Host Application Binary Interface (e.g., `lp64d`).     |
+| `cmodel`            | String  | *Optional (Host only)*. Host Code Model for GCC compiler (e.g., `medany`).     |
 | `base_addr`         | Int/Hex | *Optional*. Base address in the memory map. (Mainly used for APB             |
 |                     |         | sub-components; AXI slaves declare it in `interfaces`).                      |
 | `size`              | Int/Hex | *Optional*. Size of the memory region.                                       |
@@ -222,6 +227,7 @@ Wires the component to the central `system_controller`.
 *   `fetch_enable` / `boot_enable`: Boolean. Generates a core wake-up register.
 *   `boot_addr`: Int/Hex. Generates a programmable boot address register.
 *   `debug_req`: Boolean. Generates a programmable debug request register.
+*   `is_l2_mem`: Boolean. Set to `true` if this component acts as the Level 2 (L2) shared memory. Used by the generator to identify L2 components and parameterize their base addresses/sizes.
 *   `has_busy_status` / `has_eoc_status`: Boolean. Exposes status flags to software.
 
 ### 3.3 Parameters (`parameters`)
@@ -313,7 +319,7 @@ Defines the parameters for automated bare-metal C firmware generation and compil
 
 | Field         | Type   | Description                                                                         |
 | :------------ | :----- | :---------------------------------------------------------------------------------- |
-| `toolchain`   | String | The GCC toolchain prefix (e.g., `"riscv64-unknown-elf-"`).                          |
+| `toolchain`   | String | The GCC toolchain prefix (e.g., `"riscv64-unknown-elf-"`). Compiler flags (ISA, ABI, Code Model) are defined under the `host` block. |
 | `boot_memory` | String | **Required**. The `name` of the memory component (from the `components` list) where |
 |               |        | the boot`.text`, `.data`, and `.bss` sections will be placed. Ollivander will       |
 |               |        | automatically fetch its `base_addr` and `size`.                                     |

@@ -120,7 +120,7 @@ module safety_island_isle
     .jtag_tdi_i                  ( jtag_tdi_i      ),
     .jtag_tdo_o                  ( jtag_tdo_o      ),
 
-    .irqs_i                      ( irqs_i          ),
+    .irqs_i                      ( irqs_i[safety_island_pkg::SafetyIslandDefaultConfig.NumInterrupts-1:0] ),
     .debug_req_o                 ( debug_req_o     ),
     
     // Map to Ollivander standard AXI IN

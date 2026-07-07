@@ -1,0 +1,14 @@
+# Hsiao SECDED (39, 32) Parity Check (H) Matrix
+# This scheme is used by the OpenTitan ecc_sram_wrap IP.
+name: "secded_39_32"
+description: "Hsiao SECDED (39, 32) Matrix"
+bits_data: 32
+bits_parity: 7
+matrix:
+  - 0x2CA53295
+  - 0x93492CA5
+  - 0x552A5329
+  - 0xA8D294AA
+  - 0x4A2CA54A
+  - 0x25534952
+  - 0xD294CA54

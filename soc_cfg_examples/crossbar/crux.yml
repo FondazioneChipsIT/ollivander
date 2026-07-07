@@ -64,12 +64,13 @@ system_settings:
 # Reset trees are automatically derived from these clock domains.
 clock_tree:
   generators: 4               # Total number of analog Clock Generators (PLLs/FLLs) available
+  generator_periods_ns: [10.0, 10.0, 10.0, 10.0] # [TESTBENCH ONLY] Simulation clock periods (ns) for each clock input
   domains:
     - name: "rt"
       description: "Real-Time Clock for CLINT and AON timers"
       is_real_time: true      # Bypass SW control: always-on, cannot be gated
       source_gen: 0           # Hardwired to Clock Generator index 0
-      static_div: 100         # Static division value (e.g. FLL0 / 100)
+      static_div: 100         # [HARDWARE] Hardwired clock divider factor (FLL0 / 100 = 1 MHz)
       has_mux: false
       has_divider: false
 
@@ -182,6 +183,9 @@ host:
   description: "Main application processor (Cheshire host)"
   type: "cheshire_isle"       # Must match a SystemVerilog wrapper (e.g., cheshire_isle.sv)
   clock_domain: "host"        # Automatically wires clk_i/rst_ni to the 'host' clock tree
+  isa: "rv64imafdc"           # Host Instruction Set Architecture (ISA) for software compiler
+  abi: "lp64d"                # Host Application Binary Interface (ABI) for software compiler
+  cmodel: "medany"            # Host Code Model for software compiler
   export_interfaces: ["jtag", "uart", "spi", "i2c", "gpio"] # Routes these physical pins to the Top-Level
   interfaces:
     axi_master: true          # The Host initiates transactions
@@ -203,6 +207,8 @@ host:
     Vga: false
     Snooper: true
     IrqRouter: true
+    Cva6ExtCieOnTop: true
+    Cva6ExtCieLength: 0x08000000
   interrupts:
     # INTERRUPT ROUTING
     # The Host aggregates interrupts from all peripherals into its PLIC.
@@ -258,10 +264,12 @@ components:
     description: "Level 2 shared SRAM with ECC"
     type: "l2_isle"
     clock_domain: "l2"
+    system_config:
+      is_l2_mem: true
     interfaces:
       axi_slave:
         - ports: 2             # Automatically splits the crossbar routing into an array of 2 AXI ports
-          base_addr: 0x78000000
+          base_addr: 0x88000000
           size: 0x00200000
           sync_domain: false
       regbus_slave:
@@ -459,9 +467,16 @@ components:
 # ------------------------------------------------------------------------------
 # Instructions for the simulation environment.
 testbench:
+  # Duration in ns to hold scratchpad register force values during boot.
+  # This must be long enough to survive internal Host reset sequences.
+  boot_force_delay_ns: 5000000
+  boot_force_fast_delay_ns: 1000000
+  boot_timeout_ns: 10000000
+  boot_timeout_fast_ns: 2000000
+  sim_timeout_ns: 10000000
   preload_memories:
-    - instance: "l2_shared_memory.sram_array" # Hierarchical RTL path inside the SoC
-      file: "generated/sw/hello_world.hex"    # Path to the compiled hex binary
+    - instance: "i_l2_shared_memory"
+      file: "generated/sw/hello_world.hex"
 
 # ------------------------------------------------------------------------------
 # 9. SOFTWARE STACK & FIRMWARE

@@ -75,11 +75,12 @@ system_settings:
 # Reset trees are automatically derived from these clock domains.
 clock_tree:
   generators: 0               # 0 means no clock generators (clocks supplied directly from parent SoC)
+  generator_periods_ns: [10.0] # [TESTBENCH ONLY] Simulation clock periods (ns) for each clock input
+  rt_clk_period_ns: 1000.0       # [TESTBENCH ONLY] Simulation real-time clock period in ns
   domains:
     - name: "rt"
       description: "Real-Time Clock for CLINT and AON timers"
       is_real_time: true      # Bypass SW control: always-on, cannot be gated
-      static_div: 100         # Static division value (e.g. FLL0 / 100)
       has_mux: false
       has_divider: false
 
@@ -92,42 +93,42 @@ clock_tree:
     - name: "periph"
       description: "Clock domain for slow/medium speed peripherals"
       has_divider: true       # Generates SW-programmable divider registers
-      has_mux: true           # Generates a glitch-free mux to switch between FLLs
+      has_mux: false          # No mux required (single main clock)
       has_debug_divider: true
       default_div: 1          # Default division value at boot
 
     - name: "safety"
       description: "Clock domain for the Safety Island"
       has_divider: true
-      has_mux: true
+      has_mux: false
       has_debug_divider: true
       default_div: 1
 
     - name: "secure"
       description: "Clock domain for the Security Island"
       has_divider: true
-      has_mux: true
+      has_mux: false
       has_debug_divider: true
       default_div: 1
 
     - name: "pulp"
       description: "Clock domain for the PULP Integer Cluster"
       has_divider: true
-      has_mux: true
+      has_mux: false
       has_debug_divider: true
       default_div: 1
 
     - name: "spatz"
       description: "Clock domain for the Spatz Vectorial Cluster"
       has_divider: true
-      has_mux: true
+      has_mux: false
       has_debug_divider: true
       default_div: 1
 
     - name: "l2"
       description: "Clock domain for the L2 Shared Memory"
       has_divider: true
-      has_mux: true
+      has_mux: false
       has_debug_divider: true
       default_div: 1
 
@@ -162,6 +163,9 @@ host:
   description: "Main application processor (Cheshire host)"
   type: "cheshire_isle"       # Must match a SystemVerilog wrapper (e.g., cheshire_isle.sv)
   clock_domain: "host"        # Automatically wires clk_i/rst_ni to the 'host' clock tree
+  isa: "rv64imafdc"           # Host Instruction Set Architecture (ISA) for software compiler
+  abi: "lp64d"                # Host Application Binary Interface (ABI) for software compiler
+  cmodel: "medany"            # Host Code Model for software compiler
   export_interfaces: ["jtag", "uart", "spi", "i2c"] # Routes these physical pins to the Top-Level
   interfaces:
     axi_master: true          # The Host initiates transactions
@@ -183,6 +187,8 @@ host:
     Vga: false
     Snooper: true
     IrqRouter: true
+    Cva6ExtCieOnTop: true
+    Cva6ExtCieLength: 0x08000000
   interrupts:
     # INTERRUPT ROUTING
     # The Host aggregates interrupts from all peripherals into its PLIC.
@@ -238,10 +244,12 @@ components:
     description: "Level 2 shared SRAM with ECC"
     type: "l2_isle"
     clock_domain: "l2"
+    system_config:
+      is_l2_mem: true
     interfaces:
       axi_slave:
         - ports: 2             # Automatically splits the crossbar routing into an array of 2 AXI ports
-          base_addr: 0x78000000
+          base_addr: 0x88000000
           size: 0x00200000
           sync_domain: false
       regbus_slave:
@@ -300,6 +308,8 @@ components:
     description: "Multicore array for integer math acceleration"
     type: "pulp_cluster_isle"
     clock_domain: "pulp"
+    defines:
+      - "FEATURE_ICACHE_STAT"
     interfaces:
       axi_master: true
       axi_slave:
@@ -425,9 +435,14 @@ components:
 # ------------------------------------------------------------------------------
 # Instructions for the simulation environment.
 testbench:
+  boot_force_delay_ns: 5000000
+  boot_force_fast_delay_ns: 1000000
+  boot_timeout_ns: 10000000
+  boot_timeout_fast_ns: 2000000
+  sim_timeout_ns: 10000000
   preload_memories:
-    - instance: "l2_shared_memory.sram_array" # Hierarchical RTL path inside the SoC
-      file: "generated/sw/hello_world.hex"    # Path to the compiled hex binary
+    - instance: "i_l2_shared_memory"
+      file: "generated/sw/hello_world.hex"
 
 # ------------------------------------------------------------------------------
 # 9. SOFTWARE STACK & FIRMWARE

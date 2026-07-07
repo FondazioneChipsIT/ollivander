@@ -36,9 +36,26 @@ module l2_isle
   /// Mapping rules
   parameter int unsigned NumRules   = dyn_mem_pkg::NUM_MAP_TYPES * NumPort,
   /// L2 Memory settings
-  parameter int unsigned L2MemSize  = 2**20,
+  parameter logic [63:0] L2BaseAddr = 64'h88000000,
+  parameter int unsigned L2MemSize  = 32'h00200000,
   /// Non-changable parameters
   localparam int unsigned AxiStrbWidth    = AxiDataWidth / 8,
+  // Memory preloading standardization parameters
+  // PreloadType: Tells the generator that this memory uses interleaved multi-bank preloading.
+  localparam string PreloadType = "interleaved",
+  // PreloadTemplate: The hierarchical path from the module top to the individual tc_sram array instances.
+  localparam string PreloadTemplate = "i_l2_top.gen_bank_group[{group}].i_dyn_mem_bank_group.genblk1[{bank}].i_ecc_sram_wrap.i_bank.sram",
+  // PreloadNumGroups: Number of bank groups inside the interleaved memory.
+  localparam int unsigned PreloadNumGroups = 2,
+  // PreloadBankWidth: Data width of a single physical SRAM bank in bits.
+  localparam int unsigned PreloadBankWidth = 32,
+  // PreloadBanksPerGroup: Number of physical SRAM banks in each group (rows).
+  localparam int unsigned PreloadBanksPerGroup = AxiDataWidth / PreloadBankWidth,
+  // Memory ECC configuration parameters
+  // HasEcc: 1 indicates this memory implements Error Correction Codes (ECC)
+  localparam bit HasEcc = 1,
+  // EccType: Specifies the ECC scheme (matching a loaded scheme configuration file)
+  localparam string EccType = "secded_39_32",
   // CDC Parameters
   parameter int unsigned AsyncAxiInAwWidth =
                          (2**LogDepth)*axi_pkg::aw_width(AxiAddrWidth,
@@ -157,19 +174,24 @@ typedef struct packed {
   logic [AxiAddrWidth-1:0] end_addr;
 } map_rule_t;
 
+localparam logic [63:0] L2Port0InterlBase    = L2BaseAddr;
+localparam logic [63:0] L2Port0NonInterlBase = L2BaseAddr + L2MemSize / 2;
+localparam logic [63:0] L2Port1InterlBase    = L2BaseAddr + L2MemSize;
+localparam logic [63:0] L2Port1NonInterlBase = L2BaseAddr + L2MemSize + L2MemSize / 2;
+
 localparam map_rule_t [NumRules-1:0] MappingRules = '{
   '{idx       : dyn_mem_pkg::INTERLEAVE,
-    start_addr: ollivander_soc_pkg::L2Port0InterlBase,
-    end_addr  : ollivander_soc_pkg::L2Port0InterlBase + L2MemSize/2},
+    start_addr: L2Port0InterlBase,
+    end_addr  : L2Port0InterlBase + L2MemSize/2},
   '{idx       : dyn_mem_pkg::NONE_INTER,
-    start_addr: ollivander_soc_pkg::L2Port0NonInterlBase,
-    end_addr  : ollivander_soc_pkg::L2Port0NonInterlBase + L2MemSize/2},
+    start_addr: L2Port0NonInterlBase,
+    end_addr  : L2Port0NonInterlBase + L2MemSize/2},
   '{idx       : dyn_mem_pkg::INTERLEAVE,
-    start_addr: ollivander_soc_pkg::L2Port1InterlBase,
-    end_addr  : ollivander_soc_pkg::L2Port1InterlBase + L2MemSize/2},
+    start_addr: L2Port1InterlBase,
+    end_addr  : L2Port1InterlBase + L2MemSize/2},
   '{idx       : dyn_mem_pkg::NONE_INTER,
-    start_addr: ollivander_soc_pkg::L2Port1NonInterlBase,
-    end_addr  : ollivander_soc_pkg::L2Port1NonInterlBase + L2MemSize/2}
+    start_addr: L2Port1NonInterlBase,
+    end_addr  : L2Port1NonInterlBase + L2MemSize/2}
 };
 
 dyn_mem_top #(

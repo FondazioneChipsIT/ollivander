@@ -137,6 +137,10 @@ module ${top_level_module_name}
   // Macro Types for Parent SoC Integration
   parameter type axi_req_t  = ${pkg}::soc_axi_req_t,
   parameter type axi_resp_t = ${pkg}::soc_axi_resp_t,
+%   if config.project.macro_settings.masters:
+  parameter type axi_master_req_t  = ${pkg}::soc_axi_slv_req_t,
+  parameter type axi_master_resp_t = ${pkg}::soc_axi_slv_resp_t,
+%   endif
 <%
   has_narrow = "narrow" in config.topology.noc_settings.networks if config.topology.noc_settings and config.topology.noc_settings.networks else False
   has_wide   = "wide" in config.topology.noc_settings.networks if config.topology.noc_settings and config.topology.noc_settings.networks else False
@@ -164,7 +168,12 @@ module ${top_level_module_name}
 % endif
   input  logic test_mode_i,
   input  logic [1:0] boot_mode_i,
+<%
+  has_rt_clk = any(dom.is_real_time and (dom.source_gen is None or config.clock_tree.generators == 0) for dom in config.clock_tree.domains)
+%>\
+% if has_rt_clk:
   input  logic rt_clk_i,
+% endif
   input  logic clk_rst_bypass_i,
   
   // JTAG and Debug (Host)
@@ -181,7 +190,7 @@ module ${top_level_module_name}
           if config.project.macro_settings.slaves:
               all_extra_ports_list.extend(["input  axi_req_t  axi_req_i", "output axi_resp_t axi_resp_o"])
           if config.project.macro_settings.masters:
-              all_extra_ports_list.extend(["output axi_req_t  axi_req_o", "input  axi_resp_t axi_resp_i"])
+              all_extra_ports_list.extend(["output axi_master_req_t  axi_req_o", "input  axi_master_resp_t axi_resp_i"])
       else:
           if config.project.macro_settings.slaves:
               for slv in config.project.macro_settings.slaves:
@@ -250,6 +259,11 @@ ${"," if all_extra_ports_list else ""}
   logic host_pwr_on_rst_n;
   logic [${pkg}::NumDomains-1:0] pwr_on_rsts_n;
   logic [${pkg}::NumDomains-1:0] rsts_n;
+
+% if not has_rt_clk:
+  logic rt_clk_i;
+  assign rt_clk_i = 1'b0;
+% endif
 
 <%namespace file="/hw/infrastructure/clock_reset.mako" import="clock_and_reset_tree"/>\
 ${clock_and_reset_tree(config, p_name)}
@@ -391,7 +405,7 @@ ${clock_and_reset_tree(config, p_name)}
     .AxiCfgW             ( ${npkg}::AxiCfgW ),
     .ChimneyCfgN         ( floo_pkg::set_ports(floo_pkg::ChimneyDefaultCfg, ${"1'b1" if has_narrow_out else "1'b0"}, ${"1'b1" if has_narrow_in else "1'b0"}) ),
     .ChimneyCfgW         ( floo_pkg::set_ports(floo_pkg::ChimneyDefaultCfg, ${"1'b1" if has_wide_out else "1'b0"}, ${"1'b1" if has_wide_in else "1'b0"}) ),
-    .RouteCfg            ( ${npkg}::RouteCfg ),
+    .RouteCfg            ( ${pkg}::RouteCfgNoMcast ),
     .AtopSupport         ( 1'b1 ),
     .WideRwDecouple      ( ${npkg}::WideRwDecouple ),
     .VcImpl              ( ${npkg}::VcImpl ),
@@ -456,8 +470,8 @@ ${clock_and_reset_tree(config, p_name)}
     .axi_narrow_rsp_t( axi_narrow_resp_t ),
     .axi_wide_req_t  ( axi_wide_req_t ),
     .axi_wide_rsp_t  ( axi_wide_resp_t ),
-    .axi_req_t       ( axi_req_t ),
-    .axi_rsp_t       ( axi_resp_t )
+    .axi_req_t       ( axi_master_req_t ),
+    .axi_rsp_t       ( axi_master_resp_t )
   ) i_join_${c_name} (
     .clk_i           ( ${host_clk} ),
     .rst_ni          ( host_pwr_on_rst_n ),

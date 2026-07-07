@@ -29,6 +29,7 @@ class OllivanderEnv:
         self.exclude_dir = ""
         self.base_dir = None
         self.fast_check_tool = "questa"
+        self.ecc_schemes_dir = None
 
 def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     """
@@ -114,6 +115,13 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     env.cfg_sub = get_path_cfg('sub_cfg', 'cfg')
     env.reg_sub = get_path_cfg('sub_reg', 'reg')
     env.tb_sub = get_path_cfg('sub_tb', 'tb')
+    
+    if 'ecc_schemes_dir' in app_paths_cfg:
+        env.ecc_schemes_dir = (append_env_base / app_paths_cfg['ecc_schemes_dir']).resolve()
+    elif 'ecc_schemes_dir' in paths_cfg:
+        env.ecc_schemes_dir = (env_base / paths_cfg['ecc_schemes_dir']).resolve()
+    else:
+        env.ecc_schemes_dir = (base_dir / "src/core/ecc_schemes").resolve()
     
     # Helper to resolve the path for the Bender manifest file.
     # It dynamically replaces the '{outdir}' placeholder with the actual resolved output path.
