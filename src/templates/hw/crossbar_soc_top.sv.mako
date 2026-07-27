@@ -11,7 +11,7 @@
   # 4. Instantiating all the hardware components (Isles) and wiring them together.
 
   p_name = config.project.name
-  pkg    = f"{p_name}_soc_pkg"
+  pkg    = config.project.soc_pkg_name
   rpkg   = f"{top_level_module_name}_sys_regs_pkg"
   host_clk = config.host.clock_domain or "system_clk"
       
@@ -268,10 +268,10 @@ module ${top_level_module_name}
   ${top_level_module_name}_sys_regs_pkg::${top_level_module_name}_sys_regs__out_t sys_regs_hwif_out;
   ${top_level_module_name}_sys_regs_pkg::${top_level_module_name}_sys_regs__in_t  sys_regs_hwif_in;
 
-  // Global reset lines (driven by clock_and_reset_tree)
+  // Root host reset, always present (driven by clock_and_reset_tree).
+  // The per-domain vectors `pwr_on_rsts_n` / `rsts_n` are declared by that same
+  // macro, but only when the SoC actually has a global reset tree to drive them.
   logic host_pwr_on_rst_n;
-  logic [${pkg}::NumDomains-1:0] pwr_on_rsts_n;
-  logic [${pkg}::NumDomains-1:0] rsts_n;
 
 % if not has_rt_clk:
   logic rt_clk_i;

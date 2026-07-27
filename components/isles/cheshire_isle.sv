@@ -52,6 +52,7 @@ module cheshire_isle
   // CHESHIRE SPECIFIC PARAMETERS
   // =================================================================================
   parameter int unsigned CdcSyncStages = 2,
+  parameter int unsigned LlcCdcSyncStages = CdcSyncStages,
 
   // =================================================================================
   // OLLIVANDER HOST STANDARD PARAMETERS
@@ -108,7 +109,9 @@ module cheshire_isle
   parameter type sync_reg_out_req_t  = ollivander_soc_pkg::soc_reg_req_t,
   parameter type sync_reg_out_rsp_t  = ollivander_soc_pkg::soc_reg_rsp_t,
   parameter type async_reg_out_req_t = ollivander_soc_pkg::soc_reg_req_t,
-  parameter type async_reg_out_rsp_t = ollivander_soc_pkg::soc_reg_rsp_t
+  parameter type async_reg_out_rsp_t = ollivander_soc_pkg::soc_reg_rsp_t,
+  parameter type axi_llc_req_t       = ollivander_soc_pkg::soc_axi_llc_req_t,
+  parameter type axi_llc_resp_t      = ollivander_soc_pkg::soc_axi_llc_resp_t
 )(
   input  logic        clk_i      ,
   input  logic        rst_ni     ,
@@ -135,6 +138,10 @@ module cheshire_isle
   output logic [            LogDepth:0]   async_axi_llc_w_wptr_o ,
   input  logic [            LogDepth:0]   async_axi_llc_w_rptr_i ,
   
+  // Synchronous AXI LLC (DRAM) port
+  output axi_llc_req_t                    axi_llc_req_o,
+  input  axi_llc_resp_t                   axi_llc_resp_i,
+
   // Standard AXI OUT (Master to external slaves) ports
   input  logic [cheshire_pkg::iomsb(AxiNumSlvAsync):0]                        async_axi_out_isolate_i,
   output logic [cheshire_pkg::iomsb(AxiNumSlvAsync):0]                        async_axi_out_isolated_o,
@@ -270,7 +277,7 @@ module cheshire_isle
     cfg.AddrWidth         = AxiAddrWidth;
     cfg.AxiDataWidth      = AxiDataWidth;
     cfg.AxiUserWidth      = AxiUserWidth;
-    cfg.AxiMstIdWidth     = AxiOutIdWidth;
+    cfg.AxiMstIdWidth     = (AxiOutIdWidth > 0 && AxiOutIdWidth <= 3) ? AxiOutIdWidth : 3;
 
     // Host Parameters (from YAML 'host.parameters')
     cfg.NumCores          = NumCores;
@@ -346,13 +353,15 @@ module cheshire_isle
   typedef logic [AxiAddrWidth-1:0]   axi_addr_t;
   typedef logic [AxiUserWidth-1:0]   axi_user_t;
 
-  typedef logic [LlcIdWidth-1:0]     llc_id_t;
+  localparam cheshire_pkg::axi_in_t AxiIn = cheshire_pkg::gen_axi_in(Cfg);
+  localparam int unsigned AxiSlvIdWidth = Cfg.AxiMstIdWidth + $clog2(AxiIn.num_in);
+  typedef logic [AxiSlvIdWidth:0]     llc_id_t;
   `AXI_TYPEDEF_ALL(cheshire_llc, axi_addr_t, llc_id_t, axi_data_t, axi_strb_t, axi_user_t)
 
-  typedef logic [ExtSlvIdWidth-1:0]  ext_slv_id_t;
+  typedef logic [AxiSlvIdWidth-1:0]  ext_slv_id_t;
   `AXI_TYPEDEF_ALL(cheshire_ext_slv, axi_addr_t, ext_slv_id_t, axi_data_t, axi_strb_t, axi_user_t)
 
-  typedef logic [AxiOutIdWidth-1:0]  ext_mst_id_t;
+  typedef logic [Cfg.AxiMstIdWidth-1:0]  ext_mst_id_t;
   `AXI_TYPEDEF_ALL(cheshire_ext_mst, axi_addr_t, ext_mst_id_t, axi_data_t, axi_strb_t, axi_user_t)
 
   typedef struct packed {
@@ -503,8 +512,8 @@ module cheshire_isle
   // Map the synchronous AXI outputs directly.
   // Convention: Async ports are mapped first, Sync ports are mapped sequentially after.
   for (genvar i = 0; i < AxiNumSlvSync; i++) begin : gen_ext_slv_sync
-    assign axi_req_o[i] = axi_ext_slv_req[AxiNumSlvAsync + i];
-    assign axi_ext_slv_rsp[AxiNumSlvAsync + i] = axi_resp_i[i];
+    `AXI_ASSIGN_REQ_STRUCT(axi_req_o[i], axi_ext_slv_req[AxiNumSlvAsync + i])
+    `AXI_ASSIGN_RESP_STRUCT(axi_ext_slv_rsp[AxiNumSlvAsync + i], axi_resp_i[i])
   end
 
   // Cheshire's AXI master CDC generation for asynchronous slaves
@@ -604,8 +613,8 @@ module cheshire_isle
   
   // Map the synchronous AXI inputs directly.
   for (genvar i = 0; i < AxiNumMstSync; i++) begin : gen_ext_mst_sync
-    assign axi_ext_mst_req[AxiNumMstAsync + i] = axi_req_i[i];
-    assign axi_resp_o[i] = axi_ext_mst_rsp[AxiNumMstAsync + i];
+    `AXI_ASSIGN_REQ_STRUCT(axi_ext_mst_req[AxiNumMstAsync + i], axi_req_i[i])
+    `AXI_ASSIGN_RESP_STRUCT(axi_resp_o[i], axi_ext_mst_rsp[AxiNumMstAsync + i])
   end
 
   // AXI isolate and CDC for external LLC connection
@@ -615,7 +624,7 @@ module cheshire_isle
     .AtopSupport            ( 1                          ),
     .AxiAddrWidth           ( Cfg.AddrWidth              ),
     .AxiDataWidth           ( Cfg.AxiDataWidth           ),
-    .AxiIdWidth             ( LlcIdWidth                 ),
+    .AxiIdWidth             ( $bits(llc_id_t)            ),
     .AxiUserWidth           ( Cfg.AxiUserWidth           ),
     .axi_req_t              ( cheshire_llc_req_t         ),
     .axi_resp_t             ( cheshire_llc_resp_t        )
@@ -630,39 +639,58 @@ module cheshire_isle
     .isolated_o             ( async_axi_llc_isolated_o )
   );
 
-  axi_cdc_src #(
-    .LogDepth   ( LogDepth                       ),
-    .SyncStages ( CdcSyncStages                  ),
-    .aw_chan_t  ( cheshire_llc_aw_chan_t         ),
-    .w_chan_t   ( cheshire_llc_w_chan_t          ),
-    .b_chan_t   ( cheshire_llc_b_chan_t          ),
-    .ar_chan_t  ( cheshire_llc_ar_chan_t         ),
-    .r_chan_t   ( cheshire_llc_r_chan_t          ),
-    .axi_req_t  ( cheshire_llc_req_t             ),
-    .axi_resp_t ( cheshire_llc_resp_t            )
-  ) i_cheshire_ext_llc_cdc_src   (
-    // synchronous slave port
-    .src_clk_i                   ( clk_i                    ),
-    .src_rst_ni                  ( rst_ni                   ),
-    .src_req_i                   ( axi_llc_mst_isolated_req ),
-    .src_resp_o                  ( axi_llc_mst_isolated_rsp ),
-    // asynchronous master port
-    .async_data_master_aw_data_o ( async_axi_llc_aw_data_o ),
-    .async_data_master_aw_wptr_o ( async_axi_llc_aw_wptr_o ),
-    .async_data_master_aw_rptr_i ( async_axi_llc_aw_rptr_i ),
-    .async_data_master_w_data_o  ( async_axi_llc_w_data_o  ),
-    .async_data_master_w_wptr_o  ( async_axi_llc_w_wptr_o  ),
-    .async_data_master_w_rptr_i  ( async_axi_llc_w_rptr_i  ),
-    .async_data_master_b_data_i  ( async_axi_llc_b_data_i  ),
-    .async_data_master_b_wptr_i  ( async_axi_llc_b_wptr_i  ),
-    .async_data_master_b_rptr_o  ( async_axi_llc_b_rptr_o  ),
-    .async_data_master_ar_data_o ( async_axi_llc_ar_data_o ),
-    .async_data_master_ar_wptr_o ( async_axi_llc_ar_wptr_o ),
-    .async_data_master_ar_rptr_i ( async_axi_llc_ar_rptr_i ),
-    .async_data_master_r_data_i  ( async_axi_llc_r_data_i  ),
-    .async_data_master_r_wptr_i  ( async_axi_llc_r_wptr_i  ),
-    .async_data_master_r_rptr_o  ( async_axi_llc_r_rptr_o  )
-  );
+  generate
+    if (LlcCdcSyncStages > 0) begin : gen_ext_llc_cdc
+      axi_cdc_src #(
+        .LogDepth   ( LogDepth                       ),
+        .SyncStages ( LlcCdcSyncStages               ),
+        .aw_chan_t  ( cheshire_llc_aw_chan_t         ),
+        .w_chan_t   ( cheshire_llc_w_chan_t          ),
+        .b_chan_t   ( cheshire_llc_b_chan_t          ),
+        .ar_chan_t  ( cheshire_llc_ar_chan_t         ),
+        .r_chan_t   ( cheshire_llc_r_chan_t          ),
+        .axi_req_t  ( cheshire_llc_req_t             ),
+        .axi_resp_t ( cheshire_llc_resp_t            )
+      ) i_cheshire_ext_llc_cdc_src   (
+        // synchronous slave port
+        .src_clk_i                   ( clk_i                    ),
+        .src_rst_ni                  ( rst_ni                   ),
+        .src_req_i                   ( axi_llc_mst_isolated_req ),
+        .src_resp_o                  ( axi_llc_mst_isolated_rsp ),
+        // asynchronous master port
+        .async_data_master_aw_data_o ( async_axi_llc_aw_data_o ),
+        .async_data_master_aw_wptr_o ( async_axi_llc_aw_wptr_o ),
+        .async_data_master_aw_rptr_i ( async_axi_llc_aw_rptr_i ),
+        .async_data_master_w_data_o  ( async_axi_llc_w_data_o  ),
+        .async_data_master_w_wptr_o  ( async_axi_llc_w_wptr_o  ),
+        .async_data_master_w_rptr_i  ( async_axi_llc_w_rptr_i  ),
+        .async_data_master_b_data_i  ( async_axi_llc_b_data_i  ),
+        .async_data_master_b_wptr_i  ( async_axi_llc_b_wptr_i  ),
+        .async_data_master_b_rptr_o  ( async_axi_llc_b_rptr_o  ),
+        .async_data_master_ar_data_o ( async_axi_llc_ar_data_o ),
+        .async_data_master_ar_wptr_o ( async_axi_llc_ar_wptr_o ),
+        .async_data_master_ar_rptr_i ( async_axi_llc_ar_rptr_i ),
+        .async_data_master_r_data_i  ( async_axi_llc_r_data_i  ),
+        .async_data_master_r_wptr_i  ( async_axi_llc_r_wptr_i  ),
+        .async_data_master_r_rptr_o  ( async_axi_llc_r_rptr_o  )
+      );
+
+      assign axi_llc_req_o = '0;
+
+    end else begin : gen_no_ext_llc_cdc
+      assign axi_llc_req_o            = axi_llc_mst_isolated_req;
+      assign axi_llc_mst_isolated_rsp = axi_llc_resp_i;
+      
+      assign async_axi_llc_aw_data_o = '0;
+      assign async_axi_llc_aw_wptr_o = '0;
+      assign async_axi_llc_w_data_o  = '0;
+      assign async_axi_llc_w_wptr_o  = '0;
+      assign async_axi_llc_b_rptr_o  = '0;
+      assign async_axi_llc_ar_data_o = '0;
+      assign async_axi_llc_ar_wptr_o = '0;
+      assign async_axi_llc_r_rptr_o  = '0;
+    end
+  endgenerate
 
   // Async reg interface:
   // Convention: Sync ports are mapped first, Async ports are mapped sequentially after.

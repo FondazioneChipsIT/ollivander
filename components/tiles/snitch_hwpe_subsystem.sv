@@ -235,7 +235,7 @@ module snitch_hwpe_subsystem
   datamover_top #(
     .ID           (IdWidth),
     .N_CORES      (NrCores),
-    .BW           (HwpeDataWidth),
+    .BANDWIDTH    (HwpeDataWidth),
     .HCI_SIZE_tcdm(HCISizeTcdm)
   ) i_datamover_top (
     .clk_i      (hwpe_clk[1]),

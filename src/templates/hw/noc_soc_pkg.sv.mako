@@ -101,6 +101,17 @@ package ${pkg};
       
   wide_net = config.topology.noc_settings.networks.get('wide') if config.topology.noc_settings and config.topology.noc_settings.networks else None
 %>
+<%
+  # Calculate host's internal AXI masters (from Cheshire's gen_axi_in) to adjust ExtSlvIdWidth and LlcIdWidth
+  host_params = config.host.parameters or {} if config.host else {}
+  num_cores = host_params.get('NumCores', 1)
+  has_dbg = 1 # Always present
+  has_dma = 1 if host_params.get('Dma', True) else 0
+  has_slink = 1 if host_params.get('SerialLink', True) else 0
+  has_vga = 1 if host_params.get('Vga', True) else 0
+  has_usb = 1 if host_params.get('Usb', True) else 0
+  num_internal_masters = num_cores + has_dbg + has_dma + has_slink + has_vga + has_usb + 1
+%>
   localparam int unsigned AxiAddrWidth     = ${g_addr_w};
   localparam int unsigned AxiDataWidth     = ${g_data_w};
   localparam int unsigned AxiUserWidth     = ${g_user_w};
@@ -109,7 +120,7 @@ package ${pkg};
   localparam int unsigned AxiWideDataWidth = ${wide_net.data_width};
   % endif
   
-  localparam int unsigned ExtSlvIdWidth    = AxiIdWidth + $clog2(${len(axi_masters)} > 1 ? ${len(axi_masters)} : 2);
+  localparam int unsigned ExtSlvIdWidth    = AxiIdWidth + $clog2(${num_internal_masters} > 1 ? ${num_internal_masters} : 2);
   localparam int unsigned LlcIdWidth       = ExtSlvIdWidth + 1; // Margin for LLC bypass bit
 
 
@@ -145,9 +156,11 @@ package ${pkg};
   typedef logic [AxiUserWidth-1:0]   soc_axi_user_t;
   typedef logic [AxiIdWidth-1:0]     soc_axi_mst_id_t;
   typedef logic [ExtSlvIdWidth-1:0]  soc_axi_slv_id_t;
+  typedef logic [LlcIdWidth-1:0]     soc_axi_llc_id_t;
 
   `AXI_TYPEDEF_ALL(soc_axi, soc_axi_addr_t, soc_axi_mst_id_t, soc_axi_data_t, soc_axi_strb_t, soc_axi_user_t)
   `AXI_TYPEDEF_ALL(soc_axi_slv, soc_axi_addr_t, soc_axi_slv_id_t, soc_axi_data_t, soc_axi_strb_t, soc_axi_user_t)
+  `AXI_TYPEDEF_ALL(soc_axi_llc, soc_axi_addr_t, soc_axi_llc_id_t, soc_axi_data_t, soc_axi_strb_t, soc_axi_user_t)
 
   // Aliases for explicit narrow network mapping
   typedef soc_axi_req_t  soc_axi_narrow_req_t;
@@ -254,10 +267,25 @@ package ${pkg};
   // 4. AXI CROSSBAR RULES (HOST -> CHIMNEY)
   // =========================================================================
   // Address map rules for routing AXI traffic from the Host into the NoC.
-  localparam int unsigned AxiExtNumRules = 1;
-  localparam logic [0:0][7:0] AxiExtRegionIdx = '{8'd0};
-  localparam logic [0:0][63:0] AxiExtRegionStart = '{64'h0000000000000000};
-  localparam logic [0:0][63:0] AxiExtRegionEnd   = '{64'hFFFFFFFFFFFFFFFF};
+<%
+  num_axi_slvs = len(axi_slaves)
+%>
+  localparam int unsigned AxiExtNumRules = ${num_axi_slvs};
+  localparam logic [${num_axi_slvs-1}:0][7:0] AxiExtRegionIdx = {
+% for i in reversed(range(num_axi_slvs)):
+    8'd0${"," if i != 0 else ""}
+% endfor
+  };
+  localparam logic [${num_axi_slvs-1}:0][63:0] AxiExtRegionStart = {
+% for slv in axi_slaves[::-1]:
+    64'h${parse_hex(slv['base'])}${"," if not loop.last else ""}
+% endfor
+  };
+  localparam logic [${num_axi_slvs-1}:0][63:0] AxiExtRegionEnd = {
+% for slv in axi_slaves[::-1]:
+    64'h${parse_hex(slv['base'])} + 64'h${parse_hex(slv['size'])}${"," if not loop.last else ""}
+% endfor
+  };
 
   // =========================================================================
   // 5. REGBUS SUBSYSTEM RULES

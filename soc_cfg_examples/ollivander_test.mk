@@ -35,6 +35,46 @@ ifneq ($(filter verilator,$(FAST_CHECK_TOOLS)),)
   MODULES_TO_LOAD += verilator
 endif
 
+# ------------------------------------------------------------------------------
+# Timing instrumentation
+# ------------------------------------------------------------------------------
+# The recipe below is a single shell command, so no in-line '#' comments are
+# possible inside it (make joins the backslash-continued lines before handing
+# them to the shell, and a '#' would swallow the remainder of the command).
+# The three shell helpers defined at the top of the recipe are documented here:
+#
+#   fmt_dur <seconds>        : formats an elapsed number of seconds as HH:MM:SS.
+#   log_step <label> <text>  : appends one column-aligned "  -> <label> : <text>"
+#                              entry to test_summary.log.
+#   close_project <start_ts>  : appends the per-project total time (computed from
+#                              the timestamp taken right after the project header)
+#                              followed by the project separator line. It is
+#                              invoked on every exit path of the project loop,
+#                              including the early 'continue' branches, so the
+#                              total is always reported.
+#
+# Three timestamps drive the measurements:
+#   suite_start : taken once, before any project is processed -> total suite time.
+#   proj_start  : taken per project, right after its header    -> project total.
+#   step_start  : taken before each step (clean / generate / fast-check /
+#                 build-sim / run-sim) -> per-step duration, reported for both
+#                 the SUCCESS and the FAILED outcome.
+#
+# Every step captures the sub-make exit status into step_rc instead of testing it
+# inline with 'if ! $(MAKE) ...', so that the elapsed time can be computed once
+# and reused by both branches.
+#
+# ------------------------------------------------------------------------------
+# Missing project directories
+# ------------------------------------------------------------------------------
+# A project directory that does not exist is detected as the very first thing in
+# the project loop, before the SOC_YAML introspection: 'make -C <missing dir>'
+# would otherwise fail noisily on stderr before the clean diagnostic is printed.
+# For the same reason the log-cleanup loop above only creates 'logs/' inside
+# directories that already exist - an unconditional 'mkdir -p <p>/logs' would
+# create the project directory itself and make the check unreachable.
+# A missing directory is reported per project and does not abort the suite: the
+# remaining projects are still processed and the final exit status is non-zero.
 .PHONY: test-all
 test-all:
 	@echo "======================================================================"
@@ -49,6 +89,10 @@ test-all:
 	export PATH && \
 	echo "[TEST] Loaded modules: $(MODULES_TO_LOAD)" && \
 	echo "[DEBUG] PATH inside test-all recipe: \$\${PATH}" && \
+	fmt_dur() { printf "%02d:%02d:%02d" $$(($$1/3600)) $$(($$1%3600/60)) $$(($$1%60)); } && \
+	log_step() { printf "  -> %-22s : %s\n" "$$1" "$$2" >> soc_cfg_examples/test_summary.log; } && \
+	close_project() { log_step "Project Total Time" "$$(fmt_dur $$(( $$(date +%s) - $$1 )))"; echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; } && \
+	suite_start=$$(date +%s) && \
 	if [ "$(TEST_CLEAN_SETUP)" = "1" ]; then \
 		echo "\n[TEST] Rebuilding Python virtual environment..."; \
 		rm -rf $(VENV_DIR); \
@@ -60,7 +104,10 @@ test-all:
 	echo "  -> Cleaning previous log files for selected projects..."; \
 	rm -f soc_cfg_examples/test_summary.log; \
 	for p in $(TEST_PROJECTS); do \
-		rm -f soc_cfg_examples/$$p/*.log; \
+		if [ -d "soc_cfg_examples/$$p" ]; then \
+			rm -rf soc_cfg_examples/$$p/logs; \
+			mkdir -p soc_cfg_examples/$$p/logs; \
+		fi; \
 	done; \
 	echo "======================================================================" > soc_cfg_examples/test_summary.log; \
 	echo "OLLIVANDER TEST SUITE SUMMARY - $$(date)" >> soc_cfg_examples/test_summary.log; \
@@ -71,6 +118,18 @@ test-all:
 	echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; \
 	failed_tests=""; \
 	for p in $(TEST_PROJECTS); do \
+		if [ ! -d "soc_cfg_examples/$$p" ]; then \
+			proj_start=$$(date +%s); \
+			echo "\n----------------------------------------------------------------------"; \
+			echo "[TEST] Project: $$p"; \
+			echo "----------------------------------------------------------------------"; \
+			echo "[ERROR] Project directory soc_cfg_examples/$$p does not exist!"; \
+			echo "Project: $$p" >> soc_cfg_examples/test_summary.log; \
+			log_step "Status" "FAILED (Directory not found)"; \
+			failed_tests="$$failed_tests $$p(missing-dir)"; \
+			close_project $$proj_start; \
+			continue; \
+		fi; \
 		yaml_path=$$(make -C soc_cfg_examples/$$p -pn | grep "^SOC_YAML :=" | cut -d "=" -f 2- | xargs); \
 		yaml_file=$$(echo $$yaml_path | sed 's|^\.\./\.\./||'); \
 		proj_name=""; \
@@ -88,60 +147,83 @@ test-all:
 		echo "[TEST] Project: $$proj_name ($$p)"; \
 		echo "----------------------------------------------------------------------"; \
 		echo "Project: $$proj_name ($$p)" >> soc_cfg_examples/test_summary.log; \
-		if [ ! -d "soc_cfg_examples/$$p" ]; then \
-			echo "[ERROR] Project directory soc_cfg_examples/$$p does not exist!"; \
-			failed_tests="$$failed_tests $$p"; \
-			echo "  -> Status: FAILED (Directory not found)" >> soc_cfg_examples/test_summary.log; \
-			echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; \
-			continue; \
-		fi; \
+		proj_start=$$(date +%s); \
 		if [ "$(TEST_CLEAN)" = "1" ]; then \
 			echo "  -> Cleaning project $$proj_name..."; \
-			$(MAKE) -C soc_cfg_examples/$$p clean > soc_cfg_examples/$$p/clean.log 2>&1 || exit 1; \
+			mkdir -p soc_cfg_examples/$$p/logs; \
+			step_start=$$(date +%s); \
+			$(MAKE) -C soc_cfg_examples/$$p clean > soc_cfg_examples/$$p/logs/test_clean.log 2>&1 || exit 1; \
+			log_step "Clean" "SUCCESS [$$(fmt_dur $$(( $$(date +%s) - step_start )))]"; \
 		fi; \
 		echo "  -> Generating RTL for project $$proj_name..."; \
-		if ! $(MAKE) -C soc_cfg_examples/$$p generate > soc_cfg_examples/$$p/generate.log 2>&1; then \
-			echo "[ERROR] RTL generation failed for project $$proj_name! Check soc_cfg_examples/$$p/generate.log"; \
-			echo "  -> RTL Generation: FAILED (Check soc_cfg_examples/$$p/generate.log)" >> soc_cfg_examples/test_summary.log; \
-			echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; \
+		mkdir -p soc_cfg_examples/$$p/logs; \
+		step_start=$$(date +%s); \
+		$(MAKE) -C soc_cfg_examples/$$p generate > soc_cfg_examples/$$p/logs/test_generate.log 2>&1; \
+		step_rc=$$?; \
+		step_dur=$$(fmt_dur $$(( $$(date +%s) - step_start ))); \
+		if [ $$step_rc -ne 0 ]; then \
+			echo "[ERROR] RTL generation failed for project $$proj_name! Check soc_cfg_examples/$$p/logs/test_generate.log"; \
+			log_step "RTL Generation" "FAILED [$$step_dur] (Check soc_cfg_examples/$$p/logs/test_generate.log)"; \
 			failed_tests="$$failed_tests $$p(generate)"; \
+			close_project $$proj_start; \
 			continue; \
 		fi; \
-		echo "  -> RTL Generation: SUCCESS" >> soc_cfg_examples/test_summary.log; \
+		log_step "RTL Generation" "SUCCESS [$$step_dur]"; \
 		for tool in $(FAST_CHECK_TOOLS); do \
 			echo "  -> Running fast-check with tool: $$tool..."; \
-			if ! $(MAKE) -C soc_cfg_examples/$$p fast-check FAST_CHECK_TOOL=$$tool > soc_cfg_examples/$$p/fastcheck_$$tool.log 2>&1; then \
-				echo "[ERROR] Fast-check failed for project $$proj_name with tool $$tool! Check soc_cfg_examples/$$p/fastcheck_$$tool.log"; \
-				echo "  -> Fast-Check ($$tool): FAILED (Check soc_cfg_examples/$$p/fastcheck_$$tool.log)" >> soc_cfg_examples/test_summary.log; \
+			mkdir -p soc_cfg_examples/$$p/logs; \
+			step_start=$$(date +%s); \
+			$(MAKE) -C soc_cfg_examples/$$p fast-check FAST_CHECK_TOOL=$$tool > soc_cfg_examples/$$p/logs/test_fastcheck_$$tool.log 2>&1; \
+			step_rc=$$?; \
+			step_dur=$$(fmt_dur $$(( $$(date +%s) - step_start ))); \
+			if [ $$step_rc -ne 0 ]; then \
+				echo "[ERROR] Fast-check failed for project $$proj_name with tool $$tool! Check soc_cfg_examples/$$p/logs/test_fastcheck_$$tool.log"; \
+				log_step "Fast-Check ($$tool)" "FAILED [$$step_dur] (Check soc_cfg_examples/$$p/logs/test_fastcheck_$$tool.log)"; \
 				failed_tests="$$failed_tests $$p($$tool)"; \
 			else \
-				echo "  -> Fast-Check ($$tool): SUCCESS" >> soc_cfg_examples/test_summary.log; \
+				log_step "Fast-Check ($$tool)" "SUCCESS [$$step_dur]"; \
 			fi; \
 		done; \
 		if [ "$(TEST_SIM)" = "1" ]; then \
 			if [ -f "soc_cfg_examples/$$p/generated/Makefile.vsim" ]; then \
 				echo "  -> Compiling simulation for project $$proj_name..."; \
-				if ! $(MAKE) -C soc_cfg_examples/$$p build-sim > soc_cfg_examples/$$p/build_sim.log 2>&1; then \
-					echo "[ERROR] Simulation build failed for project $$proj_name! Check soc_cfg_examples/$$p/build_sim.log"; \
-					echo "  -> Simulation Build: FAILED (Check soc_cfg_examples/$$p/build_sim.log)" >> soc_cfg_examples/test_summary.log; \
+				mkdir -p soc_cfg_examples/$$p/logs; \
+				step_start=$$(date +%s); \
+				$(MAKE) -C soc_cfg_examples/$$p build-sim > soc_cfg_examples/$$p/logs/test_build_sim.log 2>&1; \
+				step_rc=$$?; \
+				step_dur=$$(fmt_dur $$(( $$(date +%s) - step_start ))); \
+				if [ $$step_rc -ne 0 ]; then \
+					echo "[ERROR] Simulation build failed for project $$proj_name! Check soc_cfg_examples/$$p/logs/test_build_sim.log"; \
+					log_step "Simulation Build" "FAILED [$$step_dur] (Check soc_cfg_examples/$$p/logs/test_build_sim.log)"; \
 					failed_tests="$$failed_tests $$p(build-sim)"; \
 				else \
-					echo "  -> Simulation Build: SUCCESS" >> soc_cfg_examples/test_summary.log; \
+					log_step "Simulation Build" "SUCCESS [$$step_dur]"; \
 					echo "  -> Running simulation for project $$proj_name..."; \
-					if ! $(MAKE) -C soc_cfg_examples/$$p run-sim ASSERTIONS=0 > soc_cfg_examples/$$p/run_sim.log 2>&1; then \
-						echo "[ERROR] Simulation run failed for project $$proj_name! Check soc_cfg_examples/$$p/run_sim.log"; \
-						echo "  -> Simulation Run: FAILED (Check soc_cfg_examples/$$p/run_sim.log)" >> soc_cfg_examples/test_summary.log; \
+					mkdir -p soc_cfg_examples/$$p/logs; \
+					step_start=$$(date +%s); \
+					$(MAKE) -C soc_cfg_examples/$$p run-sim ASSERTIONS=0 > soc_cfg_examples/$$p/logs/test_run_sim.log 2>&1; \
+					step_rc=$$?; \
+					step_dur=$$(fmt_dur $$(( $$(date +%s) - step_start ))); \
+					if [ $$step_rc -ne 0 ]; then \
+						echo "[ERROR] Simulation run failed for project $$proj_name! Check soc_cfg_examples/$$p/logs/test_run_sim.log"; \
+						log_step "Simulation Run" "FAILED [$$step_dur] (Check soc_cfg_examples/$$p/logs/test_run_sim.log)"; \
 						failed_tests="$$failed_tests $$p(run-sim)"; \
+					elif ! grep -q "\[UART\]:" soc_cfg_examples/$$p/logs/test_run_sim.log; then \
+						echo "[ERROR] Simulation run completed but no UART output was detected for project $$proj_name! Check soc_cfg_examples/$$p/logs/test_run_sim.log"; \
+						log_step "Simulation Run" "FAILED [$$step_dur] (No UART output detected)"; \
+						failed_tests="$$failed_tests $$p(run-sim-no-uart)"; \
 					else \
-						echo "  -> Simulation Run: SUCCESS" >> soc_cfg_examples/test_summary.log; \
+						log_step "Simulation Run" "SUCCESS [$$step_dur]"; \
 					fi; \
 				fi; \
 			else \
 				echo "  [INFO] No simulation Makefile found for project $$p. Skipping simulation."; \
+				log_step "Simulation" "SKIPPED (no generated/Makefile.vsim)"; \
 			fi; \
 		fi; \
-		echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; \
+		close_project $$proj_start; \
 	done; \
+	suite_dur=$$(fmt_dur $$(( $$(date +%s) - suite_start ))); \
 	echo "\n======================================================================"; \
 	echo "======================================================================" >> soc_cfg_examples/test_summary.log; \
 	if [ -n "$$failed_tests" ]; then \
@@ -149,7 +231,9 @@ test-all:
 	else \
 		echo "Final Result    : SUCCESS" >> soc_cfg_examples/test_summary.log; \
 	fi; \
+	echo "Total Suite Time: $$suite_dur" >> soc_cfg_examples/test_summary.log; \
 	echo "======================================================================" >> soc_cfg_examples/test_summary.log; \
+	echo "[TEST] Total suite time: $$suite_dur"; \
 	if [ -n "$$failed_tests" ]; then \
 		echo "[ERROR] Test suite failed for the following configurations:$$failed_tests"; \
 		echo "======================================================================"; \

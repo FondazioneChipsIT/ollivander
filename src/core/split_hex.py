@@ -41,9 +41,23 @@ def main():
     parser.add_argument("--bank-width", type=int, default=32, help="SRAM bank width in bits")
     parser.add_argument("--mem-size", required=True, help="Memory size in bytes (e.g. 0x200000)")
     parser.add_argument("--num-banks-per-group", type=int, help="Total number of physical banks per group")
+    # Physical organisation of the target memory. The two supported schemes differ in what the
+    # {group} and {bank} indices of the isle's PreloadTemplate actually select:
+    #
+    #   word-group (e.g. l2_isle / l2_top):
+    #       {group} is selected by the AXI word address (consecutive AXI words alternate between
+    #       groups), and the AXI word is sliced across `num_lanes` consecutive {bank} macros
+    #       inside the selected group.
+    #
+    #   lane-group (e.g. sram_isle / spm_isle):
+    #       {group} IS the data lane: group g always holds bits [g*bank_width +: bank_width] of
+    #       every AXI word. {bank} is the depth (row-select) index, driven by the high address
+    #       bits, and the word index inside a macro comes from the low address bits.
+    parser.add_argument("--interleave", choices=["word-group", "lane-group"], default="word-group",
+                        help="Physical interleaving scheme of the target memory (default: word-group)")
     parser.add_argument("--ecc-scheme", help="ECC scheme to use (e.g. secded_39_32)")
     parser.add_argument("--ecc-dir", help="Directory containing custom ECC scheme files")
-    
+
     args = parser.parse_args()
     
     if args.ecc_scheme:
@@ -71,10 +85,18 @@ def main():
         num_banks_per_group = args.num_banks_per_group
     else:
         num_banks_per_group = num_lanes
-        
+
     depth = num_banks_per_group // num_lanes
     sram_num_words = (mem_size // (num_groups * num_banks_per_group)) // (bank_width // 8) if depth > 1 else 0
-    
+
+    # In the lane-group scheme every group is one data lane of the AXI word, therefore the
+    # number of groups is fully determined by the AXI/SRAM width ratio. A mismatch here means
+    # the caller mixed up the two schemes and the resulting image would be silently corrupted.
+    if args.interleave == "lane-group" and num_groups != num_lanes:
+        print(f"Error: interleave 'lane-group' requires --num-groups ({num_groups}) to equal "
+              f"data-width/bank-width ({num_lanes})")
+        sys.exit(1)
+
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
         
@@ -102,11 +124,17 @@ def main():
     
     step = data_width // 8
     num_axi_words = mem_size // step
-    
+    lane_mask = (1 << bank_width) - 1
+
+    # lane-group scheme only: number of AXI words stored in a single physical SRAM macro.
+    # This mirrors SramNumWords / SpmWordsPerBank in the RTL, since every macro contributes one
+    # lane to `words_per_macro` consecutive AXI words.
+    words_per_macro = (num_axi_words // num_banks_per_group) if num_banks_per_group else num_axi_words
+
     for w in range(num_axi_words):
         rel_addr = w * step
         addr = base_addr + rel_addr
-        
+
         axi_word_val = 0
         has_data = False
         for byte_idx in range(step):
@@ -114,25 +142,41 @@ def main():
             if b_addr in byte_memory:
                 axi_word_val |= (byte_memory[b_addr] << (byte_idx * 8))
                 has_data = True
-                
+
         if not has_data:
             continue
-            
+
+        if args.interleave == "lane-group":
+            # Group == data lane, bank == depth row (selected by the high address bits),
+            # word index == low address bits. All groups are written for every AXI word.
+            bank_idx = w // words_per_macro if words_per_macro else 0
+            bank_word_idx = w % words_per_macro if words_per_macro else w
+            if bank_idx >= num_banks_per_group:
+                continue
+            for g in range(num_groups):
+                slice_val = (axi_word_val >> (g * bank_width)) & lane_mask
+                banks[g][bank_idx][bank_word_idx] = slice_val
+            continue
+
+        # word-group scheme: consecutive AXI words rotate across the groups, and each AXI word
+        # is sliced lane-by-lane across `num_lanes` consecutive banks of the selected group.
         g = (rel_addr // step) % num_groups
         row_idx = rel_addr // (num_groups * step)
-        
+
         if depth > 1:
             d = row_idx // sram_num_words
             bank_word_idx = row_idx % sram_num_words
         else:
             d = 0
             bank_word_idx = row_idx
-            
+
         for l in range(num_lanes):
-            slice_val = (axi_word_val >> (l * bank_width)) & ((1 << bank_width) - 1)
+            slice_val = (axi_word_val >> (l * bank_width)) & lane_mask
             b = d * num_lanes + l
-            banks[g][b][bank_word_idx] = slice_val
-            
+            if b < num_banks_per_group:
+                banks[g][b][bank_word_idx] = slice_val
+
+
     input_basename = os.path.basename(args.input_hex)
     name_parts = os.path.splitext(input_basename)
     

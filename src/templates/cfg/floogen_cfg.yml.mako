@@ -137,13 +137,30 @@ routing:
   decouple_rw: Phys
   vc_impl: naive
 
+<%
+  narrow_net = config.topology.noc_settings.networks.get('narrow') if config.topology.noc_settings and config.topology.noc_settings.networks else None
+  user_id_w = getattr(narrow_net, 'id_width', None) if narrow_net else None
+  if user_id_w is not None:
+      g_id_w = user_id_w
+  else:
+      # Auto-calculate required ID width based on host internal ID width + total external AXI rules
+      host_params = getattr(config.host, 'parameters', {}) or {}
+      host_mst_id = int(host_params.get('AxiMstIdWidth', 3))
+      tot_slvs = 0
+      for c in comps:
+          if c.interfaces and 'axi_slave' in c.interfaces:
+              slvs = c.interfaces['axi_slave']
+              tot_slvs += len(slvs) if isinstance(slvs, list) else 1
+      extra_bits = math.ceil(math.log2(max(tot_slvs, 1))) if tot_slvs > 1 else 0
+      g_id_w = max(host_mst_id + extra_bits + 1, 6)
+%>
 protocols:
   - name: "narrow_in"
     type: "narrow"
     protocol: "AXI4"
     data_width: 64
     addr_width: 48
-    id_width: 5
+    id_width: ${g_id_w}
     user_width:
       collective_mask: 48
       collective_op: 4

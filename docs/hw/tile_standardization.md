@@ -49,9 +49,18 @@ Just like Isles and Subtiles, Custom Tiles receive system signals automatically 
 
 ### Optional Clock/Reset Control (Auto Control Groups)
 If the Tile is subject to an `auto_control_group` in the System Controller, it can optionally receive the following signals to implement local clock gating and reset isolation:
-*   **`tile_clk_en_i`** (`logic`): Software-controlled clock enable.
-*   **`tile_rst_ni`** (`logic`): Software-controlled reset (active low).
-*   **`clk_rst_bypass_i`** (`logic`): Hardware override to bypass clock gating and software resets during test modes.
+*   **`tile_clk_en_i`** (`logic`): Software-controlled clock enable, active high (`1` = clock enabled). Driven by bit `i` of the group's `<group>_clk_en` register, where `i` is the instance index of this Tile within the group.
+*   **`tile_rst_ni`** (`logic`): Software-controlled reset, **active low** at the pin. It is driven by the *inverse* of bit `i` of the group's `<group>_rst` register, which is active high (`1` = held in reset); the inversion happens in the SoC top-level.
+*   **`clk_rst_bypass_i`** (`logic`): Hardware override to bypass clock gating and software resets during test modes. It is also the escape hatch that allows a Tile to be used before any CSR has been written.
+
+The power-on value of both registers is set by `system_controller.power_on_state`, which
+defaults to `"gated"`: the Tile comes up with its clock disabled and its reset asserted, and
+must be brought up explicitly. See the System Controller section of
+`soc_configuration_guide.md`.
+
+Gating a Tile must never break traffic that merely routes *through* it. Keep the NoC router
+(and, preferably, the chimney) on the ungated `clk_i` / `rst_ni`, and confine `tile_clk` and
+`tile_rst_n` to the payload IP.
 
 ### Optional Interconnect Signals
 *   **`sys_clk_i`** / **`sys_rst_ni`**: Global system clock and reset (`host_clk`).
@@ -148,4 +157,5 @@ For memory Custom Tiles that require simulation-only binary preloading (via `$re
 *   **`PreloadTemplate`** (`string`): The internal hierarchical path template from the Custom Tile top to the physical SRAM array (supporting `{group}` and `{bank}` variables).
 *   **`PreloadNumGroups`** (`int unsigned`): The number of bank groups.
 *   **`PreloadBankWidth`** (`int unsigned`): The data width of a single physical SRAM bank in bits.
-*   **`PreloadBanksPerGroup`** (`int unsigned`): The number of physical SRAM banks in each group (optional, dynamically calculated as `AxiDataWidth / PreloadBankWidth` if omitted or set to 0).
+*   **`PreloadBanksPerGroup`** (`int unsigned`): The number of physical SRAM banks in each group (optional, dynamically calculated as `AxiDataWidth / PreloadBankWidth` if omitted or set to 0).
+*   **`PreloadInterleave`** (`string`): The physical interleaving scheme, `"lane-group"` or `"word-group"` (default). Declaring the wrong value silently places the firmware in the wrong physical locations; see the "Interleaving Schemes" section of `isle_standardization.md` for the exact address mapping of each scheme.

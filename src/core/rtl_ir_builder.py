@@ -44,7 +44,7 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
     wiring-matrix connections, exported-interface connections, and auto
     tie-offs for any remaining unconnected ports.
     """
-    pkg = f"{soc_config.project.name}_soc_pkg"
+    pkg = f"{soc_config.project.soc_pkg_name}"
     all_comps = [soc_config.host] + (soc_config.components if soc_config.components else [])
 
     for comp in all_comps:
@@ -339,6 +339,19 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 module_type = f"{soc_config.project.name}_{c.type}"
                 inst = ir.add_instance(t_name, module_type)
 
+                # Populate instance parameters from user-defined YAML configuration (host and components)
+                if c.parameters:
+                    for p_name, p_val in c.parameters.items():
+                        if p_name.startswith("AxiNum"):
+                            continue
+                        if isinstance(p_val, bool):
+                            formatted_val = "1'b1" if p_val else "1'b0"
+                        elif isinstance(p_val, int):
+                            formatted_val = str(p_val)
+                        else:
+                            formatted_val = str(p_val)
+                        inst.parameters[p_name] = formatted_val
+
                 # Overrides for L2 parameters to support scaling of multiple instances
                 if 'l2' in c.name or (c.system_config and c.system_config.get('is_l2_mem')):
                     b_val, size_val = get_l2_instance_params(c, inst_idx)
@@ -386,8 +399,14 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                             ctrl_group = g
                             break
                 if ctrl_group:
-                    inst.connections.append(PortConnection("tile_clk_en_i", f"sys_regs_hwif_out.{ctrl_group.name.lower()}_clk_en.{ctrl_group.name.lower()}_clk_en.value[{inst_idx}]"))
-                    inst.connections.append(PortConnection("tile_rst_ni", f"~sys_regs_hwif_out.{ctrl_group.name.lower()}_rst.{ctrl_group.name.lower()}_rst.value[{inst_idx}]"))
+                    gn = ctrl_group.name.lower()
+                    # The packed control registers hold exactly one bit per controlled tile.
+                    # PeakRDL emits a single-bit SystemRDL field as a scalar `logic`, which
+                    # cannot be bit-selected, so a one-tile group is referenced without index.
+                    group_width = soc_config.control_group_width(ctrl_group, original_isle_types)
+                    bit_sel = f"[{inst_idx}]" if group_width > 1 else ""
+                    inst.connections.append(PortConnection("tile_clk_en_i", f"sys_regs_hwif_out.{gn}_clk_en.{gn}_clk_en.value{bit_sel}"))
+                    inst.connections.append(PortConnection("tile_rst_ni", f"~sys_regs_hwif_out.{gn}_rst.{gn}_rst.value{bit_sel}"))
                     inst.connections.append(PortConnection("clk_rst_bypass_i", "clk_rst_bypass_i"))
 
                 key = (c.name, inst_idx)

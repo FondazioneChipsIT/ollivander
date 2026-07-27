@@ -36,6 +36,11 @@ module spm_isle #(
   localparam int unsigned PreloadBankWidth = SpmDataWidth,
   // PreloadBanksPerGroup: Number of physical SRAM banks in each group (rows).
   localparam int unsigned PreloadBanksPerGroup = (SpmTileSize / (AxiDataWidth / 8)) / SpmWordsPerBank,
+  // PreloadInterleave: Physical interleaving scheme seen by the hex splitter.
+  // "lane-group" means {group} is the data lane of the AXI word (gen_spm_bank_col, always all
+  // written together) while {bank} is the depth row selected by the high address bits
+  // (gen_spm_bank_row). This is the opposite of the "word-group" scheme used by l2_isle.
+  localparam string PreloadInterleave = "lane-group",
   // HasEcc: 0 indicates this memory does not implement Error Correction Codes (ECC)
   localparam bit HasEcc = 0,
   // EccType: Set to 'none' since ECC is disabled

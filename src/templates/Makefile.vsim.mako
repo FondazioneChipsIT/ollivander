@@ -30,7 +30,8 @@ ifeq ($(ASSERTIONS),0)
 endif
 <%
 import os
-with open("/data2/alessio.mangone/ollivander/debug_testbench.txt", "w") as f:
+os.makedirs("logs/debug", exist_ok=True)
+with open("logs/debug/debug_testbench.txt", "w") as f:
     f.write(f"cwd: {os.getcwd()}\n")
     f.write(f"config.testbench: {config.testbench}\n")
 %>
@@ -195,7 +196,8 @@ for mem in preload_mems:
     fixed_params = c_info.get("fixed_params") or {}
     supported_params = c_info.get("supported_params") or {}
     preload_type = fixed_params.get("PreloadType", "").strip('"\'')
-    with open("debug_vsim.txt", "a") as f:
+    os.makedirs("logs/debug", exist_ok=True)
+    with open("logs/debug/debug_vsim.txt", "a") as f:
         f.write(f"mem={mem}, matched_comp={matched_comp.name if matched_comp else None}, preload_type={preload_type}\n")
     %>
     % if preload_type == "interleaved":
@@ -215,6 +217,10 @@ for mem in preload_mems:
                base_addr = slv.get("base_addr", base_addr)
       num_groups = resolve_param_val(fixed_params.get("PreloadNumGroups"), matched_comp, fixed_params)
       num_banks_per_group = resolve_param_val(fixed_params.get("PreloadBanksPerGroup"), matched_comp, fixed_params)
+      # Physical interleaving scheme of the memory, declared by the isle itself via the
+      # PreloadInterleave localparam. Legacy isles that do not declare it keep the historical
+      # "word-group" behaviour (l2_isle / l2_top), so old components stay bit-identical.
+      interleave = (fixed_params.get("PreloadInterleave") or "word-group").strip('"\'')
       %>
 	@if [ -f ../../src/core/split_hex.py ]; then \
 		echo "  -> Splitting hex for interleaved preloading: ${comp_name}..."; \
@@ -225,6 +231,7 @@ for mem in preload_mems:
 			--bank-width ${bank_width} \
 			--mem-size ${mem_size} \
 			--num-banks-per-group ${num_banks_per_group} \
+			--interleave ${interleave} \
 			${f"--ecc-scheme {ecc_scheme} --ecc-dir {ecc_schemes_dir}" if has_ecc else ""}; \
 	fi
     % endif
@@ -271,7 +278,7 @@ run-sim:
 	@# - 8602: Replication multiplier (0) in common_cells/sync.sv when Stages=0 (parameterized bypass)
 	@mkdir -p logs/stdout
 	@ln -snf ../generated logs/generated
-	cd logs && $(VSIM) -c -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,2732,3009,3999,8602 -do "run -all; quit"
+	cd logs && $(VSIM) -c -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,2732,3009,3999,8602,8386 -do "run -all; quit"
 
 gui:
 	@echo "\n[MAKE] Launching QuestaSim GUI..."
@@ -283,4 +290,4 @@ gui:
 	@# - 8602: Replication multiplier (0) in common_cells/sync.sv when Stages=0 (parameterized bypass)
 	@mkdir -p logs/stdout
 	@ln -snf ../generated logs/generated
-	cd logs && $(VSIM) -gui -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,2732,3009,3999,8602
+	cd logs && $(VSIM) -gui -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,2732,3009,3999,8602,8386

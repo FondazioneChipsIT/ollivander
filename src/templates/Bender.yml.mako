@@ -37,7 +37,7 @@ workspace:
 sources:
   # --- System Packages ---
   # Global parameters and types must be compiled first to be visible everywhere.
-  - ${rel_hw_dir}/${config.project.name}_soc_pkg.sv
+  - ${rel_hw_dir}/${config.project.soc_pkg_name}.sv
   - ${rel_hw_dir}/${top_level_module_name}_sys_regs_pkg.sv
 % if config.topology.type == "noc":
   - ${rel_hw_dir}/floo_${config.project.name}_noc_pkg.sv
@@ -51,7 +51,10 @@ sources:
   - ${f}
 % endfor
 % endif
+## The global reset tree is only generated when at least one clock domain is managed.
+% if config.has_reset_tree:
   - ${rel_hw_dir}/${config.project.name}_rstgen.sv
+% endif
 % if config.system_controller:
   - ${rel_hw_dir}/${top_level_module_name}_sys_regs.sv
 % endif

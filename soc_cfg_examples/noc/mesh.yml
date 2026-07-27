@@ -133,7 +133,7 @@ host:
       # accessed as a slave from both narrow and wide networks.
       master: ["narrow"]
       slave: ["narrow", "wide"]
-      noc_mode: "joined" # Automatically instantiates a FlooNoC Join adapter
+      noc_mode: "joined_narrow" # Automatically instantiates a FlooNoC Join adapter (narrow 64-bit)
     axi_slave:
       - name: "internal_rom_ram"
         base_addr: 0x00000000
@@ -143,11 +143,14 @@ host:
         size: 0x1800000000    # Off-chip DDR
   features:
     # Automatically instantiates dummy AXI slaves returning DECERR for these unconnected ports
-    error_slaves: ["async_axi_llc"]
+    error_slaves: ["async_axi_llc", "axi_llc"]
     # Automatically ties off these specific native ports to 0 (inputs) or leaves them unconnected
     terminate_ports: ["async_axi_in", "async_axi_out"]
   parameters:                 # Renamed from system_config to match HW-First semantics
     Vga: false                # Aligned standard Cheshire parameter name
+    Cva6ExtCieLength: 0x60000000
+    Cva6ExtCieOnTop: true
+    LlcCdcSyncStages: 0
 
 # ------------------------------------------------------------------------------
 # 6. SYSTEM COMPONENTS (Compute, Memories, Peripherals)
@@ -198,7 +201,7 @@ components:
     interfaces:
       noc_networks:
         slave: ["narrow", "wide"]
-        noc_mode: "joined"
+        noc_mode: "joined_wide"
       axi_slave:
         - name: "l2_spm_global"
           base_addr: 0x70000000

@@ -10,6 +10,30 @@
 // components instantiated in the SoC configuration.
 // =========================================================================
 
+<%
+  # =========================================================================
+  # POWER-ON POLICY FOR CLOCK-ENABLE AND SOFTWARE-RESET REGISTERS
+  # =========================================================================
+  # A single convention is applied to every clock/reset control register in this
+  # file, for managed clock domains and for auto control groups alike:
+  #
+  #   *_clk_en : active high, 1 = clock enabled
+  #   *_rst    : active high, 1 = block held in reset
+  #
+  # Both are consumed in RTL with an explicit bit index; `*_rst` is inverted once
+  # to obtain the active-low reset the hardware expects. The reset values below
+  # come from `system_controller.power_on_state`, so the two mechanisms can never
+  # end up with opposite power-on behaviour.
+  gated_at_por = config.gated_at_power_on
+
+  def por_clk_en(width):
+      """Power-on value of a clock-enable field: all clocks off when gated."""
+      return "0" if gated_at_por else f"{width}'h{(1 << width) - 1:x}"
+
+  def por_rst(width):
+      """Power-on value of a software-reset field: all blocks held in reset when gated."""
+      return f"{width}'h{(1 << width) - 1:x}" if gated_at_por else "0"
+%>\
 addrmap ${top_level_module_name}_sys_regs {
     name = "${config.project.name} System Controller";
     desc = "System Control and Status Registers";
@@ -148,15 +172,15 @@ addrmap ${top_level_module_name}_sys_regs {
 
     reg {
         name = "${dom['name']} Clock Enable";
-        desc = "Clock enable for ${dom['name']}";
-        field { hw = r; sw = rw; } ${fmt_reg(dom['name'])}_clk_en[31:0] = 32'hFFFFFFFF;
+        desc = "Clock enable for ${dom['name']} (Active High, 1 = clock enabled)";
+        field { hw = r; sw = rw; } ${fmt_reg(dom['name'])}_clk_en[0:0] = ${por_clk_en(1)};
     } ${fmt_reg(dom['name'])}_clk_en;
                 % endif
 
     reg {
         name = "${dom['name']} Software Reset";
-        desc = "Software reset for ${dom['name']} (Active Low)";
-        field { hw = r; sw = rw; } ${fmt_reg(dom['name'])}_rst[31:0] = 32'hFFFFFFFF;
+        desc = "Software reset for ${dom['name']} (Active High, 1 = held in reset)";
+        field { hw = r; sw = rw; } ${fmt_reg(dom['name'])}_rst[0:0] = ${por_rst(1)};
     } ${fmt_reg(dom['name'])}_rst;
             % endif
 
@@ -169,8 +193,8 @@ addrmap ${top_level_module_name}_sys_regs {
 
     reg {
         name = "${dom['name']} Debug Clock Enable";
-        desc = "Debug clock enable for ${dom['name']}";
-        field { hw = r; sw = rw; } ${fmt_reg(dom['name'])}_debug_clk_en[31:0] = 32'hFFFFFFFF;
+        desc = "Debug clock enable for ${dom['name']} (Active High, 1 = clock enabled)";
+        field { hw = r; sw = rw; } ${fmt_reg(dom['name'])}_debug_clk_en[0:0] = ${por_clk_en(1)};
     } ${fmt_reg(dom['name'])}_debug_clk_en;
             % endif
         % endif
@@ -191,8 +215,8 @@ addrmap ${top_level_module_name}_sys_regs {
 
     reg {
         name = "${c['dedicated_clock_div']['name']} Clock Enable";
-        desc = "Clock enable for ${c['dedicated_clock_div']['name']}";
-        field { hw = r; sw = rw; } ${fmt_reg(c['dedicated_clock_div']['name'])}_clk_en[31:0] = 32'hFFFFFFFF;
+        desc = "Clock enable for ${c['dedicated_clock_div']['name']} (Active High, 1 = clock enabled)";
+        field { hw = r; sw = rw; } ${fmt_reg(c['dedicated_clock_div']['name'])}_clk_en[0:0] = ${por_clk_en(1)};
     } ${fmt_reg(c['dedicated_clock_div']['name'])}_clk_en;
         % endif
     % endfor
@@ -290,19 +314,24 @@ addrmap ${top_level_module_name}_sys_regs {
     // Aggregated clock gating and reset controls for arrays of identical NoC tiles.
     // This reduces CSR address space fragmentation and allows software to control
     // an entire grid of compute clusters with a single register write.
-    % if sys_ctrl.get('auto_control_groups'):
-        % for g in sys_ctrl.get('auto_control_groups'):
+    % if config.system_controller and config.system_controller.auto_control_groups:
+        % for g in config.system_controller.auto_control_groups:
+        <%
+          # Exactly one bit per controlled tile, so the register documents the size of
+          # the array it drives instead of exposing 32 bits of which only a few exist.
+          gw = config.control_group_width(g, original_isle_types)
+        %>\
     reg {
-        name = "${g['name']} Clock Enable";
-        desc = "Clock enable for ${g['name']} tiles";
-        field { hw = r; sw = rw; } ${g['name'].lower()}_clk_en[31:0] = 32'hFFFFFFFF;
-    } ${g['name'].lower()}_clk_en;
+        name = "${g.name} Clock Enable";
+        desc = "Clock enable for the ${gw} ${g.name} tiles (Active High, one bit per tile, 1 = clock enabled)";
+        field { hw = r; sw = rw; } ${g.name.lower()}_clk_en[${gw - 1}:0] = ${por_clk_en(gw)};
+    } ${g.name.lower()}_clk_en;
 
     reg {
-        name = "${g['name']} Reset";
-        desc = "Software reset for ${g['name']} tiles (Active High)";
-        field { hw = r; sw = rw; } ${g['name'].lower()}_rst[31:0] = 0;
-    } ${g['name'].lower()}_rst;
+        name = "${g.name} Reset";
+        desc = "Software reset for the ${gw} ${g.name} tiles (Active High, one bit per tile, 1 = held in reset)";
+        field { hw = r; sw = rw; } ${g.name.lower()}_rst[${gw - 1}:0] = ${por_rst(gw)};
+    } ${g.name.lower()}_rst;
         % endfor
     % endif
 };

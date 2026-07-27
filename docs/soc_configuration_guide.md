@@ -117,6 +117,53 @@ Instructs Ollivander to generate a unified Control and Status Register (CSR) blo
 | `external_registers`  | List    | External RegBus blocks to route (`name`, `base_addr`, `size`).             |
 | `auto_control_groups` | List    | Auto-generates arrays of clock gates/resets for NoC components (e.g.,      |
 |                       |         | `cluster_ctrl`).                                                           |
+| `power_on_state`      | String  | *Optional*. `"gated"` (default) or `"enabled"`. Power-on state of every    |
+|                       |         | clock-enable and software-reset register generated below.                  |
+
+#### Clock and Reset Control Registers
+
+The System Controller generates clock-enable and software-reset registers through two
+independent mechanisms, both of which follow the **same convention**:
+
+*   **Managed clock domains** — one `<domain>_clk_en` and one `<domain>_rst` register per
+    domain served by the global reset tree. A domain is *managed* when it is neither a
+    real-time domain (free-running, never gated) nor the host's own domain (which has a
+    dedicated root reset generator). Each field is **1 bit** wide.
+*   **Auto control groups** — one `<group>_clk_en` and one `<group>_rst` register per group,
+    each field **as wide as the number of tiles the group controls** (16 bits for a group of
+    16 clusters, and so on), with one bit per tile.
+
+| Field       | Polarity    | Meaning of a `1`      |
+| :---------- | :---------- | :-------------------- |
+| `*_clk_en`  | Active high | Clock enabled         |
+| `*_rst`     | Active high | Block held in reset   |
+
+`*_rst` is inverted once in RTL to produce the active-low reset the hardware expects; the
+register itself is always active high, so a value of `0` means "running".
+
+> **Note for firmware**: PeakRDL emits a 1-bit SystemRDL field as a *scalar*, so a
+> single-bit field (every domain register, and any group controlling exactly one tile) is
+> referenced without a bit index.
+
+#### `power_on_state`
+
+This single setting drives the reset value of **every** register above, so the two mechanisms
+can never end up with opposite power-on behaviour.
+
+*   **`"gated"` (default)**: `*_clk_en = 0` and `*_rst = all ones` — every managed domain and
+    every controlled tile comes up clock-gated and held in reset. This is the safe hardware
+    default and matches the behaviour of the gwaihir reference SoC. Software, or an external
+    agent, must bring the blocks up before using them.
+*   **`"enabled"`**: `*_clk_en = all ones` and `*_rst = 0` — the SoC comes up fully running
+    without any CSR write. Convenient during bring-up, at the cost of leaving every
+    controlled block powered from reset.
+
+> **Boot dependency**: with `"gated"`, if the memory named by `software_stack.boot_memory`
+> sits inside a managed domain or a controlled group, the host cannot fetch its own first
+> instruction until something external enables that region — and firmware cannot do it,
+> since it would have to be running already. Ollivander emits a warning at generation time
+> when this is the case. The generated testbench performs the bring-up automatically,
+> standing in for the JTAG / boot agent / `clk_rst_bypass_i` pin that real silicon requires.
 
 ### 2.6 Padframe (`padframe`)
 Delegates the physical pad ring definition to **Padrick**, while Ollivander automatically handles the top-level RegBus, CDC adapters, and signal wiring in the Chip Wrapper Engine.

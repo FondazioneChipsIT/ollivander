@@ -137,7 +137,7 @@ class RTLGenerator:
                         self.required_local_files.update(self.req_pattern.findall(rendered_code))
                         
                         # Replace placeholder package names with the project-specific ones.
-                        rendered_code = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.name}_soc_pkg', rendered_code)
+                        rendered_code = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', rendered_code)
                         rendered_code = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', rendered_code)
                         if out_file.suffix == '.sv':
                             rendered_code = auto_import_sv_packages(rendered_code)
@@ -169,7 +169,7 @@ class RTLGenerator:
                         try:
                             content = existing_isle.read_text(encoding='utf-8')
                             self.required_local_files.update(self.req_pattern.findall(content))
-                            content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.name}_soc_pkg', content)
+                            content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', content)
                             content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', content)
                             content = re.sub(rf'\bmodule\s+{c.type}\b', f'module {self.soc_config.project.name}_{c.type}', content)
                             content = re.sub(rf'\bendmodule\s*:\s*{c.type}\b', f'endmodule : {self.soc_config.project.name}_{c.type}', content)
@@ -209,7 +209,7 @@ class RTLGenerator:
                         try:
                             content = existing_tile.read_text(encoding='utf-8')
                             self.required_local_files.update(self.req_pattern.findall(content))
-                            content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.name}_soc_pkg', content)
+                            content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', content)
                             content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', content)
                             content = re.sub(rf'\bmodule\s+{c.type}\b', f'module {self.soc_config.project.name}_{c.type}', content)
                             content = re.sub(rf'\bendmodule\s*:\s*{c.type}\b', f'endmodule : {self.soc_config.project.name}_{c.type}', content)
@@ -272,7 +272,7 @@ class RTLGenerator:
                             else:
                                 peakrdl_pragma = f'// PEAKRDL: source="{source}"'
                         
-                        content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.name}_soc_pkg', content)
+                        content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', content)
                         content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', content)
                         content = re.sub(rf'\bmodule\s+{isle_type}\b', f'module {self.soc_config.project.name}_{isle_type}', content)
                         content = re.sub(rf'\bendmodule\s*:\s*{isle_type}\b', f'endmodule : {self.soc_config.project.name}_{isle_type}', content)
@@ -299,14 +299,14 @@ class RTLGenerator:
                             
                         # Post-processing to fix up package scopes for register and NoC AXI types.
                         if "reg2hw_t" in rendered_code and f"import {self.soc_config.project.name}_reg_pkg::*;" not in rendered_code:
-                            rendered_code = re.sub(rf'import {self.soc_config.project.name}_soc_pkg::\*;', 
-                                                   rf'import {self.soc_config.project.name}_soc_pkg::*;\n  import {self.soc_config.project.name}_reg_pkg::*;', 
+                            rendered_code = re.sub(rf'import {self.soc_config.project.soc_pkg_name}::\*;', 
+                                                   rf'import {self.soc_config.project.soc_pkg_name}::*;\n  import {self.soc_config.project.name}_reg_pkg::*;', 
                                                    rendered_code)
                         rendered_code = re.sub(rf'(?<!::)\b{self.soc_config.project.name}_reg2hw_t\b', f'{self.soc_config.project.name}_reg_pkg::{self.soc_config.project.name}_reg2hw_t', rendered_code)
                         rendered_code = re.sub(rf'(?<!::)\b{self.soc_config.project.name}_hw2reg_t\b', f'{self.soc_config.project.name}_reg_pkg::{self.soc_config.project.name}_hw2reg_t', rendered_code)
-                        rendered_code = re.sub(r'\bfloo_[a-zA-Z0-9_]+_noc_pkg::noc_axi_req_t\b', f'{self.soc_config.project.name}_soc_pkg::soc_axi_req_t', rendered_code)
-                        rendered_code = re.sub(r'\bfloo_[a-zA-Z0-9_]+_noc_pkg::noc_axi_rsp_t\b', f'{self.soc_config.project.name}_soc_pkg::soc_axi_resp_t', rendered_code)
-                        rendered_code = re.sub(r'\bfloo_[a-zA-Z0-9_]+_noc_pkg::noc_axi_([a-z]+)_chan_t\b', rf'{self.soc_config.project.name}_soc_pkg::soc_axi_\1_chan_t', rendered_code)
+                        rendered_code = re.sub(r'\bfloo_[a-zA-Z0-9_]+_noc_pkg::noc_axi_req_t\b', f'{self.soc_config.project.soc_pkg_name}::soc_axi_req_t', rendered_code)
+                        rendered_code = re.sub(r'\bfloo_[a-zA-Z0-9_]+_noc_pkg::noc_axi_rsp_t\b', f'{self.soc_config.project.soc_pkg_name}::soc_axi_resp_t', rendered_code)
+                        rendered_code = re.sub(r'\bfloo_[a-zA-Z0-9_]+_noc_pkg::noc_axi_([a-z]+)_chan_t\b', rf'{self.soc_config.project.soc_pkg_name}::soc_axi_\1_chan_t', rendered_code)
                                                    
                         rendered_code = rendered_code.replace('\r\n', '\n')
                         write_if_changed(out_file, rendered_code)
@@ -880,9 +880,8 @@ class RTLGenerator:
             templates_to_render = {
                 "reg/soc_regs.rdl.mako": reg_dir / f"{top_level_module_name}_regs.rdl",
                 "reg/soc_memory_map.rdl.mako": reg_dir / f"{top_level_module_name}_memory_map.rdl",
-                "hw/crossbar_soc_pkg.sv.mako": hw_dir / f"{self.soc_config.project.name}_soc_pkg.sv",
+                "hw/crossbar_soc_pkg.sv.mako": hw_dir / f"{self.soc_config.project.soc_pkg_name}.sv",
                 "hw/crossbar_soc_top.sv.mako": hw_dir / top_level_filename,
-                "hw/infrastructure/soc_rstgen.sv.mako": hw_dir / f"{self.soc_config.project.name}_rstgen.sv",
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
                 "doc/crossbar_map.csv.mako": doc_dir / f"{self.soc_config.project.name}_map.csv",
                 "Makefile.vsim.mako": self.env.outdir_path / "Makefile.vsim",
@@ -890,10 +889,9 @@ class RTLGenerator:
             }
         else:
             templates_to_render = {
-                "hw/noc_soc_pkg.sv.mako": hw_dir / f"{self.soc_config.project.name}_soc_pkg.sv",
+                "hw/noc_soc_pkg.sv.mako": hw_dir / f"{self.soc_config.project.soc_pkg_name}.sv",
                 "hw/noc_soc_top.sv.mako": hw_dir / top_level_filename,
                 "hw/tiles/dummy_tile.sv.mako": hw_dir / f"{self.soc_config.project.name}_dummy_tile.sv",
-                "hw/infrastructure/soc_rstgen.sv.mako": hw_dir / f"{self.soc_config.project.name}_rstgen.sv",
                 "reg/soc_regs.rdl.mako": reg_dir / f"{top_level_module_name}_regs.rdl",
                 "reg/soc_memory_map.rdl.mako": reg_dir / f"{top_level_module_name}_memory_map.rdl",
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
@@ -902,6 +900,13 @@ class RTLGenerator:
                 "Makefile.vsim.mako": self.env.outdir_path / "Makefile.vsim",
                 "tb/tb_soc.sv.mako": tb_dir / f"tb_{self.soc_config.project.name}.sv"
             }
+
+        # The global reset tree only exists when at least one clock domain is managed
+        # (see OllivanderConfig.managed_clock_domains). Emitting `<name>_rstgen.sv`
+        # unconditionally would add a module that is compiled but never instantiated.
+        if self.soc_config.has_reset_tree:
+            templates_to_render["hw/infrastructure/soc_rstgen.sv.mako"] = \
+                hw_dir / f"{self.soc_config.project.name}_rstgen.sv"
 
         # Add Software templates dynamically if a software stack is configured
         if getattr(self.soc_config, "software_stack", None):
@@ -935,15 +940,15 @@ class RTLGenerator:
                 
                 # Final namespace substitution: replace placeholder package names with
                 # project-specific ones to prevent collisions in multi-SoC environments.
-                rendered_code = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.name}_soc_pkg', rendered_code)
+                rendered_code = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', rendered_code)
                 rendered_code = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', rendered_code)
 
                 if out_file.name.endswith('.sv'):
                     rendered_code = auto_import_sv_packages(rendered_code)
                     
                 if "hwif_in" in rendered_code and f"import {top_level_module_name}_sys_regs_pkg::*;" not in rendered_code:
-                    rendered_code = re.sub(rf'import {self.soc_config.project.name}_soc_pkg::\*;', 
-                                           rf'import {self.soc_config.project.name}_soc_pkg::*;\n  import {top_level_module_name}_sys_regs_pkg::*;', 
+                    rendered_code = re.sub(rf'import {self.soc_config.project.soc_pkg_name}::\*;', 
+                                           rf'import {self.soc_config.project.soc_pkg_name}::*;\n  import {top_level_module_name}_sys_regs_pkg::*;', 
                                            rendered_code)
 
                 # Extract dynamic pragmas from the fully rendered code.
@@ -1116,13 +1121,13 @@ class RTLGenerator:
     
                 if self.soc_config.topology.type == "noc":
                     macro_pragmas.append(f'// OLLIVANDER: require="floo_{self.soc_config.project.name}_noc_pkg.sv"')
-                macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_soc_pkg.sv"')
+                macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.soc_pkg_name}.sv"')
                 if self.soc_config.system_controller:
                     macro_pragmas.append(f'// OLLIVANDER: require="{top_level_module_name}_sys_regs_pkg.sv"')
     
                 for f in sv_dependency_sort(external_local_files):
                     fname = Path(f).name
-                    if fname not in [f"floo_{self.soc_config.project.name}_noc_pkg.sv", f"{self.soc_config.project.name}_soc_pkg.sv", f"{top_level_module_name}_sys_regs_pkg.sv"]:
+                    if fname not in [f"floo_{self.soc_config.project.name}_noc_pkg.sv", f"{self.soc_config.project.soc_pkg_name}.sv", f"{top_level_module_name}_sys_regs_pkg.sv"]:
                         macro_pragmas.append(f'// OLLIVANDER: require="{fname}"')
     
                 for f in sorted(self.generated_module_files):
@@ -1133,7 +1138,9 @@ class RTLGenerator:
                     macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_dummy_tile.sv"')
                 if getattr(self.soc_config.clock_tree, 'generators', 0) > 0:
                     macro_pragmas.append('// OLLIVANDER: require="olli_clk_gen.sv"')
-                macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_rstgen.sv"')
+                # Only require the reset tree when it is actually generated.
+                if self.soc_config.has_reset_tree:
+                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_rstgen.sv"')
                 if self.soc_config.system_controller:
                     macro_pragmas.append(f'// OLLIVANDER: require="{top_level_module_name}_sys_regs.sv"')
     

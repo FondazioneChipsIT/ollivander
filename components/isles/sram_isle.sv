@@ -42,6 +42,11 @@ module sram_isle
   localparam int unsigned PreloadBankWidth = SramDataWidth,
   // PreloadBanksPerGroup: Number of physical SRAM banks in each group (rows).
   localparam int unsigned PreloadBanksPerGroup = (MemSize / (AxiDataWidth / 8)) / SramNumWords,
+  // PreloadInterleave: Physical interleaving scheme seen by the hex splitter.
+  // "lane-group" means {group} is the data lane of the AXI word (gen_sram_banks, always all
+  // written together) while {bank} is the depth row selected by the high address bits
+  // (gen_sram_macros). This is the opposite of the "word-group" scheme used by l2_isle.
+  localparam string PreloadInterleave = "lane-group",
   // HasEcc: 0 indicates this memory does not implement Error Correction Codes (ECC)
   localparam bit HasEcc = 0,
   // EccType: Set to 'none' since ECC is disabled

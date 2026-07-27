@@ -28,12 +28,12 @@ module tb_${top_level_module_name}();
 %>\
 % if has_axi_ports:
   // AXI type overrides for top-level port declarations
-  typedef ${config.project.name}_soc_pkg::soc_axi_req_t axi_req_t;
-  typedef ${config.project.name}_soc_pkg::soc_axi_resp_t axi_resp_t;
+  typedef ${config.project.soc_pkg_name}::soc_axi_req_t axi_req_t;
+  typedef ${config.project.soc_pkg_name}::soc_axi_resp_t axi_resp_t;
 % endif
 % if has_axi_mst_ports:
-  typedef ${config.project.name}_soc_pkg::soc_axi_slv_req_t axi_master_req_t;
-  typedef ${config.project.name}_soc_pkg::soc_axi_slv_resp_t axi_master_resp_t;
+  typedef ${config.project.soc_pkg_name}::soc_axi_slv_req_t axi_master_req_t;
+  typedef ${config.project.soc_pkg_name}::soc_axi_slv_resp_t axi_master_resp_t;
 % endif
   // ===========================================================================
   // Clock and Reset definitions
@@ -151,7 +151,10 @@ ${stubs_str}
 % endif
 % if has_rt_clk:
   <%
-    rt_period = getattr(config.clock_tree, 'rt_clk_period_ns', 1000.0)
+    if fast_boot:
+        rt_period = getattr(config.clock_tree, 'clk_period_ns', 10.0) * 2.0
+    else:
+        rt_period = getattr(config.clock_tree, 'rt_clk_period_ns', 1000.0)
     if rt_period is None:
         rt_period = 1000.0
     rt_half_period = rt_period / 2.0
@@ -529,18 +532,51 @@ ${fast_boots_str}
               entry_point = slaves[0].get("base_addr", entry_point)
               break
   host_clk = config.host.clock_domain or "system_clk"
-  managed_domains = [d for d in config.clock_tree.domains if not d.is_real_time and d.name != host_clk]
+  managed_domains = config.managed_clock_domains
+  sys_ctrl_path = f"dut.{host_instance_name}.i_sys_ctrl_regs" if config.topology.type == "noc" else "dut.i_sys_ctrl_regs"
+
+  # ==========================================================================
+  # POWER-ON BRING-UP
+  # ==========================================================================
+  # With `power_on_state: gated` the SoC comes out of reset with every managed
+  # clock domain and every controlled tile clock-gated and held in reset, which is
+  # the safe hardware default. Something external must bring them up before the
+  # host can use them - on silicon that is JTAG, a boot agent or the
+  # `clk_rst_bypass_i` pin; in simulation it is this sequence.
+  #
+  # It must run before the host starts fetching, because the boot image itself may
+  # live inside a gated region, which is exactly why firmware cannot do this job.
+  #
+  # The forces are deliberately never released: they stand in for that external
+  # agent holding the system up for the whole run. Releasing them would leave the
+  # fields at whatever value the last force wrote, which only works by accident.
+  bringup_lines = []
+  if config.gated_at_power_on:
+      for dom in managed_domains:
+          reg_name = dom.name.replace("_clk", "")
+          bringup_lines.append(f'  force {sys_ctrl_path}.field_storage.{reg_name}_rst.{reg_name}_rst.value = \'0;')
+          if dom.has_divider:
+              bringup_lines.append(f'  force {sys_ctrl_path}.field_storage.{reg_name}_clk_en.{reg_name}_clk_en.value = \'1;')
+      if config.system_controller and config.system_controller.auto_control_groups:
+          for g in config.system_controller.auto_control_groups:
+              gn = g.name.lower()
+              bringup_lines.append(f'  force {sys_ctrl_path}.field_storage.{gn}_clk_en.{gn}_clk_en.value = \'1;')
+              bringup_lines.append(f'  force {sys_ctrl_path}.field_storage.{gn}_rst.{gn}_rst.value = \'0;')
+  bringup_str = "\n".join(bringup_lines)
 %>
   // Release CPU from passive boot loop by pointing scratch registers to preloaded memory (0x${f"{entry_point:08x}"})
   #1200;
-<%
-  release_passive_initials = []
-  for dom in managed_domains:
-      reg_name = dom.name.replace("_clk", "")
-      release_passive_initials.append(f"  force dut.i_sys_ctrl_regs.field_storage.{reg_name}_rst.{reg_name}_rst.value = 32'h00000000;")
-  release_passive_initials_str = "\n".join(release_passive_initials)
-%>\
-${release_passive_initials_str}
+% if bringup_str:
+
+    // =======================================================================
+    // Power-on bring-up (power_on_state: gated)
+    // =======================================================================
+    // Enable the clocks and release the software resets of every managed clock
+    // domain and every controlled tile, standing in for the external agent that
+    // would do this on silicon. Runs before the host fetches its first instruction.
+    $display("[TB] Bringing up gated clock domains and tiles...");
+${bringup_str}
+% endif
   #10;
   force dut.${host_instance_name}.${host_fixed.get("ForceBootPath").strip('"\'')} = 32'h${f"{entry_point:08x}"};
   % if is_cheshire:
@@ -594,23 +630,11 @@ ${release_passive_initials_str}
   // Release Host boot force
   release dut.${host_instance_name}.${host_fixed.get("ForceBootPath").strip('"\'')};
   % if is_cheshire:
-  % if config.topology.type == "noc":
-  release dut.${host_instance_name}.i_isle.i_cheshire_soc.i_regs.field_storage.scratch[1].scratch.value;
-  release dut.${host_instance_name}.i_isle.i_cheshire_soc.i_regs.field_storage.scratch[2].scratch.value;
-  % else:
-  release dut.${host_instance_name}.i_cheshire_soc.i_regs.field_storage.scratch[1].scratch.value;
-  release dut.${host_instance_name}.i_cheshire_soc.i_regs.field_storage.scratch[2].scratch.value;
+  // Cheshire scratchpad release removed for dynamic boot flow
   % endif
   % endif
-  % endif
-<%
-  release_passive_forces = []
-  for dom in managed_domains:
-      reg_name = dom.name.replace("_clk", "")
-      release_passive_forces.append(f"  release dut.i_sys_ctrl_regs.field_storage.{reg_name}_rst.{reg_name}_rst.value;")
-  release_passive_forces_str = "\n".join(release_passive_forces)
-%>\
-${release_passive_forces_str}
+  // The power-on bring-up forces are intentionally not released here: they model the
+  // external agent that keeps the clock domains and tiles enabled for the whole run.
 % endif
 
     #${sim_timeout_ns};
@@ -680,13 +704,24 @@ ${release_passive_forces_str}
   % endfor
 % endif
 <%
-package_name = f"{config.project.name}_soc_pkg"
+package_name = config.project.soc_pkg_name
 def fmt_name(name): return name.replace('_clk', '').replace('_rst', '').lower()
-gateable_domains = [d for d in config.clock_tree.domains if not d.is_real_time and d.name != 'host_clk']
+# Only the domains actually served by the global reset tree have a driven entry in
+# `dut.rsts_n`. Monitoring anything else would watch a signal that is never driven
+# and the block would simply never trigger.
+gateable_domains = config.managed_clock_domains
 sensitivity_list = " or ".join([f"dut.rsts_n[{package_name}::DomainIdx_{fmt_name(d.name)}]" for d in gateable_domains])
+# Per-tile software resets come from the auto control groups instead, and exist even
+# when the SoC has no reset tree at all. They are exposed as CSR fields in the system
+# controller, so the monitor watches the register storage directly.
+ctrl_groups = []
+if config.system_controller and config.system_controller.auto_control_groups:
+    ctrl_groups = [g.name.lower() for g in config.system_controller.auto_control_groups]
+sys_ctrl_inst = f"dut.{host_instance_name}.i_sys_ctrl_regs" if config.topology.type == "noc" else "dut.i_sys_ctrl_regs"
+group_sensitivity = " or ".join([f"{sys_ctrl_inst}.field_storage.{g}_rst.{g}_rst.value" for g in ctrl_groups])
 %>
 % if sensitivity_list:
-  // Reset monitor debug block: Dynamically monitors physical changes on reset signals 
+  // Reset monitor debug block: Dynamically monitors physical changes on reset signals
   // for all clock domains configured in the clock tree.
   always @(${sensitivity_list}) begin
     $display("[TB_DEBUG] Reset wires state changed:");
@@ -697,6 +732,21 @@ sensitivity_list = " or ".join([f"dut.rsts_n[{package_name}::DomainIdx_{fmt_name
   reset_displays_str = "\n".join(reset_displays)
 %>\
 ${reset_displays_str}
+  end
+% endif
+% if group_sensitivity:
+  // Tile reset monitor debug block: tracks the per-tile software resets driven by the
+  // auto control groups. These are independent of the global reset tree, so a SoC
+  // without a reset tree still gets reset visibility here.
+  always @(${group_sensitivity}) begin
+    $display("[TB_DEBUG] Tile software resets changed:");
+<%
+  group_displays = []
+  for g in ctrl_groups:
+      group_displays.append(f'    $display("  - Group {g} reset mask ({g}_rst, 1 = held in reset) = 0x%08h", {sys_ctrl_inst}.field_storage.{g}_rst.{g}_rst.value);')
+  group_displays_str = "\n".join(group_displays)
+%>\
+${group_displays_str}
   end
 % endif
 

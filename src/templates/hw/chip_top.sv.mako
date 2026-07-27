@@ -18,7 +18,7 @@ module ${project_name}_chip (
 % endfor
 );
 
-    import ${project_name}_soc_pkg::*;
+    import ${config.project.soc_pkg_name}::*;
     import pkg_${project_name}_padframe::*;
 
 <%
@@ -92,13 +92,13 @@ module ${project_name}_chip (
     // ---------------------------------------------------------------------
     // Padframe Configuration CDC (Async -> Sync)
     // ---------------------------------------------------------------------
-    ${project_name}_soc_pkg::soc_reg_req_t pf_reg_req;
-    ${project_name}_soc_pkg::soc_reg_rsp_t pf_reg_rsp;
+    ${config.project.soc_pkg_name}::soc_reg_req_t pf_reg_req;
+    ${config.project.soc_pkg_name}::soc_reg_rsp_t pf_reg_rsp;
 
     reg_cdc_dst #(
         .CDC_KIND ("cdc_4phase"),
-        .req_t    (${project_name}_soc_pkg::soc_reg_req_t),
-        .rsp_t    (${project_name}_soc_pkg::soc_reg_rsp_t)
+        .req_t    (${config.project.soc_pkg_name}::soc_reg_req_t),
+        .rsp_t    (${config.project.soc_pkg_name}::soc_reg_rsp_t)
     ) i_padframe_reg_cdc (
         .dst_clk_i    (${sys_clk}),
         .dst_rst_ni   (${sys_rst_n}),
@@ -159,8 +159,8 @@ module ${project_name}_chip (
     // Instantiate the physical Clock Generation cluster.
     olli_clk_gen #(
         .NUM_CLOCKS(${config.clock_tree.generators}),
-        .reg_req_t (${project_name}_soc_pkg::soc_reg_req_t),
-        .reg_rsp_t (${project_name}_soc_pkg::soc_reg_rsp_t)
+        .reg_req_t (${config.project.soc_pkg_name}::soc_reg_req_t),
+        .reg_rsp_t (${config.project.soc_pkg_name}::soc_reg_rsp_t)
     ) i_clk_gen (
         .ref_clk_i   (ref_clk_i),
         .clk_o       (domain_clk_i),

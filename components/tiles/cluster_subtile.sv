@@ -46,18 +46,18 @@ module cluster_subtile
   
   // Dual-Network AXI Master Ports
   output snitch_cluster_pkg::narrow_out_req_t     axi_narrow_req_o,
-  input  snitch_cluster_pkg::narrow_out_resp_t    axi_narrow_resp_i,
+  input wire snitch_cluster_pkg::narrow_out_resp_t    axi_narrow_resp_i,
   output snitch_cluster_pkg::wide_out_req_t       axi_wide_req_o,
-  input  snitch_cluster_pkg::wide_out_resp_t      axi_wide_resp_i,
+  input wire snitch_cluster_pkg::wide_out_resp_t      axi_wide_resp_i,
 
   // Dual-Network AXI Slave Ports
-  input  snitch_cluster_pkg::narrow_in_req_t      axi_narrow_req_i,
+  input wire snitch_cluster_pkg::narrow_in_req_t      axi_narrow_req_i,
   output snitch_cluster_pkg::narrow_in_resp_t     axi_narrow_resp_o,
-  input  snitch_cluster_pkg::wide_in_req_t        axi_wide_req_i,
+  input wire snitch_cluster_pkg::wide_in_req_t        axi_wide_req_i,
   output snitch_cluster_pkg::wide_in_resp_t       axi_wide_resp_o,
 
   // Offload interface
-  input  floo_ollivander_noc_pkg::red_wide_req_t  offload_wide_req_i,
+  input wire floo_ollivander_noc_pkg::red_wide_req_t  offload_wide_req_i,
   output floo_ollivander_noc_pkg::red_wide_rsp_t  offload_wide_rsp_o
 );
 

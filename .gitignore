@@ -42,6 +42,8 @@ Thumbs.db
 .vscode/
 .idea/
 .agents/
+.claude/
+CLAUDE.md
 *.code-workspace
 *.swp
 *.bak
@@ -50,6 +52,9 @@ Thumbs.db
 
 # Others
 _ext_references/
+
+# ASIC target files: locally provisioned PDKs and technology data, never versioned here
+target/
 
 # Logs and temporary tool outputs
 *.log

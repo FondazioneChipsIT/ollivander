@@ -26,7 +26,7 @@ from mako.lookup import TemplateLookup
 from core.soc_schema import OllivanderConfig, validate_soc_components, Component
 from core.stub_generator import generate_stubs
 from core.env_manager import setup_environment
-from core.arch_optimizer import optimize_clock_tree, autoconfigure_host
+from core.arch_optimizer import optimize_clock_tree, autoconfigure_host, warn_boot_memory_gated
 from core.tool_runners import run_floogen, run_peakrdl, run_verible, run_pre_build_steps, run_padrick
 from core.reporter import print_generation_report
 from core.rtl_generator import RTLGenerator
@@ -305,6 +305,7 @@ def main():
     # "Hardware-First" correctness check.
     try:
         validate_soc_components(soc_config, search_paths, exclude_dir, generator.original_isle_types)
+        warn_boot_memory_gated(soc_config, generator.original_isle_types)
         if soc_config.topology.type == "noc":
             print("[*] Running NoC Placement Checker (NPC) and Latency Estimator...")
             run_noc_placement_check(soc_config, env)

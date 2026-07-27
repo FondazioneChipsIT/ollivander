@@ -10,7 +10,10 @@
   # clock distribution network at runtime via the System Controller's CSRs.
 
   host_clk = config.host.clock_domain or "system_clk"
-  managed_domains = [d for d in config.clock_tree.domains if not d.is_real_time and d.name != host_clk]
+  # Single source of truth shared with the generator and the testbench template.
+  # Empty when the only non-real-time domain is the host's, in which case the SoC
+  # has no global reset tree at all (see OllivanderConfig.managed_clock_domains).
+  managed_domains = config.managed_clock_domains
   num_managed_domains = len(managed_domains)
 %>
   // BENDER: name="common_cells"
@@ -25,6 +28,19 @@
 % for i, dom in enumerate(managed_domains):
   localparam int unsigned DomainIdx_${fmt_dom(dom.name)} = ${i};
 % endfor
+
+% if num_managed_domains > 0:
+  // Per-domain reset vectors driven by the global reset tree instantiated further
+  // below. They are declared here, ahead of the clock generation section, because
+  // component instantiations later in the top-level consume them and SystemVerilog
+  // requires the declaration to precede every use.
+  //
+  // They live under the same guard as the tree that drives them: a SoC with no
+  // managed domain has no driver for these vectors, and declaring them
+  // unconditionally would leave dangling signals stuck at X.
+  logic [NumDomains-1:0] pwr_on_rsts_n;
+  logic [NumDomains-1:0] rsts_n;
+% endif
 
   // =========================================================================
   // 1. CLOCK GENERATION (MUXES & DIVIDERS)
@@ -137,7 +153,7 @@
   ) i_${dom.name}_div (
     .clk_i          ( ${dom.name}_muxed ),
     .rst_ni         ( pwr_on_rsts_n[DomainIdx_${fmt_dom(dom.name)}] ),
-    .en_i           ( sys_regs_hwif_out.${fmt_reg(dom.name)}_clk_en.${fmt_reg(dom.name)}_clk_en.value[0] ),
+    .en_i           ( sys_regs_hwif_out.${fmt_reg(dom.name)}_clk_en.${fmt_reg(dom.name)}_clk_en.value ),
     .test_mode_en_i ( test_mode_i ),
     .div_i          ( ${dom.name}_div_synced ),
     .div_valid_i    ( ${dom.name}_div_valid_synced ),
@@ -182,7 +198,7 @@
   ) i_${dom.name}_debug_div (
     .clk_i          ( ${dom.name} ),
     .rst_ni         ( host_pwr_on_rst_n ),
-    .en_i           ( sys_regs_hwif_out.${fmt_reg(dom.name)}_debug_clk_en.${fmt_reg(dom.name)}_debug_clk_en.value[0] ),
+    .en_i           ( sys_regs_hwif_out.${fmt_reg(dom.name)}_debug_clk_en.${fmt_reg(dom.name)}_debug_clk_en.value ),
     .test_mode_en_i ( test_mode_i ),
     .div_i          ( DomainClkDivValueWidth'(sys_regs_hwif_out.${fmt_reg(dom.name)}_debug_clk_div_value.${fmt_reg(dom.name)}_debug_clk_div_value.value) ),
     .div_valid_i    ( sys_regs_hwif_out.${fmt_reg(dom.name)}_debug_clk_div_value.${fmt_reg(dom.name)}_debug_clk_div_value.swmod ),
@@ -212,11 +228,14 @@
 
 % if num_managed_domains > 0:
   // Global Reset Tree
-  // Generates safely synchronized resets for all other clock domains. It combines the 
+  // Generates safely synchronized resets for all other clock domains. It combines the
   // root Power-On Reset with the software-triggered resets driven by the CSRs,
   // ensuring a glitch-free, synchronous de-assertion for each specific clock domain.
   logic [NumDomains-1:0] sw_rsts_vector;
-  
+
+  // `<dom>_rst` is an active-high, single-bit software reset (1 = hold in reset), so
+  // the bit is selected explicitly and inverted once to obtain the active-low input
+  // expected by the reset generator.
  % for i, dom in enumerate(managed_domains):
   assign sw_rsts_vector[DomainIdx_${fmt_dom(dom.name)}] = sys_regs_hwif_out.${fmt_reg(dom.name)}_rst.${fmt_reg(dom.name)}_rst.value;
  % endfor
@@ -300,7 +319,7 @@
   ) i_${div_clk}_div (
     .clk_i          ( ${src_clk} ),
     .rst_ni         ( ${src_rst} ),
-    .en_i           ( sys_regs_hwif_out.${fmt_reg(div_clk)}_clk_en.${fmt_reg(div_clk)}_clk_en.value[0] ),
+    .en_i           ( sys_regs_hwif_out.${fmt_reg(div_clk)}_clk_en.${fmt_reg(div_clk)}_clk_en.value ),
     .test_mode_en_i ( test_mode_i ),
     .div_i          ( ${div_clk}_div_synced ),
     .div_valid_i    ( ${div_clk}_div_valid_synced ),

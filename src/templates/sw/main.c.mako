@@ -60,7 +60,8 @@ for comp in all_comps:
 
 # 3. If no external UART is found, check if host is Cheshire with its internal UART enabled
 if not uart_base:
-    if "cheshire" in getattr(config.host, "type", "").lower() and getattr(config.host, "parameters", {}).get("Uart", True):
+    host_type = getattr(config.host, "type", "").lower()
+    if ("cheshire" in host_type or "manager" in host_type) and getattr(config.host, "parameters", {}).get("Uart", True):
         uart_base = "0x03002000" # Default internal Cheshire UART base
 %>
 <%

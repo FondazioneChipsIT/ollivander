@@ -256,7 +256,7 @@ def build_connection_matrix(soc_config, comp_info):
                 ports.append(".async_axi_llc_isolate_i ( 1'b0 )")
 
             # Host RegBus Connection: Aggregates both synchronous and asynchronous register buses.
-            pkg = f"{soc_config.project.name}_soc_pkg"
+            pkg = f"{soc_config.project.soc_pkg_name}"
             ports.append(f".reg_req_o ( sys_reg_req[{pkg}::NumSyncRegSlaves-1:0] )")
             ports.append(f".reg_rsp_i ( sys_reg_rsp[{pkg}::NumSyncRegSlaves-1:0] )")
             ports.append(".reg_async_mst_req_o ( async_reg_req_out )")

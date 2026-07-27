@@ -53,6 +53,13 @@ SystemVerilog enforces strict type equivalence for structs. To avoid compilation
 
 Ollivander will automatically inject the local SoC package types (e.g., `my_soc_pkg::soc_axi_req_t`) when instantiating the Isle.
 
+The package name follows the **top-level module name**, not the bare project name, so it
+carries the same suffix that `build_mode: "macro"` adds. A project `crux` built standalone
+produces `crux_soc_pkg`, while the same project built as a macro with `export_type: "isle"`
+produces `crux_isle_soc_pkg`. This is what allows both builds of a project — and a parent SoC
+that instantiates one of them — to be compiled into a single simulation library without the
+two packages colliding under the same name.
+
 ### 2.5 Memory Mapping Parameters
 For topology-agnostic memory wrappers (e.g., L2 memory wrapper `l2_isle.sv`), the wrapper should expose standard configurable parameters defining its size and base address:
 *   `L2BaseAddr` (`parameter logic [63:0]`): Base address of the memory mapping range. Defaults to a standard constant (e.g., `64'h88000000`).
@@ -425,8 +432,50 @@ Declare the following localparams inside your memory wrapper's parameter list:
 *   **`PreloadNumGroups`** (`int unsigned`): The number of bank groups.
 *   **`PreloadBankWidth`** (`int unsigned`): The data width of a single physical SRAM bank in bits.
 *   **`PreloadBanksPerGroup`** (`int unsigned`): The number of physical SRAM banks in each group (optional, dynamically calculated as `AxiDataWidth / PreloadBankWidth` if omitted or set to 0).
+*   **`PreloadInterleave`** (`string`): The physical interleaving scheme of the memory, i.e. what the `{group}` and `{bank}` indices of `PreloadTemplate` actually select. Supported values are `"lane-group"` and `"word-group"`, described in the next section. Defaults to `"word-group"` if omitted, which preserves the behaviour of legacy wrappers.
 
-### 8.2 Execution Workflow
+### 8.2 Interleaving Schemes
+
+**Declaring the wrong scheme is never caught by a tool.** Generation, hex splitting,
+compilation and elaboration all succeed: the firmware is simply written into the wrong
+physical locations, and nothing compares it against what the RTL will read back.
+
+The simulation does fail, but late and with a misleading symptom. The CPU boots normally,
+executes correctly until the end of the first AXI word that happens to land where the RTL
+expects it, then fetches whatever the mis-split image left behind — typically raising an
+illegal-instruction exception. Because the host reboots and retries, the log fills with
+identical exceptions at a fixed PC and the run ends on the testbench timeout with no UART
+output, which looks far more like a broken boot flow than a corrupted memory image.
+
+If you suspect this failure mode, compare a wide read from the memory against the linked
+binary: the first `PreloadBankWidth` bits will match and the rest will not. Pick the value
+that matches how your wrapper is actually wired.
+
+Throughout this section, `W` is the AXI word index of a byte address relative to the base of
+the memory, `W = rel_addr / (AxiDataWidth / 8)`, and a *lane* is one `PreloadBankWidth`-wide
+slice of the AXI data word.
+
+#### `"lane-group"` — groups are data lanes
+
+Used by `sram_isle` and `spm_isle`. Every AXI word is spread across **all** groups
+simultaneously, one lane each, and the `{bank}` index is the depth (row-select) coordinate
+taken from the high address bits:
+
+*   `{group}` = the lane index, holding bits `[group*PreloadBankWidth +: PreloadBankWidth]` of
+    every AXI word. `PreloadNumGroups` therefore equals `AxiDataWidth / PreloadBankWidth`.
+*   `{bank}` = `W / words_per_macro`, where `words_per_macro = (MemSize / (AxiDataWidth/8)) / PreloadBanksPerGroup`.
+*   The word address inside the selected SRAM macro is `W % words_per_macro`.
+
+#### `"word-group"` — groups are address-interleaved
+
+Used by `l2_isle`. Consecutive AXI words rotate across the groups, and each AXI word is then
+sliced lane by lane across consecutive banks *of the selected group*:
+
+*   `{group}` = `W % PreloadNumGroups`.
+*   `{bank}` = `d * num_lanes + lane`, where `num_lanes = AxiDataWidth / PreloadBankWidth` and
+    `d` is the depth index derived from `W / PreloadNumGroups`.
+
+### 8.3 Execution Workflow
 When Ollivander parses a YAML configuration where `preload_memories` refers to a component wrapper declaring `PreloadType = "interleaved"`, the generator:
 1.  **Testbench Generation**: Automatically iterates over `PreloadNumGroups` and `PreloadBanksPerGroup` (falling back to `AxiDataWidth / PreloadBankWidth` if undefined) to generate individual `$readmemh` statements targeted at each physical bank using the resolved hierarchical path from `PreloadTemplate`.
-2.  **Hex Splitting Target**: Automatically appends a call to the generic `split_hex.py` script under the Makefile's `build-sw` target, passing the base address, size, and parsed width/group parameters.
+2.  **Hex Splitting Target**: Automatically appends a call to the generic `split_hex.py` script under the Makefile's `build-sw` target, passing the base address, size, and parsed width/group parameters, plus `--interleave <PreloadInterleave>` so the split matches the physical wiring described above.

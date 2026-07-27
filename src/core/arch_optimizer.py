@@ -163,10 +163,10 @@ def autoconfigure_host(soc_config):
     soc_config.host.parameters.setdefault('RegNumSlvSync', host_reg_slv_sync)
     
     # Inject standard RegBus types to prevent SystemVerilog from flattening parameterized structs into bits.
-    soc_config.host.parameters.setdefault('sync_reg_out_req_t', f'{soc_config.project.name}_soc_pkg::soc_reg_req_t')
-    soc_config.host.parameters.setdefault('sync_reg_out_rsp_t', f'{soc_config.project.name}_soc_pkg::soc_reg_rsp_t')
-    soc_config.host.parameters.setdefault('async_reg_out_req_t', f'{soc_config.project.name}_soc_pkg::soc_reg_req_t')
-    soc_config.host.parameters.setdefault('async_reg_out_rsp_t', f'{soc_config.project.name}_soc_pkg::soc_reg_rsp_t')
+    soc_config.host.parameters.setdefault('sync_reg_out_req_t', f'{soc_config.project.soc_pkg_name}::soc_reg_req_t')
+    soc_config.host.parameters.setdefault('sync_reg_out_rsp_t', f'{soc_config.project.soc_pkg_name}::soc_reg_rsp_t')
+    soc_config.host.parameters.setdefault('async_reg_out_req_t', f'{soc_config.project.soc_pkg_name}::soc_reg_req_t')
+    soc_config.host.parameters.setdefault('async_reg_out_rsp_t', f'{soc_config.project.soc_pkg_name}::soc_reg_rsp_t')
 
     # 5. Auto-configure mailbox components based on their interrupt definitions.
     for comp in comps_list:
@@ -176,3 +176,58 @@ def autoconfigure_host(soc_config):
             if 'NumMailboxes' not in comp.parameters:
                 # The number of mailboxes is inferred from the number of output interrupt ports.
                 comp.parameters['NumMailboxes'] = len([k for k, v in comp.interrupts.items() if not v.get('source')])
+
+def warn_boot_memory_gated(soc_config, original_isle_types=None):
+    """
+    Warn when the firmware boot image lives in a region that is clock-gated and held
+    in reset at power-on.
+
+    With `power_on_state: gated` the safe hardware default applies to every managed
+    clock domain and every auto control group. If the memory named by
+    `software_stack.boot_memory` sits inside one of them, the host cannot fetch its
+    own first instruction until something external brings that region up - and
+    firmware cannot do it, because it would have to be running already.
+
+    This is not an error: it is a legitimate configuration, matching how the gwaihir
+    reference SoC behaves, and the generated testbench emits a bring-up sequence that
+    stands in for that external agent. But the dependency is invisible in the YAML,
+    so it is called out explicitly here rather than left to be discovered in a
+    silicon bring-up lab.
+    """
+    if not soc_config.gated_at_power_on:
+        return
+
+    boot_mem_name = (soc_config.software_stack or {}).get("boot_memory")
+    if not boot_mem_name:
+        return
+
+    boot_comp = next((c for c in (soc_config.components or []) if c.name == boot_mem_name), None)
+    if boot_comp is None:
+        return
+
+    original_isle_types = original_isle_types or {}
+    reason = None
+
+    # Case 1: the boot memory is a tile driven by an auto control group.
+    if soc_config.system_controller and soc_config.system_controller.auto_control_groups:
+        orig_type = original_isle_types.get(boot_comp.name, boot_comp.type)
+        candidates = [boot_comp.type, orig_type,
+                      orig_type.replace('_isle', '_tile').replace('_subtile', '_tile')]
+        for group in soc_config.system_controller.auto_control_groups:
+            if group.target_component_type in candidates:
+                reason = f"it is controlled by the '{group.name}' auto control group"
+                break
+
+    # Case 2: the boot memory sits in a clock domain served by the global reset tree.
+    if reason is None:
+        managed_names = {d.name for d in soc_config.managed_clock_domains}
+        if boot_comp.clock_domain in managed_names:
+            reason = f"it sits in the managed clock domain '{boot_comp.clock_domain}'"
+
+    if reason:
+        print(f"[WARN] Boot memory '{boot_mem_name}' is gated at power-on because {reason}.")
+        print("       With power_on_state: 'gated' the host cannot fetch its boot image until an")
+        print("       external agent (JTAG, a boot agent, or the clk_rst_bypass_i pin) enables that")
+        print("       region. The generated testbench performs this bring-up automatically; real")
+        print("       silicon needs an equivalent. Set power_on_state: 'enabled', or move the boot")
+        print("       image to an always-on memory, to remove the dependency.")
