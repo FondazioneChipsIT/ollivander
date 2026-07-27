@@ -82,10 +82,6 @@ dependencies:
   floo_noc:
     git: "https://github.com/pulp-platform/floonoc.git"
     rev: "main"
-    patches:
-      - file: "{bender_work}/floo_noc/hw/floo_nw_router.sv"
-        search: "parameter bit          NoLoopback                 = 1'b1,"
-        replace: "parameter bit          NoLoopback                 = !(CollectiveCfg.OpCfg.EnNarrowMulticast || CollectiveCfg.OpCfg.EnWideMulticast || CollectiveCfg.OpCfg.EnLsbAnd),"
   hci:
     git: "https://github.com/FondazioneChipsIT/hci.git"
     rev: "3e63936991569d0b1e315d6914478937b37bb338"

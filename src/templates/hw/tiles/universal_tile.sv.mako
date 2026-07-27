@@ -395,6 +395,12 @@ module ${p_name}_${c_type}
     .VcImpl        ( floo_${p_name}_noc_pkg::VcImpl )
 % if use_mcast:
     , .CollectiveCfg ( floo_${p_name}_noc_pkg::${route_cfg}.CollectiveCfg )
+    // Collective traffic needs the loopback path: a multicast flit replicated onto
+    // several outputs may legitimately include the port it arrived on. FlooNoC
+    // defaults NoLoopback to 1'b1 and asserts !(EnCollective && NoLoopback), so the
+    // value is derived here from the very configuration passed above, instead of
+    // patching the default inside the fetched IP.
+    , .NoLoopback    ( !floo_pkg::en_collective(floo_${p_name}_noc_pkg::${route_cfg}.CollectiveCfg.OpCfg) )
 % endif
   ) i_router (
     .clk_i          ( noc_clk ),
