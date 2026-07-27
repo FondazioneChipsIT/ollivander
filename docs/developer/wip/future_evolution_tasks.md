@@ -39,26 +39,25 @@ The universal tile encapsulates the local NoC routing infrastructure, instantiat
 
 ---
 
-## 2. Boot Model for Gated NoC SoCs
+## 2. Firmware Bring-Up of Gated Blocks
 
-The System Controller supports `system_controller.power_on_state`, which defaults to `gated`: every managed clock domain and every auto control group comes out of power-on with its clock disabled and its software reset asserted. This is the safe hardware default and matches the behaviour of the gwaihir reference SoC.
+The System Controller defaults to `system_controller.power_on_state: "gated"`: every managed clock domain and every auto control group comes out of power-on clock-gated and held in reset. This is the safe hardware default and matches the gwaihir reference SoC.
 
-The NoC example, however, places its boot image inside that gated region. `soc_cfg_examples/noc/mesh.yml` declares `boot_memory: l2_shared_memory` and preloads `i_tile_0_0.i_isle`, a tile controlled by the `mem_tile_ctrl` group. The host therefore cannot fetch its first instruction until something external enables that tile — and firmware cannot perform the bring-up itself, because it would have to be running already.
+Something must therefore enable those blocks before they can be used, and today that something is the **generated testbench**, which forces the clock-enable and software-reset CSRs before the host starts fetching. It stands in for the external agent (JTAG, a boot agent, or the `clk_rst_bypass_i` pin) that real silicon requires. That is adequate for the hello-world smoke test but has two consequences worth removing.
 
-The current workaround is a bring-up sequence emitted in the generated testbench, which forces the clock-enable and software-reset CSRs before the host starts fetching. It stands in for the external agent (JTAG, a boot agent, or the `clk_rst_bypass_i` pin) that real silicon would require. A generation-time warning is emitted whenever `boot_memory` resolves to a region gated at power-on; that warning is the marker that this task is still outstanding.
+First, in the examples that boot from an always-on memory (`mesh` and `mesh_subtile`) nothing in the design itself ever touches the L2 tiles or the compute clusters: they are instantiated, left gated, and that is all. The moment the examples grow beyond hello world — cluster offload tests being the obvious next step — the firmware will have to bring them up itself.
 
-The proposed evolution is to adopt the boot model of the gwaihir reference: boot from memory internal to the Cheshire host, which is always on, and let firmware bring up the mem tiles and compute clusters before using them.
+Second, the boot image still reaches memory through a simulation-only `$readmemh`, whereas silicon loads it through the debug module.
+
+Note that gwaihir never solved either problem: a whole-repository search finds no bring-up sequence at all, and its own `sw/cheshire/tests/access_l2.c` accesses the L2 tiles without enabling them, which cannot work against gated hardware. Implementing the firmware side would make Ollivander's examples strictly more correct than the design they are modelled on.
 
 #### Advantages
-*   **Removes the Testbench Dependency**: The SoC boots on its own, so the simulation no longer relies on a bring-up sequence that has no counterpart on silicon.
-*   **Exercises the Power Management Feature**: The example would demonstrate the auto control groups instead of bypassing them, turning `cluster_ctrl` and `mem_tile_ctrl` into tested functionality rather than untested registers.
-*   **Improves on the Reference**: gwaihir never solved this. A whole-repository search finds no bring-up sequence at all, and its own `sw/cheshire/tests/access_l2.c` accesses the L2 tiles without enabling them, which cannot work against gated hardware. Implementing the firmware side would make Ollivander's example strictly more correct than the design it is modelled on.
-*   **Realistic Boot Flow**: Loading the host image through JTAG or the serial link mirrors how the silicon is actually brought up, rather than relying on a simulation-only `$readmemh` into a memory that would be inaccessible at power-on.
+*   **Removes the Testbench Dependency**: The design brings itself up, so the simulation stops relying on a sequence that has no counterpart on silicon.
+*   **Exercises the Power Management Feature**: The examples would demonstrate the auto control groups instead of bypassing them, turning `cluster_ctrl` and `mem_tile_ctrl` into tested functionality rather than untested registers.
+*   **Prerequisite for Richer Tests**: Any test that actually uses a cluster or an L2 tile needs this first.
 
 #### Difficulties & Mitigation Strategies
-*   **Boot Image Relocation**: `boot_memory`, the generated linker script and the preload directives all currently target the L2 tile. Moving the image to the host's internal memory changes the linked addresses of the firmware.
-    *   *Mitigation*: Introduce the host-internal memory as a first-class boot target in the schema, so `boot_memory` selects it by name and the linker script follows automatically, rather than hardcoding the new layout in the example.
 *   **Firmware Bring-Up Prologue**: `main.c` is auto-generated and currently assumes every resource is already usable.
     *   *Mitigation*: Generate the prologue from the same `auto_control_groups` description that produces the registers, so the enable sequence and the register layout cannot drift apart. The widths are already known: `control_group_width()` sizes each packed register to the exact number of controlled tiles.
 *   **Preload Mechanism**: The testbench preloads via `$readmemh` into SRAM instances, whereas the reference drives a JTAG or serial-link ELF loader through a verification IP.
-    *   *Mitigation*: This can be staged. Preloading the host-internal memory with `$readmemh` already removes the chicken-and-egg problem; adopting a debug-module loader is a separate, later refinement.
+    *   *Mitigation*: This is independent of the prologue and can be staged after it. Note that the examples booting from a gated L2 tile (`mesh_isle` and `super_mesh`) will keep needing an external agent regardless, since their boot image is unreachable at power-on by construction; that is deliberate, so the gated path stays covered by the regression.

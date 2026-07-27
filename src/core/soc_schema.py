@@ -76,6 +76,46 @@ class Project(BaseModel):
         """
         return f"{self.top_level_module_name}_soc_pkg"
 
+    @property
+    def module_prefix(self) -> str:
+        """
+        Prefix applied to every SystemVerilog module Ollivander generates for this SoC
+        (tile wrappers, isle wrappers, the dummy tile, the reset tree).
+
+        Follows the same suffixing rule as `top_level_module_name`, and for the same
+        reason as `soc_pkg_name`: a parent SoC may instantiate two macros exported from
+        the same project, and every module of one must be distinguishable from its
+        counterpart in the other. Using the bare project name would emit, for instance,
+        two different `mesh_manager_tile` modules whose system-register ports carry
+        incompatible struct types.
+        """
+        return self.top_level_module_name
+
+    @property
+    def noc_pkg_name(self) -> str:
+        """
+        Name of the FlooNoC package generated for this SoC.
+
+        Follows the same suffixing rule as `soc_pkg_name` and for the same reason: a
+        parent SoC may instantiate two macros exported from the same project (an "isle"
+        and a "subtile" variant, say) and must compile both into one library. Deriving
+        the name from the bare project name would give them identical package names with
+        different contents, and only one would survive.
+
+        FlooGen builds the package name from the `name` field of its own configuration,
+        so that field must be fed this value rather than the project name.
+        """
+        return f"floo_{self.top_level_module_name}_noc_pkg"
+
+    @property
+    def bender_pkg_name(self) -> str:
+        """
+        Name of the Bender package declared in the generated manifest. Suffixed like the
+        top-level module so that two macros exported from the same project do not declare
+        two different Bender packages under one name.
+        """
+        return f"{self.top_level_module_name}_soc"
+
 
 class GlobalBus(BaseModel):
     """

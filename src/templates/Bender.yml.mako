@@ -7,7 +7,7 @@
   # SystemVerilog compilation ordering.
 %>
 package:
-  name: ${config.project.name}_soc
+  name: ${config.project.bender_pkg_name}
   authors:
     - "${config.project.author}"
 
@@ -40,7 +40,7 @@ sources:
   - ${rel_hw_dir}/${config.project.soc_pkg_name}.sv
   - ${rel_hw_dir}/${top_level_module_name}_sys_regs_pkg.sv
 % if config.topology.type == "noc":
-  - ${rel_hw_dir}/floo_${config.project.name}_noc_pkg.sv
+  - ${rel_hw_dir}/${config.project.noc_pkg_name}.sv
 % endif
 
   # --- Infrastructure & Primitives ---
@@ -53,7 +53,7 @@ sources:
 % endif
 ## The global reset tree is only generated when at least one clock domain is managed.
 % if config.has_reset_tree:
-  - ${rel_hw_dir}/${config.project.name}_rstgen.sv
+  - ${rel_hw_dir}/${config.project.module_prefix}_rstgen.sv
 % endif
 % if config.system_controller:
   - ${rel_hw_dir}/${top_level_module_name}_sys_regs.sv
@@ -74,14 +74,14 @@ sources:
 % endfor
 % endif
 % if config.topology.type == "noc":
-  - ${rel_hw_dir}/${config.project.name}_dummy_tile.sv
+  - ${rel_hw_dir}/${config.project.module_prefix}_dummy_tile.sv
 % endif
 
   # --- Top-Level ---
   # The final SoC module instantiating all the wrappers and matrices.
-  - ${rel_hw_dir}/${config.project.name}.sv
+  - ${rel_hw_dir}/${top_level_module_name}.sv
 % if config.padframe:
-  - ${rel_hw_dir}/${config.project.name}_chip.sv
+  - ${rel_hw_dir}/${config.project.module_prefix}_chip.sv
 % endif
 
   # --- Testbench ---

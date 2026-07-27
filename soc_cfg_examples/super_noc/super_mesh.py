@@ -81,6 +81,13 @@ config = OllivanderConfig(
         generators=0,
         domains=[
             ClockDomain(
+                name="rt",
+                description="Real-Time Clock for CLINT and AON timers",
+                is_real_time=True,
+                has_mux=False,
+                has_divider=False
+            ),
+            ClockDomain(
                 name="system",
                 description="Main synchronous clock domain for the entire NoC",
                 is_real_time=False,
@@ -125,18 +132,21 @@ config = OllivanderConfig(
         description="Main application processor (Cheshire host)",
         type="cheshire_isle",
         clock_domain="system",
+        isa="rv64imafdc",           # Host Instruction Set Architecture for the software compiler
+        abi="lp64d",                # Host Application Binary Interface for the software compiler
+        cmodel="medany",            # Host Code Model for the software compiler
         placement={"logical": {"x": 9, "y": 3}},
         export_interfaces=["gpio", "slink", "uart", "spi", "i2c"],
         interfaces={
             "axi_master": True,
-            "noc_networks": {"master": ["narrow"], "slave": ["narrow", "wide"], "noc_mode": "joined"},
+            "noc_networks": {"master": ["narrow"], "slave": ["narrow", "wide"], "noc_mode": "joined_narrow"},
             "axi_slave": [
                 {"name": "internal_rom_ram", "base_addr": 0x00000000, "size": 0x18000000}, # 384 MB
                 {"name": "external_dram", "base_addr": BASE_DRAM, "size": 0x1800000000}
             ]
         },
-        features={"error_slaves": ["async_axi_llc"], "terminate_ports": ["async_axi_in", "async_axi_out"]},
-        parameters={"Vga": False}
+        features={"error_slaves": ["async_axi_llc", "axi_llc"], "terminate_ports": ["async_axi_in", "async_axi_out"]},
+        parameters={"Vga": False, "Cva6ExtCieLength": 0x60000000, "Cva6ExtCieOnTop": True, "LlcCdcSyncStages": 0}
     ),
     
     # --- SYSTEM COMPONENTS (Compute, Memories, Peripherals) ---
@@ -155,7 +165,7 @@ config = OllivanderConfig(
                 {"box": {"x_start": 8, "x_end": 8, "y_start": 0, "y_end": 3}}  # East column
             ]},
             interfaces={
-                "noc_networks": {"slave": ["narrow", "wide"], "noc_mode": "joined"},
+                "noc_networks": {"slave": ["narrow", "wide"], "noc_mode": "joined_wide"},
                 "axi_slave": [{"name": "l2_spm_global", "base_addr": BASE_L2, "size_per_instance": 0x00100000}]
             },
             parameters={"AxiUserAtop": True, "SramDataWidth": 128, "SramNumWords": 1024, "MemSize": 0x00100000}
@@ -171,22 +181,27 @@ config = OllivanderConfig(
             placement={"logical": {"x": 1, "y": 1}},
             interfaces={
                 "axi_master": True,
-                "noc_networks": {"slave": ["narrow", "wide"], "noc_mode": "joined"}, # Ollivander joins the nets for it
+                "noc_networks": {"slave": ["narrow", "wide"], "noc_mode": "joined_narrow"}, # 64-bit unified AXI: join on the narrow side
                 "axi_slave": [{"name": "mesh_isle_mem_map", "base_addr": BASE_CRUX_MACRO, "size": 0x88000000}]
             }
         ),
         
         # --- NESTED NOC MACROS ---
-        # This instantiates 8 complete Mesh Subsystems! Because they were exported
-        # as 'subtile' from their own project, they natively expose dual AXI ports
-        # and plug directly into our narrow/wide NoC networks ('dual' mode) without
-        # requiring a Join adapter.
+        # This instantiates a complete Mesh Subsystem. Because it was exported as
+        # 'subtile' from its own project, it natively exposes dual AXI ports and plugs
+        # directly into our narrow/wide NoC networks ('dual' mode) without requiring a
+        # Join adapter.
+        #
+        # A single instance is enough to demonstrate the composition. Each one is a full
+        # SoC in its own right (a Cheshire host, 16 Snitch clusters and 8 L2 tiles), so
+        # the array of 8 this example used to declare pushed the simulation past what
+        # vsim could map into memory, while adding nothing to what the example teaches.
         Component(
             name="ai_mesh_macro",
             description="Nested AI Mesh Subsystem Macro (NoC-native IP)",
             type="mesh_subtile", # Uses 'subtile' dual NoC ports
             clock_domain="system",
-            placement={"logical": {"box": {"x_start": 2, "x_end": 3, "y_start": 0, "y_end": 3}}}, # 8 instances!
+            placement={"logical": {"x": 2, "y": 0}}, # Single instance; the rest of the grid gets dummy tiles
             interfaces={
                 "axi_master": True,
                 "noc_networks": {"master": ["narrow", "wide"], "slave": ["narrow", "wide"], "noc_mode": "dual"},
@@ -232,6 +247,22 @@ config = OllivanderConfig(
         )
     ],
     
+    # --- TESTBENCH CONFIGURATION ---
+    # Instructions for the simulation environment.
+    testbench={
+        # Duration in ns to hold scratchpad register force values during boot.
+        # This must be long enough to survive internal Host reset sequences.
+        "boot_force_delay_ns": 5000000,
+        "boot_force_fast_delay_ns": 1000000,
+        "boot_timeout_ns": 10000000,
+        "boot_timeout_fast_ns": 2000000,
+        "sim_timeout_ns": 10000000,
+        "preload_memories": [
+            # Hierarchical RTL path to the first L2 tile, placed at (0,0).
+            {"instance": "i_tile_0_0.i_isle", "file": "generated/sw/hello_world.hex"}
+        ]
+    },
+
     # --- SOFTWARE STACK & FIRMWARE ---
     # Defines the toolchain and target memory for automated bare-metal C compilation.
     # Ollivander uses this to automatically generate a memory-mapped Linker Script

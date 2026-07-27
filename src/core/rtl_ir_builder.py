@@ -51,7 +51,7 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
         if is_external(comp):
             continue
         inst_name = f"i_{comp.name}"
-        module_name = f"{soc_config.project.name}_{comp.type}"
+        module_name = f"{soc_config.project.module_prefix}_{comp.type}"
         inst = ir.add_instance(inst_name, module_name)
 
         c_info = comp_info.get(comp.name, {})
@@ -323,7 +323,7 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
             c, inst_idx = grid[(x, y)]
             t_name = f"i_tile_{x}_{y}"
             if c is None:
-                inst = ir.add_instance(t_name, f"{soc_config.project.name}_dummy_tile")
+                inst = ir.add_instance(t_name, f"{soc_config.project.module_prefix}_dummy_tile")
                 inst.connections.append(PortConnection("clk_i", host_clk))
                 inst.connections.append(PortConnection("rst_ni", "host_pwr_on_rst_n"))
                 inst.connections.append(PortConnection("test_mode_i", "test_mode_i"))
@@ -336,7 +336,7 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 inst.connections.append(PortConnection("floo_wide_i", f"tile_wide_i[{x}][{y}]"))
             else:
                 is_host = (c.name == soc_config.host.name)
-                module_type = f"{soc_config.project.name}_{c.type}"
+                module_type = f"{soc_config.project.module_prefix}_{c.type}"
                 inst = ir.add_instance(t_name, module_type)
 
                 # Populate instance parameters from user-defined YAML configuration (host and components)

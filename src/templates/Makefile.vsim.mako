@@ -135,7 +135,7 @@ def find_component(comp_name, config):
             return comp
     return None
 
-def resolve_param_val(val, comp, fixed_params=None):
+def resolve_param_val(val, comp, fixed_params=None, extra_params=None):
     import re
     if not val:
         return 0
@@ -148,6 +148,12 @@ def resolve_param_val(val, comp, fixed_params=None):
         for k, v in fixed_params.items():
             if k not in params:
                 params[k] = v
+    # Values that are module *parameters* rather than localparams never appear in
+    # fixed_params, so an expression referring to them (for example the memory size in
+    # PreloadBanksPerGroup) cannot be evaluated from the parsed wrapper alone. The caller
+    # supplies them here, already resolved for this specific instance.
+    if extra_params:
+        params.update(extra_params)
     if "AxiDataWidth" not in params:
         if config.topology.type == "noc":
             interfaces = getattr(comp, "interfaces", {}) or {}
@@ -169,6 +175,13 @@ def resolve_param_val(val, comp, fixed_params=None):
         val_str = val_str.replace('/', '//')
         return int(eval(val_str, {"__builtins__": None}, {}))
     except Exception:
+        # The expression still holds unresolved symbols. Falling back to the first integer
+        # found in it yields an arbitrary number that merely looks plausible, so warn
+        # loudly: a silently wrong preload geometry is far harder to diagnose downstream
+        # than a missing parameter here.
+        print(f"[WARN] Could not evaluate parameter expression '{val}' for "
+              f"'{getattr(comp, 'name', '?')}'; it resolved to '{val_str}'. "
+              f"Falling back to the first literal found, which is very likely wrong.")
         digits = re.findall(r'\d+', val_str)
         if digits:
             return int(digits[0])
@@ -215,8 +228,12 @@ for mem in preload_mems:
       if matched_comp:
           for slv in matched_comp.interfaces.get("axi_slave", []):
                base_addr = slv.get("base_addr", base_addr)
-      num_groups = resolve_param_val(fixed_params.get("PreloadNumGroups"), matched_comp, fixed_params)
-      num_banks_per_group = resolve_param_val(fixed_params.get("PreloadBanksPerGroup"), matched_comp, fixed_params)
+      # The memory size resolved just above is the authoritative one for this instance and
+      # is what the wrapper's own parameters carry; expose it under every name the isles
+      # use for it, so that expressions like PreloadBanksPerGroup evaluate correctly.
+      size_params = {"L2MemSize": mem_size, "SpmTileSize": mem_size, "MemSize": mem_size}
+      num_groups = resolve_param_val(fixed_params.get("PreloadNumGroups"), matched_comp, fixed_params, size_params)
+      num_banks_per_group = resolve_param_val(fixed_params.get("PreloadBanksPerGroup"), matched_comp, fixed_params, size_params)
       # Physical interleaving scheme of the memory, declared by the isle itself via the
       # PreloadInterleave localparam. Legacy isles that do not declare it keep the historical
       # "word-group" behaviour (l2_isle / l2_top), so old components stay bit-identical.

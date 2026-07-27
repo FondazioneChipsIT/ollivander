@@ -8,6 +8,33 @@ import pyslang
 from pathlib import Path
 from core.utils import strip_comments, get_generation_comment
 
+def neutralize_body_relative_param_defaults(text):
+    """
+    Replace parameter defaults that reference an item declared in the module body.
+
+    A stub keeps the parameter list but discards the body, so a default written as
+    `parameter int unsigned AxiAddrWidth = AxiCfgJoin.AddrWidth` becomes unresolvable
+    once `AxiCfgJoin`, a localparam of the original body, is gone. The real module
+    elaborates because it is always instantiated with explicit overrides, so the default
+    is never evaluated; a blackbox stub has no such luck and vopt fails with
+    "Failed to find 'AxiCfgJoin' in hierarchical name".
+
+    The value is irrelevant for a blackbox, so a benign literal suffices. `1` rather
+    than `0`, so that widths derived as `[<param>-1:0]` remain legal.
+    """
+    declared = set(re.findall(
+        r'\b(?:localparam|parameter)\s+(?:[a-zA-Z_0-9:$\[\]\s]+?\s+)??([a-zA-Z_][a-zA-Z_0-9]*)\s*=', text))
+    pattern = re.compile(
+        r'(\b(?:localparam|parameter)\s+[^,;()=]*?\b[a-zA-Z_][a-zA-Z_0-9]*\s*=\s*)'  # declaration up to '='
+        r'([a-zA-Z_][a-zA-Z_0-9]*)\s*\.\s*[a-zA-Z_][a-zA-Z_0-9]*')                     # <Ident>.<field>
+
+    def _sub(m):
+        # Package-qualified or still-declared references resolve fine; leave them alone.
+        return m.group(0) if m.group(2) in declared else m.group(1) + "1"
+
+    return pattern.subn(_sub, text)
+
+
 def is_testbench_file(p_clean):
     """
     Identifies whether a file is a testbench or verification file that should be
@@ -444,6 +471,11 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
             new_blocks_phase3.append(block_text)
 
         stubs_content = "".join(new_blocks_phase3)
+
+        # Global phase 3b: see neutralize_body_relative_param_defaults().
+        stubs_content, n_neutralized = neutralize_body_relative_param_defaults(stubs_content)
+        if n_neutralized:
+            print(f"  -> Neutralized {n_neutralized} stub parameter default(s) referring to discarded body items")
 
         # Global phase 4: Under Verilator, replace any module/interface parameters of struct types
         if fast_check_tool == "verilator":
@@ -1092,6 +1124,9 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
 
                 if fast_check_tool == "verilator":
                     combined_stub = decompose_struct_params(combined_stub)
+
+                # Per-file stubs go through the same neutralization as the combined blob.
+                combined_stub, _ = neutralize_body_relative_param_defaults(combined_stub)
 
                 stub_file_path.write_text("// AUTO-GENERATED STUB FILE\n\n" + combined_stub, encoding='utf-8')
                 stub_file_mapping[p_abs] = safe_name

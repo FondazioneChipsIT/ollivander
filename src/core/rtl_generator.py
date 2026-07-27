@@ -126,19 +126,19 @@ class RTLGenerator:
                     if not tpl_path:
                         print("\n[ERROR] APB subsystem template 'apb_subsystem_isle.sv.mako' not found.")
                         sys.exit(1)
-                    out_file = hw_dir / f"{self.soc_config.project.name}_{c.type}.sv"
+                    out_file = hw_dir / f"{self.soc_config.project.module_prefix}_{c.type}.sv"
                     rel_name = os.path.relpath(out_file, self.env.bender_dir).replace('\\', '/')
                     if rel_name not in self.generated_module_files:
                         self.generated_module_files.append(rel_name)
                     print(f"  -> Rendering Isle {tpl_path.name} into {out_file.name}")
                     try:
                         template = Template(filename=str(tpl_path), lookup=self.template_lookup)
-                        rendered_code = template.render(apb_peripherals=apb_peripherals, c_type=c.type, p_name=self.soc_config.project.name, comp=c, config=self.soc_config, require_file=self.require_file_helper, require_bender=self.require_bender_helper, gen_version=self.gen_version, git_hash=self.git_hash)
+                        rendered_code = template.render(apb_peripherals=apb_peripherals, c_type=c.type, p_name=self.soc_config.project.module_prefix, comp=c, config=self.soc_config, require_file=self.require_file_helper, require_bender=self.require_bender_helper, gen_version=self.gen_version, git_hash=self.git_hash)
                         self.required_local_files.update(self.req_pattern.findall(rendered_code))
                         
                         # Replace placeholder package names with the project-specific ones.
                         rendered_code = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', rendered_code)
-                        rendered_code = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', rendered_code)
+                        rendered_code = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'{self.soc_config.project.noc_pkg_name}', rendered_code)
                         if out_file.suffix == '.sv':
                             rendered_code = auto_import_sv_packages(rendered_code)
                         rendered_code = rendered_code.replace('\r\n', '\n')
@@ -162,7 +162,7 @@ class RTLGenerator:
                             break
                     if existing_isle:
                         print(f"  -> Processing Component {existing_isle.name} (Staging to output)")
-                        out_file = hw_dir / f"{self.soc_config.project.name}_{c.type}.sv"
+                        out_file = hw_dir / f"{self.soc_config.project.module_prefix}_{c.type}.sv"
                         rel_name = os.path.relpath(out_file, self.env.bender_dir).replace('\\', '/')
                         if rel_name not in self.generated_module_files:
                             self.generated_module_files.append(rel_name)
@@ -170,9 +170,9 @@ class RTLGenerator:
                             content = existing_isle.read_text(encoding='utf-8')
                             self.required_local_files.update(self.req_pattern.findall(content))
                             content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', content)
-                            content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', content)
-                            content = re.sub(rf'\bmodule\s+{c.type}\b', f'module {self.soc_config.project.name}_{c.type}', content)
-                            content = re.sub(rf'\bendmodule\s*:\s*{c.type}\b', f'endmodule : {self.soc_config.project.name}_{c.type}', content)
+                            content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'{self.soc_config.project.noc_pkg_name}', content)
+                            content = re.sub(rf'\bmodule\s+{c.type}\b', f'module {self.soc_config.project.module_prefix}_{c.type}', content)
+                            content = re.sub(rf'\bendmodule\s*:\s*{c.type}\b', f'endmodule : {self.soc_config.project.module_prefix}_{c.type}', content)
                             write_if_changed(out_file, content)
                         except Exception as e:
                             print(f"\n[ERROR] Failed to stage {existing_isle.name}:\n{e}")
@@ -202,7 +202,7 @@ class RTLGenerator:
                             break
                     if existing_tile:
                         print(f"  -> Processing custom Tile {existing_tile.name} (Staging to output)")
-                        out_file = hw_dir / f"{self.soc_config.project.name}_{c.type}.sv"
+                        out_file = hw_dir / f"{self.soc_config.project.module_prefix}_{c.type}.sv"
                         rel_name = os.path.relpath(out_file, self.env.bender_dir).replace('\\', '/')
                         if rel_name not in self.generated_module_files:
                             self.generated_module_files.append(rel_name)
@@ -210,9 +210,9 @@ class RTLGenerator:
                             content = existing_tile.read_text(encoding='utf-8')
                             self.required_local_files.update(self.req_pattern.findall(content))
                             content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', content)
-                            content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', content)
-                            content = re.sub(rf'\bmodule\s+{c.type}\b', f'module {self.soc_config.project.name}_{c.type}', content)
-                            content = re.sub(rf'\bendmodule\s*:\s*{c.type}\b', f'endmodule : {self.soc_config.project.name}_{c.type}', content)
+                            content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'{self.soc_config.project.noc_pkg_name}', content)
+                            content = re.sub(rf'\bmodule\s+{c.type}\b', f'module {self.soc_config.project.module_prefix}_{c.type}', content)
+                            content = re.sub(rf'\bendmodule\s*:\s*{c.type}\b', f'endmodule : {self.soc_config.project.module_prefix}_{c.type}', content)
                             write_if_changed(out_file, content)
                         except Exception as e:
                             print(f"\n[ERROR] Failed to stage {existing_tile.name}:\n{e}")
@@ -247,7 +247,7 @@ class RTLGenerator:
                     print(f"  [INFO] Auto-converting Isle '{c.type}' -> Tile '{tile_type}'")
                     
                     # 1. Stage the underlying Isle to the output directory.
-                    isle_out_file = hw_dir / f"{self.soc_config.project.name}_{existing_isle.name}"
+                    isle_out_file = hw_dir / f"{self.soc_config.project.module_prefix}_{existing_isle.name}"
                     rel_isle_name = os.path.relpath(isle_out_file, self.env.bender_dir).replace('\\', '/')
                     if rel_isle_name not in self.generated_module_files:
                         self.generated_module_files.append(rel_isle_name)
@@ -273,9 +273,9 @@ class RTLGenerator:
                                 peakrdl_pragma = f'// PEAKRDL: source="{source}"'
                         
                         content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', content)
-                        content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', content)
-                        content = re.sub(rf'\bmodule\s+{isle_type}\b', f'module {self.soc_config.project.name}_{isle_type}', content)
-                        content = re.sub(rf'\bendmodule\s*:\s*{isle_type}\b', f'endmodule : {self.soc_config.project.name}_{isle_type}', content)
+                        content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'{self.soc_config.project.noc_pkg_name}', content)
+                        content = re.sub(rf'\bmodule\s+{isle_type}\b', f'module {self.soc_config.project.module_prefix}_{isle_type}', content)
+                        content = re.sub(rf'\bendmodule\s*:\s*{isle_type}\b', f'endmodule : {self.soc_config.project.module_prefix}_{isle_type}', content)
                         write_if_changed(isle_out_file, content)
                     except Exception as e:
                         print(f"\n[WARNING] Failed to stage {existing_isle.name}:\n{e}")
@@ -285,7 +285,7 @@ class RTLGenerator:
                     c.type = tile_type
                     
                     # 2. Render the Universal Tile wrapper for this component.
-                    out_file = hw_dir / f"{self.soc_config.project.name}_{c.type}.sv"
+                    out_file = hw_dir / f"{self.soc_config.project.module_prefix}_{c.type}.sv"
                     rel_name = os.path.relpath(out_file, self.env.bender_dir).replace('\\', '/')
                     if rel_name not in self.generated_module_files:
                         self.generated_module_files.append(rel_name)
@@ -326,7 +326,7 @@ class RTLGenerator:
         """
         comp_info = {}
         for c in [self.soc_config.host] + (self.soc_config.components if self.soc_config.components else []):
-            info = get_isle_info(f"{self.soc_config.project.name}_{c.type}", self.env.search_paths, None)
+            info = get_isle_info(f"{self.soc_config.project.module_prefix}_{c.type}", self.env.search_paths, None)
             if not info:
                 info = get_isle_info(c.type, self.env.search_paths, self.env.exclude_dir)
             if not info:
@@ -337,7 +337,7 @@ class RTLGenerator:
             # Example: // PEAKRDL: source="my_ip.rdl" map="my_map"
             # This encapsulates register definitions within the specific IP wrapper,
             # handling cases where a single Bender repository provides multiple distinct IPs.
-            sv_name = f"{self.soc_config.project.name}_{c.type}.sv"
+            sv_name = f"{self.soc_config.project.module_prefix}_{c.type}.sv"
             sv_path = self.find_file_in_paths(sv_name, [self.env.outdir_path / self.env.hw_sub])
             if not sv_path:
                 sv_path = self.find_file_in_paths(f"{c.type}.sv", self.env.component_paths)
@@ -891,7 +891,7 @@ class RTLGenerator:
             templates_to_render = {
                 "hw/noc_soc_pkg.sv.mako": hw_dir / f"{self.soc_config.project.soc_pkg_name}.sv",
                 "hw/noc_soc_top.sv.mako": hw_dir / top_level_filename,
-                "hw/tiles/dummy_tile.sv.mako": hw_dir / f"{self.soc_config.project.name}_dummy_tile.sv",
+                "hw/tiles/dummy_tile.sv.mako": hw_dir / f"{self.soc_config.project.module_prefix}_dummy_tile.sv",
                 "reg/soc_regs.rdl.mako": reg_dir / f"{top_level_module_name}_regs.rdl",
                 "reg/soc_memory_map.rdl.mako": reg_dir / f"{top_level_module_name}_memory_map.rdl",
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
@@ -906,7 +906,7 @@ class RTLGenerator:
         # unconditionally would add a module that is compiled but never instantiated.
         if self.soc_config.has_reset_tree:
             templates_to_render["hw/infrastructure/soc_rstgen.sv.mako"] = \
-                hw_dir / f"{self.soc_config.project.name}_rstgen.sv"
+                hw_dir / f"{self.soc_config.project.module_prefix}_rstgen.sv"
 
         # Add Software templates dynamically if a software stack is configured
         if getattr(self.soc_config, "software_stack", None):
@@ -924,9 +924,13 @@ class RTLGenerator:
                     top_params.update(top_info.get("supported_params", {}))
                     top_params.update(top_info.get("fixed_params", {}))
                     template_kwargs["top_level_params"] = top_params
+                    # The testbench re-declares the top-level ports in its own scope, so it
+                    # must locally typedef every type parameter those ports refer to.
+                    template_kwargs["top_level_type_params"] = top_info.get("type_params", {})
                 else:
                     template_kwargs["top_level_ports"] = {}
                     template_kwargs["top_level_params"] = {}
+                    template_kwargs["top_level_type_params"] = {}
 
             tpl_path = self.find_file_in_paths(tpl_name, self.env.template_paths)
             if not tpl_path:
@@ -941,7 +945,7 @@ class RTLGenerator:
                 # Final namespace substitution: replace placeholder package names with
                 # project-specific ones to prevent collisions in multi-SoC environments.
                 rendered_code = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', rendered_code)
-                rendered_code = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'floo_{self.soc_config.project.name}_noc_pkg', rendered_code)
+                rendered_code = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'{self.soc_config.project.noc_pkg_name}', rendered_code)
 
                 if out_file.name.endswith('.sv'):
                     rendered_code = auto_import_sv_packages(rendered_code)
@@ -1120,14 +1124,14 @@ class RTLGenerator:
                     macro_pragmas.append(f'// BENDER: name="{dep_name}"')
     
                 if self.soc_config.topology.type == "noc":
-                    macro_pragmas.append(f'// OLLIVANDER: require="floo_{self.soc_config.project.name}_noc_pkg.sv"')
+                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.noc_pkg_name}.sv"')
                 macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.soc_pkg_name}.sv"')
                 if self.soc_config.system_controller:
                     macro_pragmas.append(f'// OLLIVANDER: require="{top_level_module_name}_sys_regs_pkg.sv"')
     
                 for f in sv_dependency_sort(external_local_files):
                     fname = Path(f).name
-                    if fname not in [f"floo_{self.soc_config.project.name}_noc_pkg.sv", f"{self.soc_config.project.soc_pkg_name}.sv", f"{top_level_module_name}_sys_regs_pkg.sv"]:
+                    if fname not in [f"{self.soc_config.project.noc_pkg_name}.sv", f"{self.soc_config.project.soc_pkg_name}.sv", f"{top_level_module_name}_sys_regs_pkg.sv"]:
                         macro_pragmas.append(f'// OLLIVANDER: require="{fname}"')
     
                 for f in sorted(self.generated_module_files):
@@ -1135,12 +1139,12 @@ class RTLGenerator:
                     macro_pragmas.append(f'// OLLIVANDER: require="{fname}"')
     
                 if self.soc_config.topology.type == "noc":
-                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_dummy_tile.sv"')
+                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.module_prefix}_dummy_tile.sv"')
                 if getattr(self.soc_config.clock_tree, 'generators', 0) > 0:
                     macro_pragmas.append('// OLLIVANDER: require="olli_clk_gen.sv"')
                 # Only require the reset tree when it is actually generated.
                 if self.soc_config.has_reset_tree:
-                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.name}_rstgen.sv"')
+                    macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.module_prefix}_rstgen.sv"')
                 if self.soc_config.system_controller:
                     macro_pragmas.append(f'// OLLIVANDER: require="{top_level_module_name}_sys_regs.sv"')
     
@@ -1451,7 +1455,7 @@ class RTLGenerator:
             "git_hash": self.git_hash,
         }
         
-        out_file = hw_dir / f"{self.soc_config.project.name}_chip.sv"
+        out_file = hw_dir / f"{self.soc_config.project.module_prefix}_chip.sv"
         print(f"  -> Rendering chip wrapper into {out_file.name}")
         try:
             template = self.template_lookup.get_template("hw/chip_top.sv.mako")

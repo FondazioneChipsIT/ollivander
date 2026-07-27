@@ -22,18 +22,21 @@
 module tb_${top_level_module_name}();
 
 <%
-  has_axi_ports = 'axi_req_t' in top_level_params
-  has_axi_mst_ports = 'axi_master_req_t' in top_level_params
   is_cheshire = "cheshire" in original_isle_types.get(config.host.name, getattr(config.host, "type", "")).lower()
+
+  # The top-level port declarations copied below refer to the module's *type parameters*
+  # (axi_req_t, axi_narrow_req_t, ...). Those names exist only inside the module, so an
+  # equivalent typedef must be declared here for each of them. Deriving the list from the
+  # parsed top-level keeps this correct for every export variant: a "subtile" macro, for
+  # instance, exposes the native narrow and wide NoC interfaces and therefore carries type
+  # parameters that a standard or "isle" export does not have.
+  top_typedefs = [(n, t) for n, t in (top_level_type_params or {}).items() if t and "::" in t]
 %>\
-% if has_axi_ports:
+% if top_typedefs:
   // AXI type overrides for top-level port declarations
-  typedef ${config.project.soc_pkg_name}::soc_axi_req_t axi_req_t;
-  typedef ${config.project.soc_pkg_name}::soc_axi_resp_t axi_resp_t;
-% endif
-% if has_axi_mst_ports:
-  typedef ${config.project.soc_pkg_name}::soc_axi_slv_req_t axi_master_req_t;
-  typedef ${config.project.soc_pkg_name}::soc_axi_slv_resp_t axi_master_resp_t;
+  % for name, target in top_typedefs:
+  typedef ${target} ${name};
+  % endfor
 % endif
   // ===========================================================================
   // Clock and Reset definitions
@@ -265,7 +268,7 @@ testbench_cfg = config.testbench or {}
 preload_mems = testbench_cfg.get("preload_memories", [])
 all_comps = [config.host] + (config.components if config.components else [])
 
-def resolve_param_val(val, comp, fixed_params=None):
+def resolve_param_val(val, comp, fixed_params=None, extra_params=None):
     import re
     if not val:
         return 0
@@ -278,6 +281,12 @@ def resolve_param_val(val, comp, fixed_params=None):
         for k, v in fixed_params.items():
             if k not in params:
                 params[k] = v
+    # Values that are module *parameters* rather than localparams never appear in
+    # fixed_params, so an expression referring to them (for example the memory size in
+    # PreloadBanksPerGroup) cannot be evaluated from the parsed wrapper alone. The caller
+    # supplies them here, already resolved for this specific instance.
+    if extra_params:
+        params.update(extra_params)
     if "AxiDataWidth" not in params:
         if config.topology.type == "noc":
             interfaces = getattr(comp, "interfaces", {}) or {}
@@ -319,8 +328,19 @@ def resolve_param_val(val, comp, fixed_params=None):
       <%
       preload_template = fixed_params.get("PreloadTemplate", "").strip('"\'')
       bank_width = resolve_param_val(fixed_params.get("PreloadBankWidth"), matched_comp, fixed_params)
-      num_groups = resolve_param_val(fixed_params.get("PreloadNumGroups"), matched_comp, fixed_params)
-      num_banks_per_group = resolve_param_val(fixed_params.get("PreloadBanksPerGroup"), matched_comp, fixed_params)
+      # Resolve the memory size of this specific instance and expose it under every name
+      # the isles use for it, so that expressions such as PreloadBanksPerGroup evaluate
+      # instead of silently falling back to an arbitrary literal.
+      inst_mem_size = None
+      if matched_comp:
+          inst_mem_size = (matched_comp.parameters or {}).get("MemSize") or (matched_comp.parameters or {}).get("L2MemSize")
+          if not inst_mem_size:
+              for slv in (matched_comp.interfaces or {}).get("axi_slave", []):
+                  inst_mem_size = slv.get("size", slv.get("size_per_instance", inst_mem_size))
+      inst_mem_size = resolve_param_val(fixed_params.get("L2MemSize") or inst_mem_size, matched_comp, fixed_params)
+      size_params = {"L2MemSize": inst_mem_size, "SpmTileSize": inst_mem_size, "MemSize": inst_mem_size}
+      num_groups = resolve_param_val(fixed_params.get("PreloadNumGroups"), matched_comp, fixed_params, size_params)
+      num_banks_per_group = resolve_param_val(fixed_params.get("PreloadBanksPerGroup"), matched_comp, fixed_params, size_params)
       if num_banks_per_group == 0 and bank_width > 0:
           data_width = resolve_param_val("AxiDataWidth", matched_comp, fixed_params)
           num_banks_per_group = data_width // bank_width

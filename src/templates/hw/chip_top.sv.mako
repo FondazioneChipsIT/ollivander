@@ -6,7 +6,7 @@ ${lh.license()}
 // Instantiates the SoC Core and the Padframe Ring.
 //
 
-module ${project_name}_chip (
+module ${config.project.module_prefix}_chip (
 <%
     all_pads = []
     for dom in pad_domains:

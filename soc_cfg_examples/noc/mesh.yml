@@ -261,7 +261,11 @@ testbench:
   boot_timeout_fast_ns: 2000000
   sim_timeout_ns: 10000000
   preload_memories:
-    - instance: "i_tile_0_0.i_isle" # Hierarchical RTL path to the first L2 tile
+    # The boot image is placed in the narrow scratchpad, which sits outside every
+    # auto control group and is therefore never clock-gated: the host can fetch its
+    # first instruction without any external bring-up. See the boot memory note in
+    # the software_stack section below.
+    - instance: "i_tile_9_2.i_isle" # Hierarchical RTL path to the narrow SPM tile
       file: "generated/sw/hello_world.hex"    # Path to the compiled hex binary
 
 # ------------------------------------------------------------------------------
@@ -270,7 +274,13 @@ testbench:
 # Defines the toolchain and target memory for automated bare-metal C compilation.
 software_stack:
   toolchain: "riscv64-unknown-elf-"
-  boot_memory: "l2_shared_memory"    # Ollivander will use this to auto-generate the Linker Script
+  # Boot from the narrow scratchpad rather than from an L2 tile. With
+  # power_on_state "gated" (the default) the L2 tiles and the compute clusters come
+  # out of reset clock-gated and held in reset, whereas the SPM belongs to no auto
+  # control group and is always on. Booting from it is what a real design would do:
+  # the SoC starts on its own, and software enables the gated blocks when it needs
+  # them. Ollivander uses this to auto-generate the Linker Script.
+  boot_memory: "top_spm_narrow"
   test_app:
     name: "hello_world"
     auto_generate_c: true            # Instructs Ollivander to create a basic main.c

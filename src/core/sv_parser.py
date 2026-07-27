@@ -103,6 +103,12 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     info = {
         "supported_params": {},
         "fixed_params": {},
+        # Subset of the parameters above that are SystemVerilog *type* parameters,
+        # mapping each name to the type it defaults to. Consumers that re-declare a
+        # module's ports outside the module itself (the generated testbench) need this:
+        # the port declarations refer to the parameter names, which do not exist in any
+        # package, so an equivalent typedef must be emitted in the consumer's scope.
+        "type_params": {},
         "dependencies": {},
         "required_files": []
     }
@@ -158,6 +164,7 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
                             val = str(p.syntax.assignment).strip()
                             if val.startswith('='):
                                 val = val[1:].strip()
+                        info["type_params"][p.name] = val
                         if p.isLocalParam:
                             info["fixed_params"][p.name] = val
                         else:

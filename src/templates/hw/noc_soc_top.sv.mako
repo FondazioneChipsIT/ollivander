@@ -5,7 +5,7 @@
 
   pkg    = config.project.soc_pkg_name
   rpkg   = f"{top_level_module_name}_sys_regs_pkg"
-  npkg   = f"floo_{p_name}_noc_pkg"
+  npkg   = config.project.noc_pkg_name
   host_clk = config.host.clock_domain or "system_clk"
   
   # ============================================================================

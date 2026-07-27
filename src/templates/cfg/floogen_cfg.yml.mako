@@ -120,7 +120,11 @@ ${license('#')}\
 # FlooGen NoC Configuration for ${p_name}
 # Description: ${config.project.description}
 
-name: "${p_name}"
+## FlooGen derives the generated package name from this field (floo_<name>_noc_pkg),
+## so it must follow the top-level module name rather than the bare project name:
+## two macros exported from the same project would otherwise produce two packages with
+## the same name and different contents, and could not coexist in one library.
+name: "${config.project.top_level_module_name}"
 description: "${config.project.description}"
 network_type: "narrow-wide"
 

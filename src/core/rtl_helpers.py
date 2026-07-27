@@ -73,20 +73,26 @@ def sv_dependency_sort(files):
     the modules that depend on them.
 
     Compilation order:
-      0 - ``*_soc_pkg.sv``
-      1 - ``*_sys_regs_pkg.sv``
-      2 - ``*_noc_pkg.sv``
+      0 - ``*_noc_pkg.sv``       (FlooNoC package: depends only on floo_pkg)
+      1 - ``*_soc_pkg.sv``       (imports the NoC package above)
+      2 - ``*_sys_regs_pkg.sv``
       3 - ``*_pkg.sv``  (other packages)
       4 - everything else
+
+    The NoC package must precede the SoC package: in a NoC topology the generated
+    ``<top>_soc_pkg`` imports ``floo_<top>_noc_pkg`` to build its AXI types. This
+    mirrors the order in which the project's own packages are emitted, and matters
+    for external files pulled in from another project, such as the macros a parent
+    SoC instantiates.
     """
 
     def _rank(f):
         fname = Path(f).name
-        if fname.endswith("_soc_pkg.sv"):
-            return 0
-        if fname.endswith("_sys_regs_pkg.sv"):
-            return 1
         if fname.endswith("_noc_pkg.sv"):
+            return 0
+        if fname.endswith("_soc_pkg.sv"):
+            return 1
+        if fname.endswith("_sys_regs_pkg.sv"):
             return 2
         if fname.endswith("_pkg.sv"):
             return 3
