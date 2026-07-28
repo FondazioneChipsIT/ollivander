@@ -61,3 +61,118 @@ Note that gwaihir never solved either problem: a whole-repository search finds n
     *   *Mitigation*: Generate the prologue from the same `auto_control_groups` description that produces the registers, so the enable sequence and the register layout cannot drift apart. The widths are already known: `control_group_width()` sizes each packed register to the exact number of controlled tiles.
 *   **Preload Mechanism**: The testbench preloads via `$readmemh` into SRAM instances, whereas the reference drives a JTAG or serial-link ELF loader through a verification IP.
     *   *Mitigation*: This is independent of the prologue and can be staged after it. Note that the examples booting from a gated L2 tile (`mesh_isle` and `super_mesh`) will keep needing an external agent regardless, since their boot image is unreachable at power-on by construction; that is deliberate, so the gated path stays covered by the regression.
+
+---
+
+## 3. Open Decisions from the Simulation-Log Review
+
+A review of `logs/test_run_sim.log` on `crossbar` and `noc` established that neither project emits a
+single warning against generated RTL: every visible message comes from `bender_work/`. What the review
+did find was hidden by the message-suppression list, which has since been narrowed in
+`src/templates/Makefile.vsim.mako` — `2732` is now downgraded to a warning instead of suppressed,
+`3999` and `8602` are gone, and the `vopt` of `fast-check` no longer suppresses `2912` and `2241`.
+
+The three items below are what remains. None is a mechanical fix: each changes either design behaviour
+or dependency policy, and each should be decided on shortly.
+
+### 3.1 Dependency Pinning and Revision Alignment
+
+Downgrading message `2732` made visible that **every error the two simulations produce is a silently
+discarded parameter override**, and nothing else:
+
+*   `crossbar` — 2 occurrences. `pulp_cluster/rtl/idma_wrap.sv(510)` overrides `.Burst_len` on
+    `idma_backend_r_obi_rw_init_w_axi`, a parameter that does not exist anywhere in the pinned
+    `idma 0.6.5`. The cluster's DMA backend therefore ignores `IDMA_BURST_LENGTH` and legalizes bursts
+    on its own.
+*   `noc` — 10 occurrences, all in `datamover`: eight overrides of `ELEMENT_WIDTH` and two of
+    `ELEMENTS_PER_BANK` across `datamover_top`, `datamover_streamer` and `datamover_engine`. The IP is
+    instantiated by our own `components/tiles/snitch_hwpe_subsystem.sv`, so the resulting geometry is
+    not the one the wrapper asks for.
+
+Both are the same failure mode: an IP compiled against a sibling IP it no longer matches. The registry
+makes it possible — 16 entries in `ollivander_config.yml` are pinned to a *branch name* (`main`,
+`master`, `chips-it`) rather than a commit, so regenerating `Bender.lock` can desynchronise them with no
+diagnostic at all. A related symptom: `crux_env.yml` pins Cheshire at `55650af4` while `mesh_env.yml`
+pins `d9fb6686`, which is why only `noc` reports the `clint` interrupt-width mismatch. That mismatch is
+itself harmless — `clint` hardcodes two hart lines and Cheshire connects as many as it has — but it
+shows the two reference examples are not running the same host.
+
+*Decision to take*: whether to pin every registry entry to a commit, and whether the examples should
+share one Cheshire revision.
+
+#### Advantages
+*   **Reproducibility**: a lock regenerated months apart resolves to the same sources.
+*   **A fix validated once is validated everywhere**: today a correction proven on `crossbar` says
+    nothing about `noc`, because the host differs.
+*   **The dropped overrides disappear** as a class, rather than being triaged one at a time.
+
+#### Difficulties & Mitigation Strategies
+*   **Branch pinning is convenient during active development**: `chips-it` branches are ours and move
+    on purpose, and pinning them freezes work in progress.
+    *   *Mitigation*: pin commits for the upstream dependencies, where we only consume releases, and
+        keep branch pinning only for the repositories the team actively develops — recording in the
+        registry which of the two a given entry is, so the choice is visible rather than incidental.
+
+### 3.2 CAN Timestamp, and the Tie-Offs Inherited from astral
+
+`src/templates/hw/isles/apb_subsystem_isle.sv.mako` ties the `timestamp` input of `can_top_apb` to
+`64'hFFFFFFFFFFFFFFFF`. The CTU CAN FD uses that port as its timebase, so a frozen maximal value makes
+every time-triggered transmission look already expired and stamps every received frame identically.
+
+A comparison against the reference settled where this comes from: **astral does exactly the same**
+(`carfield.sv`, `logic [63:0] can_timestamp; assign can_timestamp = '1;`), and so do the other
+tie-offs of the subsystem. It is inherited, not a regression of the generator, and none of it is
+exercised by the reference's own test suite either. The full list now lives in the PROVENANCE note at
+the head of the template, which is the right place for it — the point of recording it here is that the
+items belong to one decision, not four:
+
+*   `can_top_apb.timestamp` tied to all-ones (no timebase).
+*   `apb_adv_timer.ext_sig_i` tied to `'0`: the 64 external trigger inputs are unusable. Astral marks
+    it `/* TODO connect me */`.
+*   `aon_timer`: `alert_rx_i`, `lc_escalate_en_i` and `sleep_mode_i` tied to `'0`, `alert_tx_o` left
+    open, so the OpenTitan alert and sleep interfaces are inert.
+*   The CAN and watchdog interrupts do not pass through an edge propagator, unlike the two timers.
+    Astral makes the same distinction, so this is parity rather than an omission.
+
+Two things have already been decided and applied, and are recorded here so the divergence from the
+reference is not mistaken for drift. The CAN `pprot` and `pstrb` are now forwarded from the bridge
+instead of being tied to `3'b000` and `4'b1111` as astral does, because `axi_lite_to_apb` derives
+`pstrb` from the AXI W-channel strobe and discarding it turns every sub-word write into a full-word
+one. And the whole APB path now runs on `pwr_on_rst_ni` rather than `rst_ni`, which realigns it *to*
+astral: a watchdog cleared by the system reset cannot guard the event it exists for, and a CDC whose
+two sides reset independently loses pointer coherence.
+
+*Decision to take*: what to drive the CAN timestamp with — the real-time clock counter, the CLINT
+`mtime`, or a dedicated 64-bit counter inside the APB subsystem — and whether the remaining inherited
+tie-offs are worth connecting at all, given that no example currently uses the interfaces behind them.
+
+### 3.3 Assertions in the Regression
+
+`ASSERTIONS` defaults to `1`, so a manual `make run-sim` does evaluate SVA. The test suite, however,
+forces `ASSERTIONS=0` at `soc_cfg_examples/ollivander_test.mk:204`, adding `-nosva -noimmedassert
+-nopsl`: **`make test-all` never checks a single assertion**, on any project. Combined with the
+suppression list this made the regression considerably quieter than the design warrants — the FlooNoC
+`SupportLoopback` assertion, for instance, had to be verified by hand with `ASSERTIONS=1` when the
+`NoLoopback` parameter was introduced.
+
+Related, and worth raising upstream regardless: with collectives enabled FlooNoC assigns the
+`collect_op_e` enum from a raw 4-bit vector without a cast, roughly 250 times per run
+(`floo_reduction_unit`, `floo_reduction_arbiter`, `floo_output_arbiter`, `floo_router`,
+`floo_nw_chimney`). Nothing therefore checks that the collective opcode carried in a flit header is a
+legal enum value. Message `8386` is still suppressed purely for volume.
+
+*Decision to take*: whether the suite should run with assertions enabled — everywhere, or on a
+designated subset of projects.
+
+#### Advantages
+*   **Catches what warnings cannot**: protocol violations show up where they happen, not as a wrong
+    result thousands of cycles later.
+*   **Covers the NoC configuration space**: the collective and multicast paths we enable are guarded by
+    upstream assertions that the regression currently discards.
+
+#### Difficulties & Mitigation Strategies
+*   **Runtime and noise**: assertions slow the run down, and third-party IPs are known to fire benign
+    ones during reset.
+    *   *Mitigation*: enable them on one crossbar and one NoC project first, triage what fires, and
+        only then extend. Keeping `ASSERTIONS=0` available per project means a noisy IP never blocks
+        the whole suite.

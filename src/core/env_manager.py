@@ -154,13 +154,29 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     tpl_cfg = paths_cfg.get('templates', paths_cfg.get('templates_dir', ['src/templates']))
     cmp_cfg = paths_cfg.get('components', paths_cfg.get('components_dir', ['components']))
     
-    env.template_paths = resolve_paths(tpl_cfg, env_base, ['src/templates'])
-    env.component_paths = resolve_paths(cmp_cfg, env_base, ['components'])
-    
-    # Extend base search paths with those defined in the appended environment file.
+    base_template_paths = resolve_paths(tpl_cfg, env_base, ['src/templates'])
+    base_component_paths = resolve_paths(cmp_cfg, env_base, ['components'])
+
+    # Paths declared in the appended project environment take PRECEDENCE over the ones of
+    # the base environment, so they are prepended rather than appended.
+    #
+    # Every lookup built on these lists stops at the first match: get_isle_info() in
+    # sv_parser.py breaks out as soon as it finds "<type>.sv", and Mako's TemplateLookup
+    # resolves against the first directory that holds the file. Prepending therefore turns
+    # "-a/--append-env" into a way to *override* a component or a template shipped with
+    # Ollivander, and not merely to add new ones: a downstream project that needs a variant
+    # of, say, l2_isle.sv only has to place a file of the same name in its own components
+    # directory. With the previous order the default always won, and overriding required
+    # replacing the whole environment with "-e/--env-config" and re-declaring every path.
+    #
+    # This mirrors the precedence already applied to dependencies, where the revisions in
+    # a project's "*_env.yml" override those of the central registry.
     if append_env_base:
-        env.template_paths.extend(resolve_paths(app_paths_cfg.get('templates', app_paths_cfg.get('templates_dir', [])), append_env_base, []))
-        env.component_paths.extend(resolve_paths(app_paths_cfg.get('components', app_paths_cfg.get('components_dir', [])), append_env_base, []))
+        env.template_paths = resolve_paths(app_paths_cfg.get('templates', app_paths_cfg.get('templates_dir', [])), append_env_base, []) + base_template_paths
+        env.component_paths = resolve_paths(app_paths_cfg.get('components', app_paths_cfg.get('components_dir', [])), append_env_base, []) + base_component_paths
+    else:
+        env.template_paths = base_template_paths
+        env.component_paths = base_component_paths
     
     # The complete list of paths where Ollivander will search for SV component wrappers
     # during the AST validation and hardware extraction phases.

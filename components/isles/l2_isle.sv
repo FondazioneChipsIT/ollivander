@@ -44,6 +44,11 @@ module l2_isle
   // PreloadType: Tells the generator that this memory uses interleaved multi-bank preloading.
   localparam string PreloadType = "interleaved",
   // PreloadTemplate: The hierarchical path from the module top to the individual tc_sram array instances.
+  // This path traverses four levels of third-party hierarchy (l2_top -> dyn_mem_bank_group ->
+  // ecc_sram_wrap -> tc_sram), and ecc_sram_wrap is declared deprecated by redundancy_cells in
+  // favour of ecc_sram. When dyn_mem migrates, the string below stops resolving and the generated
+  // testbench fails to elaborate: the error surfaces in tb_<project>.sv, but the knowledge that
+  // causes it lives here, and here is where it must be updated.
   localparam string PreloadTemplate = "i_l2_top.gen_bank_group[{group}].i_dyn_mem_bank_group.genblk1[{bank}].i_ecc_sram_wrap.i_bank.sram",
   // PreloadNumGroups: Number of bank groups inside the interleaved memory.
   localparam int unsigned PreloadNumGroups = 2,

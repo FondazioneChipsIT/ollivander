@@ -21,7 +21,13 @@ MAKE     ?= make
 FAST_CHECK_TOOL ?= ${env_config.get("fast_check_tool", "questa")}
 VERILATOR ?= verilator
 VSIM_FLAGS ?= +fast_boot
-VSIM_OPT_FLAGS ?= -voptargs="-O5"
+# vopt optimizes fully by default in current Questa releases: the -O<num> levels were removed
+# and passing one only earns a "(vopt-14495) '-O' option is obsolete, and will be ignored"
+# note on every run. There is nothing left to hand to vopt for a batch run, and no
+# optimization level to restore here - do not reintroduce one. The only remaining lever acts
+# in the opposite direction (+acc, which lowers optimization to expose signals) and is used
+# by the 'gui' target alone.
+VSIM_OPT_FLAGS ?=
 
 # Assertions control (set ASSERTIONS=0 to disable SVA)
 ASSERTIONS ?= 1
@@ -281,30 +287,56 @@ fast-check: prep-sim
 		mkdir -p logs; \
 		$(VSIM) -c -l logs/fast_compile.log -suppress 13233 -do "source $(OUT_DIR)/compile_vsim_fast.tcl; quit"; \
 		echo "\n[MAKE] Elaborating top-level with Unresolved Blackboxes..."; \
-		$(VSIM) -c -l logs/fast_check.log -do "if {[catch {vopt -suppress 13314,2912,2241,13233 +bbox_u ${top_level_module_name} -o ${top_level_module_name}_fast_check}]} {quit -code 1}; quit"; \
+		: '13314 and 13233 are noise: relaxed SV input port kind, and a design unit'; \
+		: 'overwriting an earlier one in the library, which is normal with Bender.'; \
+		: 'Message 2912 (port connected by name does not exist) and 2241 (connection'; \
+		: 'width differs from the port) are deliberately NOT suppressed: checking that'; \
+		: 'the generated wrappers match the IP signatures is the whole purpose of this'; \
+		: 'stub-based elaboration, and those two are the errors that report a mismatch.'; \
+		$(VSIM) -c -l logs/fast_check.log -do "if {[catch {vopt -suppress 13314,13233 +bbox_u ${top_level_module_name} -o ${top_level_module_name}_fast_check}]} {quit -code 1}; quit"; \
 	fi
 	@echo "\n[SUCCESS] Fast architecture check passed!"
 
 run-sim:
 	@echo "\n[MAKE] Running simulation in QuestaSim..."
-	@# Suppressed warnings/errors:
-	@# - 13314: Default SV input port kind relaxed warning
-	@# - 2732: Timeunit/timeprecision warning
-	@# - 3009: Missing timeunit/timeprecision error in third-party IPs (e.g. hci, ibex)
-	@# - 3999: Connection type incompatible with enum port in OpenTitan IPs (e.g. u_RoT, i_watchdog)
-	@# - 8602: Replication multiplier (0) in common_cells/sync.sv when Stages=0 (parameterized bypass)
+	@# Message severity policy. Only genuine third-party noise is hidden; anything that can
+	@# report a defect in the generated code stays visible. See section 3 of
+	@# docs/developer/wip/future_evolution_tasks.md for the open items behind these choices.
+	@#
+	@# Suppressed - unavoidable noise from external IPs, hundreds of lines per run:
+	@# - 13314: An SV input port declared with a type but without 'var' defaults to 'wire'
+	@#          only under -svinputport=relaxed. Pure LRM strictness, no design impact.
+	@# - 3009 : Module without a timescale directive in effect: it falls back to the
+	@#          simulator resolution limit (e.g. hci, ibex).
+	@# - 8386 : An enum variable assigned a raw vector without an explicit cast. On a NoC
+	@#          with collectives enabled, FlooNoC does this ~250 times per run while
+	@#          extracting 'collective_op' from the flit header (floo_reduction_unit,
+	@#          floo_reduction_arbiter, floo_output_arbiter, floo_router, floo_nw_chimney).
+	@#          Suppressed for volume alone: it means nobody checks that the collective
+	@#          opcode carried in a flit is a legal enum value, and deserves an upstream fix.
+	@#
+	@# Downgraded to a warning rather than suppressed - it reports a silently dropped
+	@# parameter override, which is precisely the defect class a generator produces:
+	@# - 2732 : A parameter override names a parameter the target module does not declare,
+	@#          so the override is discarded and the module keeps its default. This used to
+	@#          be suppressed and was hiding every such case (crux: 2, mesh: 10). Kept
+	@#          visible, kept non-fatal, so the run still reaches EOT.
+	@#
+	@# Deliberately NOT suppressed any more: 3999 (incompatible port type) and 8602
+	@# (zero replication multiplier) produced no message at all on either crux or mesh.
 	@mkdir -p logs/stdout
 	@ln -snf ../generated logs/generated
-	cd logs && $(VSIM) -c -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,2732,3009,3999,8602,8386 -do "run -all; quit"
+	cd logs && $(VSIM) -c -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,3009,8386 -warning 2732 -do "run -all; quit"
 
 gui:
 	@echo "\n[MAKE] Launching QuestaSim GUI..."
-	@# Suppressed warnings/errors:
-	@# - 13314: Default SV input port kind relaxed warning
-	@# - 2732: Timeunit/timeprecision warning
-	@# - 3009: Missing timeunit/timeprecision error in third-party IPs (e.g. hci, ibex)
-	@# - 3999: Connection type incompatible with enum port in OpenTitan IPs (e.g. u_RoT, i_watchdog)
-	@# - 8602: Replication multiplier (0) in common_cells/sync.sv when Stages=0 (parameterized bypass)
+	@# Same message severity policy as run-sim above, kept identical on purpose so that a
+	@# failure reproduced in the GUI reports exactly what the batch run reported.
+	@#
+	@# Unlike the batch run, the interactive session is elaborated with -voptargs=+acc, which
+	@# lowers vopt's optimization to keep internal signals accessible. It makes the simulation
+	@# slower but lets signals be logged and waveforms be added without recompiling, which is
+	@# the point of opening the GUI in the first place.
 	@mkdir -p logs/stdout
 	@ln -snf ../generated logs/generated
-	cd logs && $(VSIM) -gui -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,2732,3009,3999,8602,8386
+	cd logs && $(VSIM) -gui -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -voptargs=+acc -suppress 13314,3009,8386 -warning 2732
