@@ -75,45 +75,67 @@ did find was hidden by the message-suppression list, which has since been narrow
 The three items below are what remains. None is a mechanical fix: each changes design behaviour, or
 asks what to do about a defect in an IP we do not own.
 
-### 3.1 Parameter Overrides Discarded by Third-Party IPs
+### 3.1 Open Questions in the HWPE Path
 
 The pinning question this section used to pose has been settled: `ollivander_config.yml` now carries a
 single catalogue - released versions where the IP publishes them and explicit commits otherwise, plus
 the forced resolutions the set induces - and the example projects declare nothing but their own paths.
-The two reference examples run the same Cheshire, so a fix proven on one is proven on both.
+The two dropped-parameter-override cases it recorded have both been closed, one by a fix and one by
+finding there was nothing to fix:
 
-What remains open is the defect that made the question visible in the first place. Downgrading message
-`2732` showed that every error either simulation produces is a **silently discarded parameter
-override**, and all of them belong to third-party IPs:
+*   **`pulp_cluster` overriding `.Burst_len`: resolved.** The parameter exists only in the CHIPS-IT
+    fork of iDMA, which generates its backends from templates carrying it, and `pulp_cluster` and
+    `opentitan` both require iDMA from there. The catalogue was forcing the upstream instead, so the
+    override was discarded and the cluster's DMA legalized bursts on its own. Forcing the fork makes
+    the generated backend declare `Burst_len`, and the warnings are gone.
+*   **`datamover` overriding `ELEMENT_WIDTH` and `ELEMENTS_PER_BANK`: not a defect.** The pinned `hci`
+    does not declare them because it hardcodes a 32-bit bank word, and `datamover` passes 8 and 4,
+    which is the same geometry - `components/tiles/snitch_hwpe_subsystem.sv` leaves both at their
+    defaults. The four `2732` messages per NoC run are therefore benign, and are documented as such
+    next to the forcing rather than silenced, since they are the only signal that would appear if a
+    tile ever asked for a different bank word.
 
-*   `crossbar` — `pulp_cluster/rtl/idma_wrap.sv(510)` overrides `.Burst_len` on
-    `idma_backend_r_obi_rw_init_w_axi`, a parameter that the pinned iDMA does not declare anywhere. The
-    cluster's DMA backend therefore ignores `IDMA_BURST_LENGTH` and legalizes bursts on its own.
-*   `noc` — ten occurrences in `datamover`: overrides of `ELEMENT_WIDTH` and `ELEMENTS_PER_BANK` across
-    `datamover_top`, `datamover_streamer` and `datamover_engine`. That IP is instantiated by our own
-    `components/tiles/snitch_hwpe_subsystem.sv`, so the resulting geometry is not the one the wrapper
-    asks for.
+What remains is a prerequisite rather than a defect. Upstream `hci` from v2.6.x provides the
+multi-precision support those two parameters exist for, and adopting it breaks the crossbar family:
+`cluster_peripherals` drives `hci_ctrl_o.low_prio_max_stall`, a single 8-bit "maximum consecutive
+stalls" field that upstream replaced with an `arb_policy`, `priority_cnt_numerator` and
+`priority_cnt_denominator` triple. No branch or release of that IP, in the CHIPS-IT fork or upstream,
+speaks the new struct; the commit we use is already the newest of the fork.
 
-Neither is reachable by choosing different revisions: the overriding IP and the overridden one are
-pinned by requirements we cannot reconcile without breaking something else. Hello world does not
-exercise either path, so both are latent until a test offloads work to a cluster or drives the HWPE
-accelerator - which is exactly what the cluster-offload tests will do.
+A second question surfaces in the same logs and belongs to the same moment. Inside `redmule`, two
+connections do not match the width of the port they drive: `redmule_w_buffer` reaches
+`redmule_w_buffer_scm.wdata_i` with 480 bits against a 512-bit port, and `redmule_x_buffer` reaches
+`redmule_x_pad_scm.wdata_i` with 480 against 448 - so the second one truncates 32 bits. All three
+figures are multiples of the 16-bit format, meaning a discrepancy of two elements in one direction and
+two in the other. Ollivander overrides only `ID_WIDTH`, `N_CORES`, `DW` and `HCI_SIZE_tcdm` on
+`redmule_top`, leaving the array geometry - `ARRAY_HEIGHT`, `PIPE_REGS`, `TOT_DEPTH = DATAW/BITW` - at
+the IP's own defaults, so whether this is an internal inconsistency of those defaults or an
+interaction with the data width we impose is not yet established. Deriving it is a study of the
+accelerator's parameters rather than a check, and no test drives `redmule` today.
 
-*Decision to take*: whether to carry the fix upstream, to adapt the wrappers so that the intended
-geometry is expressed in a way the pinned IPs accept, or to accept the defaults and record the loss.
+*Decision to take*: whether to do the remapping now or when multi-precision is actually wanted. It is
+work on two repositories CHIPS-IT owns and Ollivander only consumes: one line in
+`cluster_control_unit.sv` of the `cluster_peripherals` fork, and then the `rev` that `pulp_cluster`
+pins it at, since the catalogue does not declare `cluster_peripherals` itself - it arrives as a
+transitive dependency, at a revision chosen by another of our forks.
 
 #### Advantages
-*   **The warnings stop being noise**: twelve `2732` messages per regression currently have to be
-    recognised and dismissed by hand every time the logs are read.
-*   **The accelerator paths become trustworthy**: a DMA that silently legalizes its own bursts, or a
-    streamer with a different element width, will not behave as the wrapper documents.
+*   **Unblocks upstream `hci`**, which would retire a CHIPS-IT fork whose two fixes are meanwhile
+    upstream verbatim, and would put that entry on a release rather than an untagged commit.
+*   **Makes multi-precision reachable**: a tile could then request a bank word other than 32 bits and
+    have the request honoured instead of discarded.
 
 #### Difficulties & Mitigation Strategies
-*   **The defect is upstream, in IPs we do not own.** A pull request is the clean route but not a fast
-    one, and two of the three repositories involved are forks maintained elsewhere.
-    *   *Mitigation*: the parameters are visible in the generated `Bender.lock` and in the logs, so the
-        loss can be documented per IP and re-checked at every revision bump. Where the geometry matters
-        to a test, assert it in the testbench rather than trusting the override to have been honoured.
+*   **Two open questions, one trigger.** The remapping and the `redmule` width mismatches both become
+    relevant the moment the HWPE accelerator is exercised, and both are better resolved then, when a
+    test can confirm the answer instead of a derivation asserting it.
+*   **The new arbitration semantics are not a rename.** A maximum stall count and a numerator over a
+    denominator are different controls, so the mapping has to be derived from the arbiter rather than
+    transcribed, and the register bits the firmware writes have to keep meaning something.
+    *   *Mitigation*: do it when a test exercises the HWPE accelerator, so that the mapping can be
+        verified rather than reasoned about. Until then, the interim step - dropping the assignment and
+        accepting a firmware-visible register with no effect - is available but should not be taken
+        just to quieten a log.
 
 ### 3.2 CAN Timestamp, and the Tie-Offs Inherited from astral
 
