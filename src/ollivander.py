@@ -17,6 +17,7 @@ import sys
 import re
 import shutil
 import subprocess
+import textwrap
 import importlib.util
 from pathlib import Path
 import yaml
@@ -343,16 +344,93 @@ def main():
     # version requirement coming from another IP). Note that env_config_path is the resolved
     # default, which args.env_config does not carry when -e is not passed.
     env_yaml_paths = [env.env_config_path, args.append_env]
-    overrides = {}
+    loaded = []
     for p in env_yaml_paths:
         if p and Path(p).is_file():
             try:
                 with open(p, 'r', encoding='utf-8') as f:
-                    env_data = yaml.safe_load(f)
-                if env_data and 'overrides' in env_data:
-                    overrides.update(env_data['overrides'])
+                    loaded.append((Path(p).name, yaml.safe_load(f) or {}))
             except Exception:
                 pass
+
+    # A project may decline the forced resolutions of the base configuration as a whole, with
+    # "inherit_default_overrides: false". That is what a project re-pinning many IPs wants: it
+    # rewrites the set from scratch without inheriting forcings it did not ask for, which would
+    # otherwise apply in silence, since Bender never reports an override it honours. The flag
+    # governs only what the base configuration contributes, never the project's own block, and
+    # defaults to true. There is no counterpart for the dependency registry, and the reason is worth
+    # keeping should that ever change: a registry entry only reaches Bender when a component or a
+    # template requires it by pragma, so an unused one is already inert. Forcings apply to the whole
+    # graph unconditionally, which is what makes an escape hatch necessary for them alone.
+    inherit_defaults = True
+    for _, env_data in loaded:  # Base first, project last: the project has the last word.
+        if 'inherit_default_overrides' in env_data:
+            inherit_defaults = bool(env_data['inherit_default_overrides'])
+    if not inherit_defaults and loaded:
+        base_name, base_data = loaded[0]
+        print(f"  [INFO] inherit_default_overrides is false: the "
+              f"{len(base_data.get('overrides') or {})} forced resolutions declared by {base_name} "
+              f"are ignored, and Bender resolves those packages on its own.")
+        loaded = loaded[1:]
+
+    # The file each surviving forcing came from, so that the report below can tell an inherited one
+    # from one the project asked for. The last writer wins, exactly as the values do.
+    base_src = Path(env.env_config_path).name if env.env_config_path else None
+    overrides, disabled, origin = {}, [], {}
+    for src_name, env_data in loaded:
+        for name, spec in (env_data.get('overrides') or {}).items():
+            if spec is None or spec is False:
+                # A null (or false) value disables a forced resolution instead of replacing it.
+                # Substituting is not always possible: a revision satisfying both the catalogue and
+                # an IP the project adds may simply not exist. Dropping the entry hands the package
+                # back to Bender's own resolution, conflict report included.
+                if overrides.pop(name, None) is not None:
+                    origin.pop(name, None)
+                    disabled.append(name)
+                elif inherit_defaults:
+                    # A removal that removes nothing survives the update that made it pointless, so
+                    # it is reported - unless inheritance is off, where it is redundant by
+                    # construction rather than stale.
+                    print(f"  [WARNING] {src_name} disables the forced resolution of '{name}', which"
+                          f" no configuration declares: the entry has no effect.")
+            elif isinstance(spec, dict):
+                overrides[name] = spec
+                origin[name] = src_name
+            else:
+                # Any other scalar would be written into Bender.local verbatim and fail inside a
+                # generated file the user never wrote, so it is refused here, where the cause is
+                # still visible.
+                print(f"\n[ERROR] In {src_name}, the override of '{name}' is neither a mapping nor "
+                      f"null: {spec!r}.\n        Declare 'git' plus 'rev' to force a revision, or "
+                      f"null to drop a forced resolution.")
+                sys.exit(1)
+    if disabled:
+        print(f"  [INFO] Forced resolutions dropped on request: {', '.join(sorted(disabled))}."
+              f" Bender resolves those packages on its own.")
+
+    # Report what is in effect, and not only what was skipped. Bender never mentions an override it
+    # honours, so an inherited forcing is invisible from inside the project: seeing it would mean
+    # opening the generator's own configuration, or reading the Bender.local this run is about to
+    # write. Naming the packages here makes the set auditable where the project is built, which is
+    # what turned a silent iDMA misresolution into a fixable one.
+    if overrides:
+        from_project = {n for n, src in origin.items() if src != base_src}
+        if not from_project:
+            print(f"  [INFO] Forced resolutions in effect: {len(overrides)}, all from {base_src}.")
+        elif len(from_project) == len(overrides):
+            print(f"  [INFO] Forced resolutions in effect: {len(overrides)}, all declared by the"
+                  f" project.")
+        else:
+            print(f"  [INFO] Forced resolutions in effect: {len(overrides)}, of which "
+                  f"{len(from_project)} declared by the project (*), the rest by {base_src}.")
+        # The marker only earns its place when the set is mixed: where every entry has the same
+        # origin, the heading already says so and a star on each name is noise.
+        mark = from_project if len(from_project) != len(overrides) else set()
+        listing = ", ".join(f"{n}*" if n in mark else n for n in sorted(overrides))
+        # break_on_hyphens would split 'hwpe-ctrl' and 'riscv-dbg' across two lines, leaving a
+        # package name that cannot be read nor grepped for.
+        print(textwrap.fill(listing, width=100, initial_indent=" " * 9, subsequent_indent=" " * 9,
+                            break_on_hyphens=False, break_long_words=False))
 
     # Write overrides to Bender.local to cleanly resolve conflicts without mangling Bender.yml
     bender_local_path = env.bender_dir / "Bender.local"

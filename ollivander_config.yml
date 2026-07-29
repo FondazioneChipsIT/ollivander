@@ -125,6 +125,9 @@ dependencies:
       - file: "{bender_work}/cheshire/hw/cheshire_pkg.sv"
         search: "    ret.apb_mask[ret.slink] = 1'b1;"
         replace: "    if (cfg.SerialLink) begin\\n      ret.apb_mask[ret.slink] = 1'b1;\\n    end"
+  common_cells:
+    git: "https://github.com/pulp-platform/common_cells.git"
+    version: "1.40.0"
   cva6:
     # Not declared as a dependency: cva6 arrives transitively through cheshire. This entry exists
     # only to repair it, and the repair is conditional in a way a declarative patch cannot express.
@@ -136,9 +139,6 @@ dependencies:
     # OpenTitan's module instead. The script reports which IP it collided with when it renames.
     pre_build_cmds:
       - "$(PYTHON) {ollivander_dir}/scripts/patch_cva6_aes.py {bender_work}"
-  common_cells:
-    git: "https://github.com/pulp-platform/common_cells.git"
-    version: "1.40.0"
   datamover:
     git: "https://github.com/pulp-platform/datamover.git"
     rev: "f14d4db2a72c08b43b3511013e821a4600f6ef56"
@@ -183,11 +183,6 @@ dependencies:
   opentitan:
     git: "https://github.com/AlSaqr-platform/opentitan.git"
     rev: "212974d8a61c45de6f61354adc55cc08e100ed58"
-  # example_custom_ip:
-  #   git: "https://github.com/example/custom_ip.git"
-  #   version: "1.0.0"
-  #   pre_build_cmds:
-  #     - "$(PYTHON) {ollivander_dir}/scripts/setup.py {bender_work}/example_custom_ip"
   pulp-ethernet:
     git: "https://github.com/pulp-platform/pulp-ethernet.git"
     rev: "db9a90dd27fa85ddbe9b7cd22e03bf43b2c14838"
@@ -251,7 +246,9 @@ dependencies:
 # An override on a package that never enters a project's graph is inert, so this list is a superset:
 # some entries only matter once safety_island, spatz, opentitan or pulp_cluster are instantiated,
 # and are simply ignored elsewhere. A project that disagrees with any of them can say so in its own
-# *_env.yml, whose entries take precedence key by key.
+# *_env.yml, whose entries take precedence key by key: a mapping replaces a forcing, a null value
+# drops it and hands the package back to Bender, and "inherit_default_overrides: false" declines
+# this whole section - see section 4 of docs/env_configuration_guide.md.
 #
 # Values were validated end-to-end: crossbar and NoC both generate, elaborate under QuestaSim and
 # Verilator, build and reach EOT in simulation with no project-level override at all.
@@ -267,12 +264,6 @@ overrides:
   # fpnew: floo_noc, redmule, snitch_cluster and cva6 require it as cvfpu.git at tag pulp-v0.2.3, while
   # cv32e40p still requires the pre-rename fpnew.git. A project rename that not everyone followed.
   fpnew: { git: "https://github.com/pulp-platform/cvfpu.git", rev: "e5aa6a01b5bbe1675c3aa8872e1203413ded83d1" }
-  # idma: three sources: cheshire and spatz require pulp-platform/iDMA by version, opentitan and
-  # pulp_cluster the CHIPS-IT fork by tag, and pulp-ethernet the same pulp-platform repository
-  # through an SSH URL, which Bender treats as distinct. The last one is a pure syntax split.
-  # Forced to the fork, which is the only side declaring the Burst_len that pulp_cluster
-  # overrides; the upstream requirements are satisfied by source compatibility, not by version.
-  idma: { git: "https://github.com/FondazioneChipsIT/iDMA.git", rev: "2e637216e0455d77706a50d0639b86891e2a83aa" }
   # hci: datamover and redmule pin two different commits of pulp-platform/hci, so they conflict with
   # each other regardless of what Ollivander declares. The CHIPS-IT fork branches from the commit
   # redmule wants and adds two fixes that are meanwhile upstream verbatim, so the fork itself no
@@ -293,6 +284,12 @@ overrides:
   # multi-precision the upstream revision exists to provide. Do not silence them: they are the only
   # signal that such a request has been discarded.
   hci: { git: "https://github.com/FondazioneChipsIT/hci.git", rev: "3e63936991569d0b1e315d6914478937b37bb338" }
+  # idma: three sources: cheshire and spatz require pulp-platform/iDMA by version, opentitan and
+  # pulp_cluster the CHIPS-IT fork by tag, and pulp-ethernet the same pulp-platform repository
+  # through an SSH URL, which Bender treats as distinct. The last one is a pure syntax split.
+  # Forced to the fork, which is the only side declaring the Burst_len that pulp_cluster
+  # overrides; the upstream requirements are satisfied by source compatibility, not by version.
+  idma: { git: "https://github.com/FondazioneChipsIT/iDMA.git", rev: "2e637216e0455d77706a50d0639b86891e2a83aa" }
 
   # --- A branch requirement, which no released version can ever satisfy.
   # common_cells: axi requires branch 'multicast-xbar', snitch_cluster branch 'snitch', redmule exactly =1.38.0.
@@ -309,33 +306,34 @@ overrides:
   redundancy_cells: { git: "https://github.com/pulp-platform/redundancy_cells.git", rev: "6ba6f415a9024decedabaf3f2b45263ff546dabd" }
 
   # --- A raw commit or an exact pin set against ranges, or against another exact pin.
+  # cluster_interconnect: opentitan pins a raw commit while pulp_cluster demands exactly =1.3.0.
+  cluster_interconnect: { git: "https://github.com/pulp-platform/cluster_interconnect.git", rev: "2967d8d17be0a6139229ca8d3d4956e182aec3de" }
+  # hwpe-ctrl: datamover and redmule pin different raw commits. This is the shared cause of the
+  # HWPE entries in this group: the accelerator family cross-pins commits of its own building
+  # blocks instead of releases.
+  hwpe-ctrl: { git: "https://github.com/pulp-platform/hwpe-ctrl.git", rev: "3690a3c648f120546d8de2bc583d5170c36d2f20" }
+  # hwpe-stream: datamover pins an untagged commit, hci requires ^1.9.0 and redmule exactly =1.9.0. Ollivander
+  # does not even declare this package: the disagreement is entirely between three other IPs.
+  hwpe-stream: { git: "https://github.com/pulp-platform/hwpe-stream.git", rev: "05cb8303693065812e9d6bfe10976220fb455666" }
   # obi: our declaration and axi_obi agree on ^0.1.7, but redmule pins the untagged commit 6c7ee864.
   # The value carries the NumTxns parameter that components/isles/sram_isle.sv overrides; an
   # older revision resolves just as well but breaks elaboration, which fast-check catches.
   obi: { git: "https://github.com/pulp-platform/obi.git", rev: "6a724da5c8d6412b88b6948746e04c1adf39d017" }
-  # hwpe-stream: datamover pins an untagged commit, hci requires ^1.9.0 and redmule exactly =1.9.0. Ollivander
-  # does not even declare this package: the disagreement is entirely between three other IPs.
-  hwpe-stream: { git: "https://github.com/pulp-platform/hwpe-stream.git", rev: "05cb8303693065812e9d6bfe10976220fb455666" }
-  # hwpe-ctrl: datamover and redmule pin different raw commits. Same cause as hwpe-stream: the HWPE
-  # accelerator family cross-pins commits of its own building blocks instead of releases.
-  hwpe-ctrl: { git: "https://github.com/pulp-platform/hwpe-ctrl.git", rev: "3690a3c648f120546d8de2bc583d5170c36d2f20" }
+  # pulp_cluster: opentitan pins a different commit of our own CHIPS-IT fork than the registry declares. The one
+  # entry here where half the disagreement is ours to fix upstream.
+  pulp_cluster: { git: "https://github.com/FondazioneChipsIT/pulp_cluster.git", rev: "e8c34e7199cb44417215fa51ccf5b6983599e985" }
   # scm: as hwpe-ctrl: datamover and redmule pin different raw commits.
   scm: { git: "https://github.com/pulp-platform/scm.git", rev: "472f99affe44ff7b282b519c047a3cfeb35b16c6" }
   # tech_cells_generic: fifteen packages require it, thirteen with compatible caret ranges, but redmule demands exactly
   # =0.2.13 and scm exactly =0.2.11. Two exact pins to different versions.
   tech_cells_generic: { git: "https://github.com/pulp-platform/tech_cells_generic.git", rev: "7968dd6e6180df2c644636bc6d2908a49f2190cf" }
-  # cluster_interconnect: opentitan pins a raw commit while pulp_cluster demands exactly =1.3.0.
-  cluster_interconnect: { git: "https://github.com/pulp-platform/cluster_interconnect.git", rev: "2967d8d17be0a6139229ca8d3d4956e182aec3de" }
-  # pulp_cluster: opentitan pins a different commit of our own CHIPS-IT fork than the registry declares. The one
-  # entry here where half the disagreement is ours to fix upstream.
-  pulp_cluster: { git: "https://github.com/FondazioneChipsIT/pulp_cluster.git", rev: "e8c34e7199cb44417215fa51ccf5b6983599e985" }
 
   # --- Disjoint semantic-version ranges: the requirements are well formed, and still admit no
   # common solution.
+  # axi_riscv_atomics: cheshire and safety_island require the 0.8.x series, dyn_mem and spatz the 0.7.x one.
+  axi_riscv_atomics: { git: "https://github.com/pulp-platform/axi_riscv_atomics.git", rev: "97a1dd2ac643c276880420a0cf8eea697f228aa9" }
   # register_interface: cheshire requires ^0.4.5 and hci ^0.3.1, two ranges with no overlap, while redmule demands
   # exactly =0.4.5.
   register_interface: { git: "https://github.com/pulp-platform/register_interface.git", rev: "d6e1d4cdaab7870f4faf3f88a1c788eaf5ac129d" }
-  # axi_riscv_atomics: cheshire and safety_island require the 0.8.x series, dyn_mem and spatz the 0.7.x one.
-  axi_riscv_atomics: { git: "https://github.com/pulp-platform/axi_riscv_atomics.git", rev: "97a1dd2ac643c276880420a0cf8eea697f228aa9" }
   # riscv-dbg: cheshire and safety_island require ^0.8.1, spatz ^0.7.0.
   riscv-dbg: { git: "https://github.com/pulp-platform/riscv-dbg.git", rev: "358f90110220adf7a083f8b65d157e836d706236" }

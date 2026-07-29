@@ -166,8 +166,8 @@ Some hardware components require pre-generation steps (e.g., generating register
 ```yaml
 dependencies:
   idma:
-    git: "https://github.com/pulp-platform/idma.git"
-    version: "0.6.5"
+    git: "https://github.com/FondazioneChipsIT/iDMA.git"
+    rev: "2e637216e0455d77706a50d0639b86891e2a83aa"
     pre_build_cmds:
       # Install required Python dependencies inside the isolated environment
       - "$(PYTHON) -m pip install -q flatdict mako"
@@ -212,6 +212,9 @@ dependencies:
 
 See section 4 of [the environment configuration guide](env_configuration_guide.md) for the companion
 mechanism, `overrides`, which forces a revision when Bender cannot reconcile the requirements at all.
+It also covers the two ways out when a forcing shipped with Ollivander gets in the way of an IP of
+your own: dropping that single entry, or declining the inherited set as a whole with
+`inherit_default_overrides: false`.
 
 #### 4.2.5 Custom Register Inclusion (`rdl_include_dirs`)
 To let PeakRDL know where to search for SystemRDL register specifications inside the dependency repository:

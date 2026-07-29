@@ -120,8 +120,8 @@ macro for it. An external script of any language is therefore invoked as an ordi
 ```yaml
 dependencies:
   idma:
-    git: "https://github.com/pulp-platform/idma.git"
-    version: "0.6.5"
+    git: "https://github.com/FondazioneChipsIT/iDMA.git"
+    rev: "2e637216e0455d77706a50d0639b86891e2a83aa"
     bender_targets:
       - "idma"
     pre_build_cmds:
@@ -199,6 +199,25 @@ your graph is **inert**, which is why the catalogue shipped with Ollivander can 
 only some topologies need. And an override must carry a `git` plus a `rev`: a `version` is still a
 constraint, so it participates in resolution instead of replacing it, and forces nothing.
 
+Ollivander collects the entries and writes them into the project's `Bender.local`, a file it owns:
+it is rewritten on every generation, and removed once no forcing is left. It is therefore not a
+place to record anything by hand - a hand-written forcing would survive exactly until the next
+`make generate`.
+
+Because Bender says nothing about a forcing it honours, every generation reports the set that is in
+effect, and where each entry came from:
+
+```
+  [INFO] Forced resolutions in effect: 17, of which 2 declared by the project (*), the rest by ollivander_config.yml.
+         axi, axi_riscv_atomics, cluster_interconnect, common_cells, cv32e40p, fpnew, hwpe-ctrl,
+         hwpe-stream, idma, my_own_ip*, obi*, pulp_cluster, redundancy_cells, register_interface,
+         riscv-dbg, scm, tech_cells_generic
+```
+
+Read it when a package behaves as if it were at a revision nobody asked for: a name in that list is
+pinned graph-wide, whatever the requirements around it say. Entries the project replaced count as its
+own, since from Bender's point of view that is what they are.
+
 ### 4.1 When you need one
 
 Bender refuses to resolve when the requirements it collects admit no common solution, and stops with
@@ -224,6 +243,56 @@ also disagree with a forced resolution from the catalogue without touching it.
 Record *why*, next to each entry. A forcing whose reason is lost is indistinguishable from a
 superstition, and the only way to re-derive it is to remove every override and let Bender report the
 conflicts again, one run at a time.
+
+### 4.2 Disabling one, instead of replacing it
+
+Replacing a forced resolution is not always enough. A project that adds an IP of its own may find
+that no single revision satisfies both that IP and the forcing it inherits - which is precisely the
+kind of contradiction the catalogue exists to describe. Give the key a **null** value to drop the
+forcing altogether:
+
+```yaml
+overrides:
+  common_cells: null    # 'false' works too: hand this package back to Bender's own resolution
+```
+
+The package then takes part in normal resolution again, so Bender either resolves it or stops with
+the report of section 4.1 - which is the input you need in order to choose a revision, and which a
+silently honoured forcing would have hidden.
+
+A removal that removes nothing is reported as having no effect, for the same reason a stale patch is:
+it outlives the update that made it pointless. Any value that is neither a mapping nor null is
+refused with an error naming the file and the key, since it would otherwise be copied verbatim into
+the generated `Bender.local` and fail there, inside a file the project never wrote.
+
+### 4.3 Taking over the whole set
+
+A project that re-pins many IPs is better served by owning the entire set than by disabling inherited
+forcings one at a time:
+
+```yaml
+inherit_default_overrides: false
+overrides:
+  # the project's own forcings, and nothing else
+```
+
+The flag defaults to `true`, and governs only what the base configuration contributes: your own
+`overrides` block is kept either way. With it set to `false` no forcing reaches Bender that you did
+not write, which is worth having precisely because an honoured override is never reported - the
+inherited set is otherwise invisible from inside the project. Ollivander prints how many forcings it
+dropped, and from which file.
+
+Be aware of what is given up. The forcings shipped with Ollivander are what makes its example
+topologies resolvable at all: most of them exist because external IPs contradict *each other*, in
+ways no choice of revisions can repair. Declining them means taking that whole conflict set upon
+yourself, so the flag suits a project bringing its own IP catalogue rather than one starting from the
+examples.
+
+There is deliberately no equivalent flag for the `dependencies` registry of section 3, and the reason
+is the asymmetry this section opened with: a registry entry only reaches Bender when a component or a
+template requires it by pragma, so an entry no project uses is already inert and there is nothing to
+decline. Forcings are the opposite - they apply to the whole graph unconditionally - which is why they
+alone need a way out.
 
 ---
 
