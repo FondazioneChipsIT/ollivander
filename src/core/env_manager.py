@@ -28,6 +28,11 @@ class OllivanderEnv:
         self.search_paths = []
         self.exclude_dir = ""
         self.base_dir = None
+        # Resolved path of the base environment configuration actually loaded, which is
+        # ollivander_config.yml unless -e/--env-config replaced it. Exposed because the caller
+        # needs to read its 'overrides' section, and cannot infer the default from the CLI
+        # arguments alone.
+        self.env_config_path = None
         self.fast_check_tool = "questa"
         self.ecc_schemes_dir = None
 
@@ -54,6 +59,7 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
         print(f"[ERROR] Specified environment config not found: {env_config_path}")
         sys.exit(1)
         
+    env.env_config_path = env_config_path
     env_base = env_config_path.parent
     paths_cfg = env_cfg.get('paths', {})
     
@@ -79,7 +85,11 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
 
     # 3. Merge dependency registries from both environment files.
     # If a dependency exists in both, the appended environment takes precedence.
-    env.registry_dependencies = env_cfg.get('dependencies', {})
+    # A registry entry written with no properties at all - a name followed by nothing, or by
+    # comments only - parses as None, and every consumer that calls .get() on it fails with an
+    # opaque "'NoneType' object has no attribute 'get'" raised from inside a Mako template. Normalise
+    # it to an empty mapping so that such an entry is simply inert.
+    env.registry_dependencies = {k: (v or {}) for k, v in (env_cfg.get('dependencies') or {}).items()}
     if append_env_cfg:
         for dep_name, dep_info in append_env_cfg.get('dependencies', {}).items():
             if dep_name in env.registry_dependencies:

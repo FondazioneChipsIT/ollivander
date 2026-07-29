@@ -34,29 +34,74 @@ paths:
 # Supported configuration properties per dependency:
 # - git/rev/version: Source repository and specific commit/tag/branch.
 # - bender_targets: Specific compilation targets passed to Bender during simulation/synthesis.
-# - pre_build_cmds: Shell commands executed by Python after fetching (supports {bender_work} placeholder).
-# - pre_build_script: Path to a custom .py/.sh script to run after fetching the IP.
-# - patches: On-the-fly text replacements applied to the fetched IP's source code.
+# - patches: On-the-fly text replacements applied to the fetched IP's source code. Each entry is
+#   a {file, search, replace} triple; "\n" in the replacement becomes a newline. Use it for a
+#   substitution, e.g. redirecting a call from one package to another. Note that every target file
+#   is restored to its fetched state before the patches are applied, so that the result does not
+#   depend on what ran before: editing a patch replaces the old text rather than layering over it,
+#   and editing a target file by hand is pointless because the next generation reverts it. To work
+#   on a dependency, use `bender clone` instead.
+# - pre_build_cmds: Shell commands executed after fetching, once the IP is on disk. Use these for
+#   anything a text substitution cannot express - generating RTL, or injecting a source file an
+#   IP expects but does not carry. Substituted in each command:
+#     {bender_work}     the checkout directory of the fetched IPs
+#     {ollivander_dir}  the generator root, for scripts shipped alongside Ollivander
+#     $(PYTHON)         the interpreter of the active virtual environment
+#     $(MAKE), $(BENDER) the corresponding executables
+#   The virtual environment's bin/ is prepended to PATH, so a script with a "python" shebang
+#   picks up the right interpreter. Any other tool must simply be on PATH. For example:
+#     - "$(PYTHON) {ollivander_dir}/scripts/fix_cf_math_pkg.py {bender_work}"
+#     - "vsim -c -do {ollivander_dir}/scripts/gen_mem_models.tcl -quit"
+#   Note that a patched checkout diverges from the revision Bender records in Bender.lock, and
+#   Bender reports it as unclean (W06) and degrades it to a path dependency. Prefer declaring a
+#   revision that already contains what is needed, and treat patching as a last resort.
 # - rdl_include_dirs: Search paths for SystemRDL files, automatically passed to PeakRDL.
+#
+# This registry is GATED BY THE PRAGMAS: an entry reaches the generated Bender.yml only if a
+# component or template actually instantiated declares it, so an unused entry is inert and a
+# revision listed here is a default, not a constraint.
+#
+# Prefer a released 'version' over a 'rev' whenever the IP publishes tags AND other IPs also
+# require that package. A dependency declared here is a requirement that Bender must reconcile
+# with the requirements of every other package: an untagged commit cannot satisfy a semantic
+# version range, so pinning one forces the project to silence the resolver with an override.
+# Reserve 'rev' for leaf packages that only Ollivander requires, and for forks.
 dependencies:
   apb:
     git: "https://github.com/pulp-platform/apb.git"
-    rev: "master"
+    version: "0.2.4"
   apb_adv_timer:
     git: "https://github.com/pulp-platform/apb_adv_timer.git"
-    rev: "master"
+    version: "1.0.4"
   axi:
-    git: "https://github.com/pulp-platform/axi.git"
-    rev: "master"
+    # The collective (multicast) support the NoC topology relies upon lives only in this fork:
+    # axi_mcast_demux, axi_mcast_mux and axi_mcast_xbar have no counterpart upstream. A topology
+    # Ollivander advertises must work out of the box, so the fork is declared here rather than
+    # left to the user. A crossbar project that wants upstream axi can say so in its *_env.yml.
+    git: "https://github.com/colluca/axi.git"
+    rev: "06410c36819924e32db2afa428d244dbdbcd5d4e"
   axi_obi:
     git: "https://github.com/pulp-platform/axi_obi.git"
     version: "0.1.0"
+    patches:
+      # Necessary for every SoC Ollivander generates, not a precaution: components/isles/sram_isle.sv
+      # sets RUserWidth to 0 in both OBI configurations, and the IP computes
+      # IdRuserWidth = ObiCfg.IdWidth + RUserWidth, so the two are always equal. The unguarded
+      # slice [IdRuserWidth-1:ObiCfg.IdWidth] then degenerates: vopt reports "Range of part-select
+      # [1:2] into 'rsp_ruser' [1:0] is reversed" and the design does not load. Verified by removing
+      # the patch, which fails the NoC simulation with 12 elaboration errors.
+      - file: "{bender_work}/axi_obi/src/axi_to_obi.sv"
+        search: "    assign rsp_read_ruser_o [i] = rsp_ruser[         i][IdRuserWidth-1:ObiCfg.IdWidth];"
+        replace: "    if (IdRuserWidth > ObiCfg.IdWidth) assign rsp_read_ruser_o [i] = rsp_ruser[         i][IdRuserWidth-1:ObiCfg.IdWidth];"
+      - file: "{bender_work}/axi_obi/src/axi_to_obi.sv"
+        search: "    assign rsp_write_ruser_o[i] = rsp_ruser[NumBanks+i][IdRuserWidth-1:ObiCfg.IdWidth];"
+        replace: "    if (IdRuserWidth > ObiCfg.IdWidth) assign rsp_write_ruser_o[i] = rsp_ruser[NumBanks+i][IdRuserWidth-1:ObiCfg.IdWidth];"
   can_bus:
     git: "https://github.com/AlSaqr-platform/can_bus.git"
-    rev: "pulp"
+    rev: "0ec0bf8b7dab6d5e4b3f7ec58338a8efee066379"
   cheshire:
     git: "https://github.com/pulp-platform/cheshire.git"
-    rev: "main"
+    rev: "55650af4adf63fa2f445c063983bb91e363b3ff1"
     rdl_include_dirs:
       - "hw"
       - "hw/regs"
@@ -70,18 +115,39 @@ dependencies:
       - "mkdir -p {bender_work}/cheshire/target/sim/models"
       - "touch {bender_work}/cheshire/target/sim/models/s25fs512s.v"
       - "touch {bender_work}/cheshire/target/sim/models/24FC1025.v"
+    patches:
+      # An upstream defect, worth a pull request: ret.slink is assigned only inside
+      # `if (cfg.SerialLink)`, yet ret.apb_mask[ret.slink] is set unconditionally. With the serial
+      # link disabled the index stays 0 and the mask of an unrelated peripheral is raised, which
+      # enables a generate block that then drives reg_out_rsp[0] a second time - vopt-7045, and the
+      # design does not load. Verified by removing this patch: both topologies fail identically. The
+      # guard changes nothing for a configuration that does enable the serial link.
+      - file: "{bender_work}/cheshire/hw/cheshire_pkg.sv"
+        search: "    ret.apb_mask[ret.slink] = 1'b1;"
+        replace: "    if (cfg.SerialLink) begin\\n      ret.apb_mask[ret.slink] = 1'b1;\\n    end"
+  cva6:
+    # Not declared as a dependency: cva6 arrives transitively through cheshire. This entry exists
+    # only to repair it, and the repair is conditional in a way a declarative patch cannot express.
+    # The scalar-cryptography sources must always be compiled, because cva6's own manifest omits
+    # them while ex_stage.sv instantiates the unit; the rename to cva6_aes_* is instead needed only
+    # where another IP declares a competing 'aes', as OpenTitan does. Removing the previous flat
+    # patches showed the two halves failing differently: "Module 'aes' is not defined" on the NoC,
+    # and "Port 'fu_data_i' not found in module 'aes'" on the crossbar, where the instance bound
+    # OpenTitan's module instead. The script reports which IP it collided with when it renames.
+    pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/patch_cva6_aes.py {bender_work}"
   common_cells:
     git: "https://github.com/pulp-platform/common_cells.git"
-    rev: "master"
+    version: "1.40.0"
   datamover:
     git: "https://github.com/pulp-platform/datamover.git"
-    rev: "main"
+    rev: "f14d4db2a72c08b43b3511013e821a4600f6ef56"
   dyn_mem:
     git: "https://github.com/pulp-platform/dyn_spm.git"
-    rev: "main"
+    rev: "78d4b4248b3c7b02a0e61d683f658e5094ac8c44"
   floo_noc:
-    git: "https://github.com/pulp-platform/floonoc.git"
-    rev: "main"
+    git: "https://github.com/pulp-platform/FlooNoC.git"
+    version: "0.8.0"
   hci:
     git: "https://github.com/FondazioneChipsIT/hci.git"
     rev: "3e63936991569d0b1e315d6914478937b37bb338"
@@ -89,9 +155,9 @@ dependencies:
     # rev: "master"
   hyperbus:
     git: "https://github.com/pulp-platform/hyperbus.git"
-    rev: "main"
+    rev: "6cbbff063ee2f36408106cca84d7ec668d7c8577"
   idma:
-    git: "https://github.com/pulp-platform/idma.git"
+    git: "https://github.com/pulp-platform/iDMA.git"
     version: "0.6.5"
     bender_targets:
       - "idma"
@@ -104,58 +170,150 @@ dependencies:
       - "$(MAKE) -C {bender_work}/idma idma_hw_all BENDER=\"$(BENDER)\""
   mailbox_unit:
     git: "https://github.com/pulp-platform/mailbox_unit.git"
-    rev: "master"
+    # A release rather than a commit: opentitan requires this package as ^1.1.0, and an untagged
+    # commit cannot satisfy a semantic version range - it would force the project into an override.
+    version: "1.1.0"
   obi:
     git: "https://github.com/pulp-platform/obi.git"
-    rev: "6a724da5c8d6412b88b6948746e04c1adf39d017"
+    version: "0.1.7"
   opentitan:
     git: "https://github.com/AlSaqr-platform/opentitan.git"
-    rev: "chips-it"
-    # File text replacements executed dynamically
-    patches:
-      - file: "{bender_work}/opentitan/Bender.yml"
-        search: "prim_flop_macros.svh"
-        replace: "prim_flop_macros.sv"
+    rev: "212974d8a61c45de6f61354adc55cc08e100ed58"
   # example_custom_ip:
   #   git: "https://github.com/example/custom_ip.git"
   #   version: "1.0.0"
-  #   pre_build_script: "{ollivander_dir}/scripts/setup.py" # Or relative to project root
+  #   pre_build_cmds:
+  #     - "$(PYTHON) {ollivander_dir}/scripts/setup.py {bender_work}/example_custom_ip"
   pulp-ethernet:
     git: "https://github.com/pulp-platform/pulp-ethernet.git"
-    rev: "handshake"
+    rev: "db9a90dd27fa85ddbe9b7cd22e03bf43b2c14838"
   pulp_cluster:
     git: "https://github.com/FondazioneChipsIT/pulp_cluster.git"
-    rev: "chips-it"
+    rev: "e8c34e7199cb44417215fa51ccf5b6983599e985"
     bender_targets:
       - "cv32e40p_use_ff_regfile"
-    patches:
-      - file: "{bender_work}/pulp_cluster/Bender.yml"
-        search: "dependencies:"
-        replace: "dependencies:\\n  safety_island: { path: ../safety_island }"
   redmule:
     git: "https://github.com/pulp-platform/redmule.git"
-    rev: "main"
+    rev: "dbcba6b1efda24dc909ebdd4ace132f798c8c12b"
   register_interface:
     git: "https://github.com/pulp-platform/register_interface.git"
-    rev: "master"
+    version: "0.4.7"
   safety_island:
     git: "https://github.com/pulp-platform/safety_island.git"
-    rev: "carfield"
+    rev: "d9feaedcec1d2fa09fbb57cd1c910fa9a821a0de"
   snitch_cluster:
     git: "https://github.com/pulp-platform/snitch_cluster.git"
-    rev: "main"
+    rev: "2fa38482c2c822bfbedfdfd87abb3ed45521646e"
     bender_targets:
       - "snitch_cluster"
-      - "scm_use_fpga_scm"
+      - "snitch_cluster_wrapper"
     pre_build_cmds:
       - "$(PYTHON) -m pip install -q json5 jsonref jsonschema"
       - "mkdir -p .tmp_llvm_bin && ln -sfn /opt/riscv/snitch-llvm-15.0.0-snitch-0.2.0/bin/* .tmp_llvm_bin/ && ln -sfn /opt/riscv/snitch-llvm-15.0.0-snitch-0.2.0/bin/clang .tmp_llvm_bin/riscv32-unknown-elf-clang"
       - "PATH=$(pwd)/.tmp_llvm_bin:$PATH $(MAKE) -C {bender_work}/snitch_cluster rtl"
+    patches:
+      # The 'snitch_cluster_wrapper' target that Ollivander enables also pulls in the IP's own
+      # testbench, target/sim/tb/vip_snitch_cluster.sv and testharness.sv, which expect register
+      # headers only its standalone flow generates: compiling them fails with "Macro
+      # `SNITCH_CLUSTER_PERIPHERAL_REG_SCRATCH_1_REG_OFFSET is undefined". Emptying that file list
+      # keeps the wrapper sources and drops the testbench, since the SoC brings its own. Verified by
+      # removing this patch, which fails the NoC simulation build.
+      - file: "{bender_work}/snitch_cluster/Bender.yml"
+        search: "  - target: all(snitch_cluster_wrapper, any(simulation, verilator))\n    include_dirs:\n      - hw/generated\n    files:\n      - target/sim/tb/vip_snitch_cluster.sv\n      - target/sim/tb/testharness.sv"
+        replace: "  - target: all(snitch_cluster_wrapper, any(simulation, verilator))\n    include_dirs:\n      - hw/generated\n    files: []"
   spatz:
     git: "https://github.com/pulp-platform/spatz.git"
-    rev: "main"
+    rev: "a779a93426abe80e6c82418e678cec9b70af56ed"
     bender_targets:
       - "spatz"
   timer_unit:
     git: "https://github.com/pulp-platform/timer_unit.git"
-    rev: "master"
+    version: "1.0.3"
+
+# ==============================================================================
+# FORCED RESOLUTIONS (Bender 'overrides')
+# ==============================================================================
+# Ollivander writes these into each project's Bender.local as Bender's own 'overrides' section.
+# Unlike the registry above they are NOT gated by the pragmas: Bender applies them to the whole
+# dependency graph, transitive dependencies included, and never reports an override it honours.
+# They silence the resolver rather than satisfying it.
+#
+# Every entry here exists because the external IPs contradict *each other*, in ways no choice of
+# versions can repair - this is the part of the catalogue that cannot be derived, only discovered,
+# by stripping the overrides and letting Bender report one conflict at a time. Each is grouped
+# below by the kind of contradiction, with the IPs responsible named, so that a future revision can
+# be re-argued from the evidence rather than inherited on faith.
+#
+# An override on a package that never enters a project's graph is inert, so this list is a superset:
+# some entries only matter once safety_island, spatz, opentitan or pulp_cluster are instantiated,
+# and are simply ignored elsewhere. A project that disagrees with any of them can say so in its own
+# *_env.yml, whose entries take precedence key by key.
+#
+# Values were validated end-to-end: crossbar and NoC both generate, elaborate under QuestaSim and
+# Verilator, build and reach EOT in simulation with no project-level override at all.
+overrides:
+
+  # --- One package name, several sources. Bender resolves per name and cannot choose between
+  # repositories, so these can never be negotiated - only forced.
+  # axi: cheshire, floo_noc, axi_obi and register_interface require it from pulp-platform by semantic
+  # version; snitch_cluster requires this fork at branch 'multicast'. The fork is also what the
+  # NoC topology needs: axi_mcast_demux, axi_mcast_mux and axi_mcast_xbar exist nowhere else.
+  # Verified to work for the AXI-crossbar family too, so one value serves both topologies.
+  axi: { git: "https://github.com/colluca/axi.git", rev: "06410c36819924e32db2afa428d244dbdbcd5d4e" }
+  # fpnew: floo_noc, redmule, snitch_cluster and cva6 require it as cvfpu.git at tag pulp-v0.2.3, while
+  # cv32e40p still requires the pre-rename fpnew.git. A project rename that not everyone followed.
+  fpnew: { git: "https://github.com/pulp-platform/cvfpu.git", rev: "e5aa6a01b5bbe1675c3aa8872e1203413ded83d1" }
+  # idma: three sources: cheshire and spatz require pulp-platform/iDMA by version, opentitan and
+  # pulp_cluster the CHIPS-IT fork by tag, and pulp-ethernet the same pulp-platform repository
+  # through an SSH URL, which Bender treats as distinct. The last one is a pure syntax split.
+  idma: { git: "https://github.com/pulp-platform/iDMA.git", rev: "28a36e5e07705549e59fc33db96ab681bc1ca88e" }
+  # hci: datamover and redmule pin two different commits of pulp-platform/hci, so they conflict with
+  # each other regardless of what Ollivander declares. The CHIPS-IT fork is what our components
+  # are written against.
+  hci: { git: "https://github.com/FondazioneChipsIT/hci.git", rev: "3e63936991569d0b1e315d6914478937b37bb338" }
+
+  # --- A branch requirement, which no released version can ever satisfy.
+  # common_cells: axi requires branch 'multicast-xbar', snitch_cluster branch 'snitch', redmule exactly =1.38.0.
+  # The value must come from the branch lineage rather than master: snitch_cluster uses
+  # cf_math_pkg::iomsb and the axi fork needs stream_join_pkg.sv, neither of which exists on
+  # master. The two lineages diverged on 2025-05-08 and never merged, so 'more recent' is not
+  # the criterion. Verified to work for the crossbar family as well.
+  common_cells: { git: "https://github.com/pulp-platform/common_cells.git", rev: "ca9d577f2fbc45ec557ab4e0905bbfc154441540" }
+  # cv32e40p: pulp_cluster requires branch 'astral-v1.0', redmule branch 'pulpissimo-v4.1.0' and
+  # safety_island a bare commit. Three references, two of them branches.
+  cv32e40p: { git: "https://github.com/pulp-platform/cv32e40p.git", rev: "1a93f340e9dadb9f7c8c471f27a40932c8b1c62e" }
+  # redundancy_cells: safety_island requires branch 'astral-v0' while dyn_mem and pulp_cluster pin two different
+  # commits.
+  redundancy_cells: { git: "https://github.com/pulp-platform/redundancy_cells.git", rev: "6ba6f415a9024decedabaf3f2b45263ff546dabd" }
+
+  # --- A raw commit or an exact pin set against ranges, or against another exact pin.
+  # obi: our declaration and axi_obi agree on ^0.1.7, but redmule pins the untagged commit 6c7ee864.
+  # The value carries the NumTxns parameter that components/isles/sram_isle.sv overrides; an
+  # older revision resolves just as well but breaks elaboration, which fast-check catches.
+  obi: { git: "https://github.com/pulp-platform/obi.git", rev: "6a724da5c8d6412b88b6948746e04c1adf39d017" }
+  # hwpe-stream: datamover pins an untagged commit, hci requires ^1.9.0 and redmule exactly =1.9.0. Ollivander
+  # does not even declare this package: the disagreement is entirely between three other IPs.
+  hwpe-stream: { git: "https://github.com/pulp-platform/hwpe-stream.git", rev: "05cb8303693065812e9d6bfe10976220fb455666" }
+  # hwpe-ctrl: datamover and redmule pin different raw commits. Same cause as hwpe-stream: the HWPE
+  # accelerator family cross-pins commits of its own building blocks instead of releases.
+  hwpe-ctrl: { git: "https://github.com/pulp-platform/hwpe-ctrl.git", rev: "3690a3c648f120546d8de2bc583d5170c36d2f20" }
+  # scm: as hwpe-ctrl: datamover and redmule pin different raw commits.
+  scm: { git: "https://github.com/pulp-platform/scm.git", rev: "472f99affe44ff7b282b519c047a3cfeb35b16c6" }
+  # tech_cells_generic: fifteen packages require it, thirteen with compatible caret ranges, but redmule demands exactly
+  # =0.2.13 and scm exactly =0.2.11. Two exact pins to different versions.
+  tech_cells_generic: { git: "https://github.com/pulp-platform/tech_cells_generic.git", rev: "7968dd6e6180df2c644636bc6d2908a49f2190cf" }
+  # cluster_interconnect: opentitan pins a raw commit while pulp_cluster demands exactly =1.3.0.
+  cluster_interconnect: { git: "https://github.com/pulp-platform/cluster_interconnect.git", rev: "2967d8d17be0a6139229ca8d3d4956e182aec3de" }
+  # pulp_cluster: opentitan pins a different commit of our own CHIPS-IT fork than the registry declares. The one
+  # entry here where half the disagreement is ours to fix upstream.
+  pulp_cluster: { git: "https://github.com/FondazioneChipsIT/pulp_cluster.git", rev: "e8c34e7199cb44417215fa51ccf5b6983599e985" }
+
+  # --- Disjoint semantic-version ranges: the requirements are well formed, and still admit no
+  # common solution.
+  # register_interface: cheshire requires ^0.4.5 and hci ^0.3.1, two ranges with no overlap, while redmule demands
+  # exactly =0.4.5.
+  register_interface: { git: "https://github.com/pulp-platform/register_interface.git", rev: "d6e1d4cdaab7870f4faf3f88a1c788eaf5ac129d" }
+  # axi_riscv_atomics: cheshire and safety_island require the 0.8.x series, dyn_mem and spatz the 0.7.x one.
+  axi_riscv_atomics: { git: "https://github.com/pulp-platform/axi_riscv_atomics.git", rev: "97a1dd2ac643c276880420a0cf8eea697f228aa9" }
+  # riscv-dbg: cheshire and safety_island require ^0.8.1, spatz ^0.7.0.
+  riscv-dbg: { git: "https://github.com/pulp-platform/riscv-dbg.git", rev: "358f90110220adf7a083f8b65d157e836d706236" }

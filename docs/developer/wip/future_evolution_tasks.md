@@ -72,46 +72,48 @@ did find was hidden by the message-suppression list, which has since been narrow
 `src/templates/Makefile.vsim.mako` — `2732` is now downgraded to a warning instead of suppressed,
 `3999` and `8602` are gone, and the `vopt` of `fast-check` no longer suppresses `2912` and `2241`.
 
-The three items below are what remains. None is a mechanical fix: each changes either design behaviour
-or dependency policy, and each should be decided on shortly.
+The three items below are what remains. None is a mechanical fix: each changes design behaviour, or
+asks what to do about a defect in an IP we do not own.
 
-### 3.1 Dependency Pinning and Revision Alignment
+### 3.1 Parameter Overrides Discarded by Third-Party IPs
 
-Downgrading message `2732` made visible that **every error the two simulations produce is a silently
-discarded parameter override**, and nothing else:
+The pinning question this section used to pose has been settled: `ollivander_config.yml` now carries a
+single catalogue - released versions where the IP publishes them and explicit commits otherwise, plus
+the forced resolutions the set induces - and the example projects declare nothing but their own paths.
+The two reference examples run the same Cheshire, so a fix proven on one is proven on both.
 
-*   `crossbar` — 2 occurrences. `pulp_cluster/rtl/idma_wrap.sv(510)` overrides `.Burst_len` on
-    `idma_backend_r_obi_rw_init_w_axi`, a parameter that does not exist anywhere in the pinned
-    `idma 0.6.5`. The cluster's DMA backend therefore ignores `IDMA_BURST_LENGTH` and legalizes bursts
-    on its own.
-*   `noc` — 10 occurrences, all in `datamover`: eight overrides of `ELEMENT_WIDTH` and two of
-    `ELEMENTS_PER_BANK` across `datamover_top`, `datamover_streamer` and `datamover_engine`. The IP is
-    instantiated by our own `components/tiles/snitch_hwpe_subsystem.sv`, so the resulting geometry is
-    not the one the wrapper asks for.
+What remains open is the defect that made the question visible in the first place. Downgrading message
+`2732` showed that every error either simulation produces is a **silently discarded parameter
+override**, and all of them belong to third-party IPs:
 
-Both are the same failure mode: an IP compiled against a sibling IP it no longer matches. The registry
-makes it possible — 16 entries in `ollivander_config.yml` are pinned to a *branch name* (`main`,
-`master`, `chips-it`) rather than a commit, so regenerating `Bender.lock` can desynchronise them with no
-diagnostic at all. A related symptom: `crux_env.yml` pins Cheshire at `55650af4` while `mesh_env.yml`
-pins `d9fb6686`, which is why only `noc` reports the `clint` interrupt-width mismatch. That mismatch is
-itself harmless — `clint` hardcodes two hart lines and Cheshire connects as many as it has — but it
-shows the two reference examples are not running the same host.
+*   `crossbar` — `pulp_cluster/rtl/idma_wrap.sv(510)` overrides `.Burst_len` on
+    `idma_backend_r_obi_rw_init_w_axi`, a parameter that the pinned iDMA does not declare anywhere. The
+    cluster's DMA backend therefore ignores `IDMA_BURST_LENGTH` and legalizes bursts on its own.
+*   `noc` — ten occurrences in `datamover`: overrides of `ELEMENT_WIDTH` and `ELEMENTS_PER_BANK` across
+    `datamover_top`, `datamover_streamer` and `datamover_engine`. That IP is instantiated by our own
+    `components/tiles/snitch_hwpe_subsystem.sv`, so the resulting geometry is not the one the wrapper
+    asks for.
 
-*Decision to take*: whether to pin every registry entry to a commit, and whether the examples should
-share one Cheshire revision.
+Neither is reachable by choosing different revisions: the overriding IP and the overridden one are
+pinned by requirements we cannot reconcile without breaking something else. Hello world does not
+exercise either path, so both are latent until a test offloads work to a cluster or drives the HWPE
+accelerator - which is exactly what the cluster-offload tests will do.
+
+*Decision to take*: whether to carry the fix upstream, to adapt the wrappers so that the intended
+geometry is expressed in a way the pinned IPs accept, or to accept the defaults and record the loss.
 
 #### Advantages
-*   **Reproducibility**: a lock regenerated months apart resolves to the same sources.
-*   **A fix validated once is validated everywhere**: today a correction proven on `crossbar` says
-    nothing about `noc`, because the host differs.
-*   **The dropped overrides disappear** as a class, rather than being triaged one at a time.
+*   **The warnings stop being noise**: twelve `2732` messages per regression currently have to be
+    recognised and dismissed by hand every time the logs are read.
+*   **The accelerator paths become trustworthy**: a DMA that silently legalizes its own bursts, or a
+    streamer with a different element width, will not behave as the wrapper documents.
 
 #### Difficulties & Mitigation Strategies
-*   **Branch pinning is convenient during active development**: `chips-it` branches are ours and move
-    on purpose, and pinning them freezes work in progress.
-    *   *Mitigation*: pin commits for the upstream dependencies, where we only consume releases, and
-        keep branch pinning only for the repositories the team actively develops — recording in the
-        registry which of the two a given entry is, so the choice is visible rather than incidental.
+*   **The defect is upstream, in IPs we do not own.** A pull request is the clean route but not a fast
+    one, and two of the three repositories involved are forks maintained elsewhere.
+    *   *Mitigation*: the parameters are visible in the generated `Bender.lock` and in the logs, so the
+        loss can be documented per IP and re-checked at every revision bump. Where the geometry matters
+        to a test, assert it in the testbench rather than trusting the override to have been honoured.
 
 ### 3.2 CAN Timestamp, and the Tie-Offs Inherited from astral
 

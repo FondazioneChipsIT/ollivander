@@ -9,7 +9,7 @@ The environment configuration tells Ollivander:
 
 ---
 
-## 1. File Precedence and Overrides
+## 1. File Precedence
 
 Ollivander uses a base configuration file, usually named `ollivander_config.yml`, located in the generator's root directory. **You should never modify this file directly.**
 
@@ -101,15 +101,22 @@ Sometimes an IP needs to generate some files, download models, or install python
 
 | Field             | Type            | Description                                                             |
 | :---------------- | :-------------- | :---------------------------------------------------------------------- |
-| `pre_build_cmds`  | List of Strings | Inline shell commands to execute. You can use `{bender_work}`           |
-|                   |                 | (downloaded IP directory) and `{ollivander_dir}` (Ollivander root       |
-|                   |                 | directory) as placeholders. Macros like `$(PYTHON)` are supported.      |
-| `pre_build_script`| String          | Path to an external script (`.sh`, `.py`, `.tcl`) to execute.           |
-|                   |                 | Supports {bender_work}` and `{ollivander_dir}` placeholders.            |
-|                   |                 | Ollivander automatically detects the extension and runs it with the     |
-|                   |                 | correct interpreter.                                                    |
+| `pre_build_cmds`  | List of Strings | Shell commands executed once the IP is on disk, in the order given.     |
 
-**Example of complex pre-build execution:**
+The following substitutions are applied to each command:
+
+| Placeholder        | Meaning                                                                |
+| :----------------- | :--------------------------------------------------------------------- |
+| `{bender_work}`    | The directory the IPs were fetched into.                               |
+| `{ollivander_dir}` | The generator root, for scripts shipped alongside Ollivander.          |
+| `$(PYTHON)`        | The interpreter of the active virtual environment.                     |
+| `$(MAKE)`          | `make`.                                                                |
+| `$(BENDER)`        | `bender`.                                                              |
+
+The virtual environment's `bin/` is prepended to `PATH`, so a script whose shebang says `python`
+picks up the right interpreter. Any other tool must simply be reachable on `PATH`; there is no
+macro for it. An external script of any language is therefore invoked as an ordinary command:
+
 ```yaml
 dependencies:
   idma:
@@ -120,12 +127,19 @@ dependencies:
     pre_build_cmds:
       - "$(PYTHON) -m pip install -q flatdict mako"
       - "$(MAKE) -C {bender_work}/idma idma_hw_all BENDER=\"$(BENDER)\""
-  
+
   my_custom_ip:
     git: "https://github.com/my-org/custom_ip.git"
-    rev: "main"
-    pre_build_script: "{bender_work}/my_custom_ip/scripts/setup.py"
+    rev: "9a1c4f8e2b7d05c3a6e8f014b29d7c3518aa6b42"
+    pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/setup_custom_ip.py {bender_work}/my_custom_ip"
+      - "vsim -c -do {ollivander_dir}/scripts/gen_mem_models.tcl -quit"
 ```
+
+Unlike `patches`, these commands are **not** undone between runs, so a command that modifies the
+checkout must be idempotent - or must restore what it touches before editing it, the way
+`scripts/patch_cva6_aes.py` does. Use `pre_build_cmds` when the repair needs logic a text
+substitution cannot express: generating RTL, or deciding *whether* to modify something.
 
 ### 3.4 On-the-fly Code Patching (`patches`)
 If an external IP contains a bug, a missing import, or requires a small tweak to compile within your specific environment, you can instruct Ollivander to patch the source code automatically using simple text replacement.
@@ -136,8 +150,22 @@ If an external IP contains a bug, a missing import, or requires a small tweak to
 
 **Patch Object:**
 * `file`: The path to the file to modify (supports `{bender_work}` placeholder).
-* `search`: The exact string to look for.
-* `replace`: The string to insert in its place.
+* `search`: The exact string to look for. Every occurrence is replaced, not just the first.
+* `replace`: The string to insert in its place. A literal `\n` becomes a newline.
+
+Three properties of the mechanism are worth knowing, because they decide how you use it:
+
+* **Every target file is restored to its fetched state before the patches are applied.** The result
+  therefore does not depend on how many times the generator has run, nor on what a previous
+  configuration did. Editing a fetched file by hand is pointless, since the next generation reverts
+  it: to work on a dependency, use `bender clone`.
+* **Removing a patch undoes it.** Ollivander records, inside each checkout, the files it has ever
+  patched, so deleting a patch - or the whole entry that carried it - restores the original on the
+  next run rather than leaving the last edit in place.
+* **A patch that no longer matches is reported.** Since the file was just restored, a `search`
+  string that does not occur can only mean the IP has changed and the patch has become a no-op, so
+  Ollivander prints a warning naming it. Take it seriously: a silent no-op patch is how a repair
+  survives long after the defect it addressed has been fixed upstream.
 
 **Example of patching a file:**
 ```yaml
@@ -153,11 +181,57 @@ dependencies:
 
 ---
 
-## 4. Fast-Check Simulator Configuration (`fast_check_tool`)
+## 4. Forced Resolutions (`overrides`)
+
+`dependencies` declares *requirements*, which Bender must reconcile with the requirements every
+other package brings. `overrides` declares *forcings*, which bypass that reconciliation: Bender
+applies them to the whole dependency graph, transitive dependencies included, and never reports an
+override it honours. They silence the resolver rather than satisfying it, so the list should stay as
+short as the IP set allows.
+
+```yaml
+overrides:
+  axi: { git: "https://github.com/colluca/axi.git", rev: "06410c36819924e32db2afa428d244dbdbcd5d4e" }
+```
+
+Two consequences of that difference matter in practice. An override on a package that never enters
+your graph is **inert**, which is why the catalogue shipped with Ollivander can list entries that
+only some topologies need. And an override must carry a `git` plus a `rev`: a `version` is still a
+constraint, so it participates in resolution instead of replacing it, and forces nothing.
+
+### 4.1 When you need one
+
+Bender refuses to resolve when the requirements it collects admit no common solution, and stops with
+a report naming every package involved. That happens more often than one would like in this
+ecosystem: one package required from two different repositories, a requirement expressed as a branch
+name, an untagged commit set against a semantic version range, or two exact pins to different
+versions. None of these can be repaired by choosing better revisions - only by forcing one.
+
+The report is also the recipe. It names the revision each requirement asks for, including the one
+your own SoC asks for:
+
+```
+Error: Dependency requirements conflict with each other on dependency axi.
+
+- package mesh_soc   requires  06410c36819924e32db2afa428d244dbdbcd5d4e  at colluca/axi.git
+- package cheshire   requires  ^0.39.8 (0.39.8 <= x < 0.40.0)            at pulp-platform/axi.git
+```
+
+Copy the source and revision you intend to win into the `overrides` block of your own environment
+file. Entries there take precedence over the ones shipped with Ollivander, key by key, so you can
+also disagree with a forced resolution from the catalogue without touching it.
+
+Record *why*, next to each entry. A forcing whose reason is lost is indistinguishable from a
+superstition, and the only way to re-derive it is to remove every override and let Bender report the
+conflicts again, one run at a time.
+
+---
+
+## 5. Fast-Check Simulator Configuration (`fast_check_tool`)
 
 Ollivander supports multiple verification backends for structural fast-check compilation validation. You can declare the simulator of choice directly in your environment configuration YAML file.
 
-### 4.1 Configuration YAML Field
+### 5.1 Configuration YAML Field
 You can add `fast_check_tool` at the root level of your environment YAML file:
 
 ```yaml
@@ -165,7 +239,7 @@ You can add `fast_check_tool` at the root level of your environment YAML file:
 fast_check_tool: "verilator"  # Options: "questa" (default) or "verilator"
 ```
 
-### 4.2 Configuration Precedence & Command-Line Override
+### 5.2 Configuration Precedence & Command-Line Override
 1. **YAML Files**: Ollivander evaluates the base `ollivander_config.yml` first, and overrides it with your custom appended environment file (passed via `-a`). The resulting simulator is used when you run `make generate` to write the compilation script targets inside the output `Makefile.vsim`.
 2. **Command Line**: You can override the tool selection at run-time without re-generating the codebase by passing `FAST_CHECK_TOOL` directly to the `make` command:
    ```bash

@@ -156,11 +156,12 @@ dependencies:
 > [!IMPORTANT]
 > Defining `bender_targets` in your custom file will completely replace the targets defined in the base `ollivander_config.yml`. To append targets, you must list both the defaults and your new additions.
 
-#### 4.2.3 Pre-Build Scripting & Commands (`pre_build_cmds` / `pre_build_script`)
+#### 4.2.3 Pre-Build Commands (`pre_build_cmds`)
 Some hardware components require pre-generation steps (e.g., generating register files or compiling intermediate tooling). Ollivander executes these immediately after downloading the dependency.
 - Use `{bender_work}` to reference the dependency's local checkout directory.
 - Use `{ollivander_dir}` to reference the generator's root directory.
-- Use macros like `$(PYTHON)` and `$(MAKE)` to invoke the correct environments.
+- Use macros like `$(PYTHON)`, `$(MAKE)` and `$(BENDER)` to invoke the correct environments.
+- Any other tool must be reachable on `PATH`; an external script is invoked as an ordinary command.
 
 ```yaml
 dependencies:
@@ -175,13 +176,20 @@ dependencies:
 
   custom_crypto:
     git: "https://github.com/my-org/custom_crypto.git"
-    rev: "main"
-    # Execute a dedicated setup python script
-    pre_build_script: "{bender_work}/scripts/setup.py"
+    rev: "7c2f9a1e4b83d05f6a0c9e21b478d3f5a61c8e04"
+    # Execute a dedicated setup script, shipped alongside the generator
+    pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/setup_custom_crypto.py {bender_work}/custom_crypto"
 ```
 
+> [!NOTE]
+> Unlike `patches` below, these commands are not undone between runs. A command that modifies the
+> checkout must therefore be idempotent, or restore what it touches before editing it. Use
+> `pre_build_cmds` when the repair needs logic a text substitution cannot express - generating RTL,
+> or deciding *whether* to modify something at all.
+
 #### 4.2.4 On-the-fly Code Patching (`patches`)
-If an external IP contains a compilation error, a broken path, or requires a custom modification, you can specify text-replacement patches.
+If an external IP contains a compilation error, a broken path, or requires a custom modification, you can specify text-replacement patches. Every occurrence of `search` is replaced, and a literal `\n` in `replace` becomes a newline.
 ```yaml
 dependencies:
   opentitan:
@@ -193,6 +201,17 @@ dependencies:
         search: "prim_flop_macros.svh"
         replace: "prim_flop_macros.sv"
 ```
+
+> [!IMPORTANT]
+> Each target file is restored to its fetched state before the patches are applied, so the result
+> never depends on how many times you have generated. Three consequences: editing a fetched file by
+> hand is pointless, since the next run reverts it - use `bender clone` to work on a dependency;
+> deleting a patch undoes it, because Ollivander records which files it has patched; and a `search`
+> string that no longer occurs is reported as a stale patch, since on a freshly restored file it can
+> only mean the IP has changed.
+
+See section 4 of [the environment configuration guide](env_configuration_guide.md) for the companion
+mechanism, `overrides`, which forces a revision when Bender cannot reconcile the requirements at all.
 
 #### 4.2.5 Custom Register Inclusion (`rdl_include_dirs`)
 To let PeakRDL know where to search for SystemRDL register specifications inside the dependency repository:

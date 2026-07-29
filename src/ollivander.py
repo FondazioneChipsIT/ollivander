@@ -335,7 +335,14 @@ def main():
     # =========================================================================
     # If the environment configurations specify dependency overrides, append them
     # to the generated Bender manifest to resolve version/path conflicts automatically.
-    env_yaml_paths = [args.env_config, args.append_env]
+    # The base environment is read first and the project one second, so that a project keeps the
+    # last word key by key. The base config is included deliberately: a few forced resolutions
+    # are Ollivander's own responsibility rather than the user's - a topology the generator
+    # advertises must work out of the box, and Bender cannot reach some of those resolutions on
+    # its own (a fork under a different URL, or an untagged commit, cannot satisfy a semantic
+    # version requirement coming from another IP). Note that env_config_path is the resolved
+    # default, which args.env_config does not carry when -e is not passed.
+    env_yaml_paths = [env.env_config_path, args.append_env]
     overrides = {}
     for p in env_yaml_paths:
         if p and Path(p).is_file():
@@ -348,8 +355,8 @@ def main():
                 pass
 
     # Write overrides to Bender.local to cleanly resolve conflicts without mangling Bender.yml
+    bender_local_path = env.bender_dir / "Bender.local"
     if overrides:
-        bender_local_path = env.bender_dir / "Bender.local"
         try:
             with open(bender_local_path, 'w', encoding='utf-8') as bf:
                 bf.write(get_generation_comment("#", base_dir))
@@ -357,6 +364,17 @@ def main():
                 yaml.dump({"overrides": overrides}, bf, default_flow_style=False, sort_keys=False)
         except Exception as e:
             print(f"[WARNING] Failed to write Bender.local: {e}")
+    elif bender_local_path.is_file():
+        # No overrides are declared any more, so a Bender.local left over from a previous run
+        # must go: Bender applies its 'overrides' section to the whole dependency graph,
+        # transitive dependencies included, so a stale file would keep forcing revisions that
+        # nothing in the configuration asks for - silently, since Bender does not report an
+        # override it honours.
+        try:
+            bender_local_path.unlink()
+            print("  [INFO] No dependency overrides declared: removed the stale Bender.local.")
+        except OSError as e:
+            print(f"[WARNING] Failed to remove the stale Bender.local: {e}")
 
     # =========================================================================
     # 10. PHASE 4: FETCH EXTERNAL IPs & PRE-BUILD
@@ -366,8 +384,42 @@ def main():
     bender_exe = shutil.which("bender") or (str(base_dir / "bender") if (base_dir / "bender").is_file() else "bender")
     lock_file = env.bender_dir / "Bender.lock"
     from core.utils import Spinner
+    # 'bender checkout' materializes the existing lock and is therefore much faster, but it also
+    # ignores declarations that changed after the lock was written: the new revisions would
+    # silently not take effect, which is why editing a dependency used to require TEST_CLEAN=1.
+    # Compare instead what the manifests pin against what the lock resolved, and re-resolve on
+    # any mismatch. Timestamps are useless here: Bender.yml is regenerated on every run, so its
+    # mtime is always newer than the lock's.
+    def bender_lock_is_stale(lock_path):
+        try:
+            locked = (yaml.safe_load(lock_path.read_text(encoding="utf-8")) or {}).get("packages", {}) or {}
+        except Exception:
+            return True  # An unreadable lock is not worth trusting.
+        declared = {}
+        try:
+            declared.update((yaml.safe_load(env.bender_manifest_path.read_text(encoding="utf-8")) or {}).get("dependencies", {}) or {})
+        except Exception:
+            pass
+        declared.update(overrides)  # An override wins over the manifest, exactly as in Bender.
+        for name, spec in declared.items():
+            if not isinstance(spec, dict):
+                continue
+            entry = locked.get(name)
+            if entry is None:
+                return True
+            if spec.get("git") and entry.get("source", {}).get("Git") != spec["git"]:
+                return True
+            rev = str(spec.get("rev", ""))
+            # Only an explicit commit can be compared: a branch or tag name is a moving target
+            # by definition, and the lock legitimately freezes it to whatever it pointed at.
+            # Semantic-version constraints resolve to a revision that cannot be predicted here.
+            if re.fullmatch(r"[0-9a-f]{40}", rev) and entry.get("revision") != rev:
+                return True
+        return False
+
+    lock_is_stale = lock_file.is_file() and bender_lock_is_stale(lock_file)
     try:
-        if lock_file.is_file():
+        if lock_file.is_file() and not lock_is_stale:
             try:
                 # Attempt to use the existing locked dependency versions first
                 with Spinner("  -> Running 'bender checkout' to verify local cache..."):
@@ -378,6 +430,8 @@ def main():
                 with Spinner("  -> Running 'bender update' (this may take a minute)..."):
                     subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True, capture_output=True)
         else:
+            if lock_is_stale:
+                print("  [INFO] Bender.lock disagrees with the declared revisions: re-resolving dependencies.")
             with Spinner("  -> Running 'bender update' (this may take a minute)..."):
                 subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True, capture_output=True)
         print("  [SUCCESS] External IPs successfully fetched and resolved.")

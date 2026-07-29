@@ -27,31 +27,77 @@ def run_pre_build_steps(env):
     registry = env.registry_dependencies
     bender_work = env.bender_dir / "bender_work"
     
-    has_steps = any("patches" in d or "pre_build_cmds" in d for d in registry.values())
+    ledgers = sorted(bender_work.glob("*/.ollivander_patched")) if bender_work.is_dir() else []
+    has_steps = ledgers or any(
+        "patches" in d or "pre_build_cmds" in d for d in registry.values() if d)
     if not has_steps:
         return
-        
+
     print("=" * 70)
     print("[*] Phase 4 (cont'd): Preparing External IPs...\n")
-    
+
+    # Restoration is driven by the ledgers found on disk, not by the registry, and happens before
+    # anything else. Those are two deliberate choices, each learned from getting it wrong: a
+    # dependency whose entry was deleted outright would never be visited if the registry drove the
+    # loop, and its last patches would stay applied forever; and restoring inside the per-dependency
+    # loop left files patched whenever the entry no longer declared any patch. The ledger is the
+    # authority on what Ollivander has modified, so it is what decides what to undo.
+    for ledger in ledgers:
+        for line in ledger.read_text(encoding="utf-8").split("\n"):
+            f = Path(line.strip())
+            if not line.strip() or not f.parent.is_dir():
+                continue
+            r = subprocess.run(["git", "-C", str(f.parent), "checkout", "--", f.name],
+                               capture_output=True, text=True)
+            if r.returncode != 0 and f.is_file():
+                # Failing silently here would resume applying patches on top of themselves, the
+                # defect this restore exists to remove, so stop rather than continue blindly.
+                print(f"\n[ERROR] Could not restore '{f}' to its fetched state.\n{r.stderr.strip()}")
+                sys.exit(1)
+
     for dep_name, dep_info in registry.items():
         dep_dir = bender_work / dep_name
-        if not dep_dir.is_dir():
+        if not dep_dir.is_dir() or not dep_info:
             continue
-            
+
         if "patches" in dep_info:
-            for patch in dep_info["patches"]:
-                file_path_str = patch.get("file", "").replace("{bender_work}", str(bender_work))
-                file_path = Path(file_path_str)
+            # Everything is applied to freshly restored files, so patching is idempotent by
+            # construction: a file always goes from pristine to patched, whatever ran before.
+            # Applying blindly would re-apply any patch whose replacement contains its own search
+            # string - that had silently accumulated 54 copies of one line in cva6 and 27 in
+            # pulp_cluster, which is also what kept those checkouts dirty and made Bender degrade
+            # them to path dependencies. It also means editing a patch replaces the old text instead
+            # of layering over it, and a hand-edited file is reabsorbed on the next run: to work on
+            # a dependency, use `bender clone` rather than touching the checkout.
+            #
+            # The ledger records, append-only, every file this dependency has ever had patched, so
+            # that the restore pass above can undo a patch that has since been removed from the
+            # configuration - or removed together with its whole entry.
+            ledger = dep_dir / ".ollivander_patched"
+            ever = {l for l in ledger.read_text(encoding="utf-8").split("\n") if l.strip()} \
+                if ledger.is_file() else set()
+            ever |= {patch.get("file", "").replace("{bender_work}", str(bender_work))
+                     for patch in dep_info["patches"]}
+            ledger.write_text("\n".join(sorted(ever)) + "\n", encoding="utf-8")
+
+            for patch in dep_info.get("patches", []):
+                file_path = Path(patch.get("file", "").replace("{bender_work}", str(bender_work)))
                 search_str = patch.get("search", "")
                 replace_str = patch.get("replace", "").replace("\\n", "\n")
-                
+
                 if file_path.is_file():
                     content = file_path.read_text(encoding='utf-8')
                     if search_str in content:
                         print(f"  -> Patching {file_path.name} in {dep_name}")
                         content = content.replace(search_str, replace_str)
                         file_path.write_text(content, encoding='utf-8')
+                    else:
+                        # The file was just restored, so a search string that does not match cannot
+                        # mean "already applied": it means the IP no longer contains what the patch
+                        # was written against, and the patch has quietly become a no-op. Saying so
+                        # is only possible thanks to the restore; before it, absence was ambiguous.
+                        print(f"  [WARNING] Stale patch for {dep_name}: '{search_str[:60]}' no longer"
+                              f" occurs in {file_path.name}. It has no effect and should be revised.")
                         
         if "pre_build_cmds" in dep_info:
             print(f"  -> Executing pre-build commands for {dep_name}...")
