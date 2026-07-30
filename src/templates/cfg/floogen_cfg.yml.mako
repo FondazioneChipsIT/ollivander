@@ -128,8 +128,11 @@ name: "${config.project.top_level_module_name}"
 description: "${config.project.description}"
 network_type: "narrow-wide"
 
+## The routing algorithm comes from the SoC description, like everything else the user declares:
+## the NoC placement checker validates placements against the same field, and the two must never
+## be allowed to disagree.
 routing:
-  route_algo: "XY"
+  route_algo: "${config.topology.noc_settings.routing_algorithm}"
   use_id_table: true
   collective:
     en_narrow_multicast: true
@@ -157,46 +160,69 @@ routing:
               tot_slvs += len(slvs) if isinstance(slvs, list) else 1
       extra_bits = math.ceil(math.log2(max(tot_slvs, 1))) if tot_slvs > 1 else 0
       g_id_w = max(host_mst_id + extra_bits + 1, 6)
+
+  ## Width of the AXI user field carried by BOTH NoC networks: the span of the SoC user
+  ## mapping that has defined semantics, i.e. up to the highest of the AMO reservation bits
+  ## and the ECC error flag. Derived rather than hardcoded so the networks keep carrying
+  ## every meaningful bit if the mapping ever moves. Atomics are resolved inside the isles
+  ## (every generated join sets EnAtopAdapter=0), so the AMO bits must survive whichever
+  ## network a request happens to ride - including the wide one, which previously carried
+  ## a single user bit and silently stripped them.
+  um = config.system_settings.user_mapping if config.system_settings else None
+  g_user_w = (max(um.amo_msb, um.ecc_err_bit) + 1) if um else 1
+
+  ## Physical dimensions of the two networks, from the SoC description. The generated SoC
+  ## package derives its narrow/wide channel types from the same fields (noc_soc_pkg.sv.mako),
+  ## so reading them here is what keeps the FlooNoC network and the SoC-side types a single
+  ## source of truth: a hardcoded copy would drift silently the day a project changes them.
+  ## The multicast mask is an address mask, so its width IS the address width.
+  wide_net = config.topology.noc_settings.networks.get('wide') if config.topology.noc_settings and config.topology.noc_settings.networks else None
+  n_data_w = narrow_net.data_width if narrow_net else 64
+  n_addr_w = narrow_net.addr_width if narrow_net else 48
+  w_data_w = wide_net.data_width if wide_net else 512
+  w_addr_w = wide_net.addr_width if wide_net else 48
 %>
 protocols:
   - name: "narrow_in"
     type: "narrow"
     protocol: "AXI4"
-    data_width: 64
-    addr_width: 48
+    data_width: ${n_data_w}
+    addr_width: ${n_addr_w}
     id_width: ${g_id_w}
     user_width:
-      collective_mask: 48
-      collective_op: 4
-      user: 5
+      collective_mask: ${n_addr_w}
+      collective_op: 4 # width of FlooNoC collect_op_e, fixed by the IP
+      user: ${g_user_w}
   - name: "narrow_out"
     type: "narrow"
     protocol: "AXI4"
-    data_width: 64
-    addr_width: 48
+    data_width: ${n_data_w}
+    addr_width: ${n_addr_w}
     id_width: 2
     user_width:
-      collective_mask: 48
+      collective_mask: ${n_addr_w}
       collective_op: 4
-      user: 5
+      user: ${g_user_w}
   - name: "wide_in"
     type: "wide"
     protocol: "AXI4"
-    data_width: 512
-    addr_width: 48
+    data_width: ${w_data_w}
+    addr_width: ${w_addr_w}
     id_width: 3
     user_width:
-      collective_mask: 48
+      collective_mask: ${w_addr_w}
       collective_op: 4
+      user: ${g_user_w}
   - name: "wide_out"
     type: "wide"
     protocol: "AXI4"
-    data_width: 512
-    addr_width: 48
+    data_width: ${w_data_w}
+    addr_width: ${w_addr_w}
     id_width: 1
     user_width:
-      collective_mask: 48
+      collective_mask: ${w_addr_w}
       collective_op: 4
+      user: ${g_user_w}
 
 endpoints:
 % for ep in endpoints:
