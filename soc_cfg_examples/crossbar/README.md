@@ -21,4 +21,4 @@ To define the chip I/O ring and pinmux configurations, Ollivander supports three
 
 ## 3. Environment & Reproducibility
 * The environment configuration file [crux_env.yml](crux_env.yml) defines the local paths and settings for building Crux.
-* It contains a comprehensive list of version `overrides` that lock external dependencies to specific, verified Git revisions. This guarantees a 100% reproducible build without requiring manual conflict resolution.
+* It declares nothing beyond the project's own paths: the external IP revisions and the forced resolutions that make the build reproducible are the dependency catalogue shipped in `ollivander_config.yml`, shared by every example.

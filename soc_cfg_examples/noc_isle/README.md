@@ -18,4 +18,4 @@ This directory contains the configuration files for **Mesh Isle**, a modular var
 
 ## 3. Environment & Reproducibility
 * The environment configuration file [mesh_isle_env.yml](mesh_isle_env.yml) defines the local settings for compiling and checking Mesh Isle.
-* It includes a comprehensive list of version `overrides` that lock external dependencies to specific, verified Git revisions. This ensures a 100% reproducible build without requiring manual conflict resolution.
+* It declares nothing beyond the project's own paths: the external IP revisions and the forced resolutions that make the build reproducible are the dependency catalogue shipped in `ollivander_config.yml`, shared by every example.

@@ -18,4 +18,4 @@ This directory contains the configuration files for **Mesh**, a sample SoC confi
 
 ## 3. Environment & Reproducibility
 * The environment configuration file [mesh_env.yml](mesh_env.yml) defines the local paths and settings for building the Mesh SoC.
-* It includes a comprehensive list of version `overrides` that lock external dependencies to specific, verified Git revisions. This ensures the project is completely reproducible on clean checkouts without requiring manual conflict resolution.
+* It declares nothing beyond the project's own paths: the external IP revisions and the forced resolutions that make the build reproducible are the dependency catalogue shipped in `ollivander_config.yml`, shared by every example.
