@@ -137,9 +137,13 @@ dependencies:
 ```
 
 Unlike `patches`, these commands are **not** undone between runs, so a command that modifies the
-checkout must be idempotent - or must restore what it touches before editing it, the way
-`scripts/patch_cva6_aes.py` does. Use `pre_build_cmds` when the repair needs logic a text
-substitution cannot express: generating RTL, or deciding *whether* to modify something.
+checkout must take care of its own idempotency. Two strategies are in use: restore what you are
+about to touch before editing it, the way `scripts/patch_cva6_aes.py` does with a fixed target
+list; or record every edited file in the checkout's `.ollivander_patched` ledger, the way
+`scripts/patch_spatz_snitch.py` does when the target set is discovered at run time - the generator
+restores every ledger entry to its fetched state before each run, which also means deleting the
+command undoes its edits on the next generation. Use `pre_build_cmds` when the repair needs logic
+a text substitution cannot express: generating RTL, or deciding *whether* to modify something.
 
 ### 3.4 On-the-fly Code Patching (`patches`)
 If an external IP contains a bug, a missing import, or requires a small tweak to compile within your specific environment, you can instruct Ollivander to patch the source code automatically using simple text replacement.
@@ -223,8 +227,11 @@ own, since from Bender's point of view that is what they are.
 Bender refuses to resolve when the requirements it collects admit no common solution, and stops with
 a report naming every package involved. That happens more often than one would like in this
 ecosystem: one package required from two different repositories, a requirement expressed as a branch
-name, an untagged commit set against a semantic version range, or two exact pins to different
-versions. None of these can be repaired by choosing better revisions - only by forcing one.
+name, an untagged commit set against a semantic version range, two exact pins to different versions,
+or a package that one IP vendors as a `path:` dependency inside its own tree while the rest of the
+graph requires it from git - Bender demands that a package be a path dependency everywhere or
+nowhere, and refuses the mixed graph outright. None of these can be repaired by choosing better
+revisions - only by forcing one.
 
 The report is also the recipe. It names the revision each requirement asks for, including the one
 your own SoC asks for:

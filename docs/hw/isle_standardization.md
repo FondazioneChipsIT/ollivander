@@ -399,6 +399,19 @@ For standard `.sv` files, declare dependencies using special comments anywhere i
     // OLLIVANDER: require="tc_clk_gating.sv"
     ```
 
+*   **Compilation Macros**: Use `// DEFINE: name="<macro>"` when the IPs this Isle pulls in do not
+    compile without a `+define+`. It is the compile-time counterpart of the `BENDER` pragma: every
+    project that instantiates the Isle inherits the define, without having to know why it is
+    needed, and a project exported as a macro re-exports it to its own consumers, so the define
+    travels across nesting levels together with the RTL that needs it.
+    ```systemverilog
+    // DEFINE: name="FEATURE_ICACHE_STAT"
+    ```
+    Defines are merged **by macro name**, and a `defines` entry in the project's own SoC
+    description wins over the pragma, so a project can replace a valued define (`NAME=VAL`)
+    without editing the wrapper. Note that `+define+` applies to the whole compilation library,
+    not just to this Isle's sources.
+
 ### 7.2 Dynamic Dependencies (Mako Templates)
 If your Isle is dynamically generated (a `.sv.mako` file), you should avoid hardcoding dependency comments if the underlying hardware instantiation is conditional (e.g., inside an `% if` block). 
 

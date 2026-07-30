@@ -171,18 +171,21 @@ config = OllivanderConfig(
             parameters={"AxiUserAtop": True, "SramDataWidth": 128, "SramNumWords": 1024, "MemSize": 0x00100000}
         ),
         
-        # --- NESTED MESH MACRO ---
-        # This instantiates a Mesh Isle Macro
+        # --- NESTED CRUX MACRO ---
+        # This instantiates the Crux Isle Macro (exported by the crossbar_isle example).
+        # Deliberately cross-topology: together with super_crux, which nests the Mesh macro,
+        # the two super examples exercise the external IPs of BOTH families in a single
+        # Bender resolution.
         Component(
-            name="mesh_subsystem",
-            description="Nested Mesh Subsystem Macro",
-            type="mesh_isle", # Uses 'isle' standard AXI ports
+            name="crux_subsystem",
+            description="Nested Crux Subsystem Macro",
+            type="crux_isle", # Uses 'isle' standard AXI ports
             clock_domain="system",
             placement={"logical": {"x": 1, "y": 1}},
             interfaces={
                 "axi_master": True,
                 "noc_networks": {"slave": ["narrow", "wide"], "noc_mode": "joined_narrow"}, # 64-bit unified AXI: join on the narrow side
-                "axi_slave": [{"name": "mesh_isle_mem_map", "base_addr": BASE_CRUX_MACRO, "size": 0x88000000}]
+                "axi_slave": [{"name": "crux_isle_mem_map", "base_addr": BASE_CRUX_MACRO, "size": 0x88000000}]
             }
         ),
         

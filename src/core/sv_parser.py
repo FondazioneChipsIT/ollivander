@@ -110,7 +110,11 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
         # package, so an equivalent typedef must be emitted in the consumer's scope.
         "type_params": {},
         "dependencies": {},
-        "required_files": []
+        "required_files": [],
+        # Compilation macros (+define+) the component's sources are meant to be compiled with,
+        # declared via '// DEFINE: name="..."' pragmas. Macro wrappers carry them so that a
+        # consuming project inherits the defines the macro's internals were generated with.
+        "defines": []
     }
     
     # Unify header extraction: isolate the module declaration to prevent
@@ -252,6 +256,14 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     req_pattern = re.compile(r'(?://|##)\s*OLLIVANDER:\s*require="([^"]+)"')
     for match in req_pattern.finditer(content):
         info["required_files"].append(match.group(1))
+
+    # Extract compilation macros (e.g. // DEFINE: name="FEATURE_ICACHE_STAT"). The companion of
+    # the BENDER pragma: it tells the consuming project which +define+ the component's sources
+    # need, exactly as BENDER tells it which repositories they need.
+    def_pattern = re.compile(r'(?://|##)\s*DEFINE:\s*name="([^"]+)"')
+    for match in def_pattern.finditer(content):
+        if match.group(1) not in info["defines"]:
+            info["defines"].append(match.group(1))
 
     # Extract PeakRDL mapping information (e.g. // PEAKRDL: source="my_ip.rdl" map="my_map")
     peakrdl_match = re.search(r'(?://|##)\s*PEAKRDL:\s*source="([^"]+)"(?:.*?map="([^"]+)")?', content)

@@ -47,6 +47,12 @@ class RTLGenerator:
         # This allows templates to be fully modular and self-declare what they need.
         self.req_pattern = re.compile(r'(?://|##)\s*OLLIVANDER:\s*require="([^"]+)"')
         self.dep_pattern = re.compile(r'(?://|##)\s*BENDER:\s*name="([^"]+)"(?:.*?git="([^"]+)")?(?:.*?rev="([^"]+)")?(?:.*?version="([^"]+)")?')
+        # Compilation macros imported from component sources via '// DEFINE: name="..."' pragmas.
+        # A macro wrapper exports the defines its internals were generated with, and the consuming
+        # project must compile with them: they are collected here wherever component sources are
+        # scanned, and joined with the project's own 'defines' in extract_wiring_metadata.
+        self.def_pattern = re.compile(r'(?://|##)\s*DEFINE:\s*name="([^"]+)"')
+        self.imported_defines = set()
 
     def require_file_helper(self, filename):
         """Mako helper passed to templates to inject a local file dependency pragma."""
@@ -261,6 +267,11 @@ class RTLGenerator:
                             if match.group(2): self.project_dependencies[dep_name]['git'] = match.group(2)
                             if match.group(3): self.project_dependencies[dep_name]['rev'] = match.group(3)
                             if match.group(4): self.project_dependencies[dep_name]['version'] = match.group(4)
+                        # The staged isle may be a macro exporting the compilation defines its
+                        # internals need; the tile wrapper rendered around it does not carry the
+                        # pragmas, so they are collected here, at the only point where the isle
+                        # source itself is read.
+                        self.imported_defines.update(self.def_pattern.findall(content))
                         
                         # Extract PEAKRDL pragma to pass to the wrapper
                         peakrdl_match = re.search(r'(?://|##)\s*PEAKRDL:\s*source="([^"]+)"(?:.*?map="([^"]+)")?', content)
@@ -416,10 +427,28 @@ class RTLGenerator:
 
         wiring_matrix = build_connection_matrix(self.soc_config, comp_info)
 
-        global_defines = set()
-        for c in [self.soc_config.host] + (self.soc_config.components if self.soc_config.components else []):
-            if getattr(c, 'defines', None):
-                global_defines.update(c.defines)
+        # Compilation macros are merged BY NAME, not as plain strings, with the project's own
+        # 'defines' taking precedence over the ones imported from component pragmas. For a
+        # valueless flag the two are equivalent, but a valued define (NAME=VAL) declared by both
+        # sides would otherwise land twice on the vlog command line, where the winner is decided
+        # by flag order - silently. Precedence makes the YAML the override, mirroring how every
+        # other project-level setting relates to what a component or macro declares.
+        merged = {}
+        all_comps = [self.soc_config.host] + (self.soc_config.components if self.soc_config.components else [])
+        # 1. Defines exported by component sources via '// DEFINE:' pragmas, the way a macro
+        #    carries the compilation macros its internals were generated with (sv_parser), plus
+        #    the ones collected while staging isle sources (the NoC isle-to-tile path, where the
+        #    tile wrapper parsed above does not carry the original isle's pragmas).
+        for c in all_comps:
+            for d in (comp_info.get(c.name) or {}).get("defines") or []:
+                merged[d.split('=', 1)[0]] = d
+        for d in self.imported_defines:
+            merged[d.split('=', 1)[0]] = d
+        # 2. The project's own declarations, last so they win by name.
+        for c in all_comps:
+            for d in (getattr(c, 'defines', None) or []):
+                merged[d.split('=', 1)[0]] = d
+        global_defines = set(merged.values())
 
         return comp_info, wiring_matrix, global_defines
 
@@ -1122,7 +1151,15 @@ class RTLGenerator:
                 
                 for dep_name, dep_info in sorted(resolved_dependencies.items()):
                     macro_pragmas.append(f'// BENDER: name="{dep_name}"')
-    
+
+                # A macro must also carry the compilation macros its internals were generated
+                # with, the way it carries its Bender requirements: the consuming project has no
+                # other way to know that, say, pulp_cluster inside this macro needs
+                # FEATURE_ICACHE_STAT. global_defines already includes the defines this project
+                # itself imported, so nesting a macro inside a macro forwards them transitively.
+                for define in sorted(global_defines):
+                    macro_pragmas.append(f'// DEFINE: name="{define}"')
+
                 if self.soc_config.topology.type == "noc":
                     macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.noc_pkg_name}.sv"')
                 macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.soc_pkg_name}.sv"')

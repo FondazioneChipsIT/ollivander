@@ -7,8 +7,8 @@ paths:
   # The {outdir} placeholder is dynamically replaced by the generator
   bender_manifest: "Bender.yml"
   components:
-    - "../noc_isle/generated/hw"
+    - "../crossbar_isle/generated/hw"
     - "../noc_subtile/generated/hw"
   rdl_includes:
-    - "../noc_isle/generated/reg"
+    - "../crossbar_isle/generated/reg"
     - "../noc_subtile/generated/reg"

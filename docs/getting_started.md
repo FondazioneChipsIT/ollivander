@@ -184,9 +184,10 @@ dependencies:
 
 > [!NOTE]
 > Unlike `patches` below, these commands are not undone between runs. A command that modifies the
-> checkout must therefore be idempotent, or restore what it touches before editing it. Use
-> `pre_build_cmds` when the repair needs logic a text substitution cannot express - generating RTL,
-> or deciding *whether* to modify something at all.
+> checkout must therefore be idempotent: restore what it touches before editing it, or record the
+> edited files in the checkout's `.ollivander_patched` ledger, which the generator restores before
+> every run. Use `pre_build_cmds` when the repair needs logic a text substitution cannot express -
+> generating RTL, or deciding *whether* to modify something at all.
 
 #### 4.2.4 On-the-fly Code Patching (`patches`)
 If an external IP contains a compilation error, a broken path, or requires a custom modification, you can specify text-replacement patches. Every occurrence of `search` is replaced, and a literal `\n` in `replace` becomes a newline.

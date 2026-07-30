@@ -6,6 +6,12 @@
 //
 // BENDER: name="pulp_cluster"
 // BENDER: name="axi"
+//
+// The compilation contract of this wrapper, alongside its Bender requirements: hier-icache (a
+// pulp_cluster dependency) declares its statistics counters under this ifdef but references them
+// outside it, so its sources do not compile without the define. Declared here, every project
+// that instantiates this isle inherits it - directly or through a macro that contains it.
+// DEFINE: name="FEATURE_ICACHE_STAT"
 
 `include "axi/typedef.svh"
 

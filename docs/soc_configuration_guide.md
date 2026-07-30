@@ -283,7 +283,26 @@ Key-value pairs corresponding to SystemVerilog `parameter` declarations in the I
 *   Ollivander ensures you do not attempt to override a fixed `localparam`.
 *   You can pass standard integer values, booleans (`true`/`false`), or even SystemVerilog macros (e.g., `pkg::MyParam`).
 
-### 3.4 Interrupts (`interrupts`)
+### 3.4 Compilation Macros (`defines`)
+A list of `+define+` macros the component's sources must be compiled with, applied to every
+`vlog` invocation of the project (the compilation library is one, so a define is global by
+nature):
+
+```yaml
+defines:
+  - "MY_FEATURE"
+  - "MY_DEPTH=4"    # valued defines are supported
+```
+
+Most components do not need this field: a wrapper that *requires* a define declares it itself,
+with a `// DEFINE: name="..."` pragma next to its `// BENDER:` ones (see the Isle standardization
+guide, section 7.1), and the project inherits it automatically - including through a nested
+macro, which re-exports the defines its internals were generated with. Declare `defines` in the
+SoC description only for project-level choices; entries here are merged with the inherited ones
+**by macro name**, and the project's value wins, so this field is also how a valued define from a
+wrapper is overridden.
+
+### 3.5 Interrupts (`interrupts`)
 Defines the routing of level-sensitive interrupts. The key is the destination port name on the component, and the value is an object defining the source.
 Ollivander will automatically instantiate edge-to-level propagators or synchronizers if the source is in a different clock domain and `cdc: false` is not explicitly set.
 
@@ -313,7 +332,7 @@ Ollivander will automatically instantiate edge-to-level propagators or synchroni
           }
     ```
 
-### 3.5 NoC Placement (`placement`) - *Topology: "noc" only*
+### 3.6 NoC Placement (`placement`) - *Topology: "noc" only*
 Maps the component to the logical 2D FlooNoC mesh grid.
 
 *   **Single Node:**

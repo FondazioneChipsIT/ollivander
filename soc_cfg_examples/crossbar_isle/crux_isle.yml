@@ -308,8 +308,6 @@ components:
     description: "Multicore array for integer math acceleration"
     type: "pulp_cluster_isle"
     clock_domain: "pulp"
-    defines:
-      - "FEATURE_ICACHE_STAT"
     interfaces:
       axi_master: true
       axi_slave:

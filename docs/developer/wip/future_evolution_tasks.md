@@ -200,3 +200,76 @@ designated subset of projects.
     *   *Mitigation*: enable them on one crossbar and one NoC project first, triage what fires, and
         only then extend. Keeping `ASSERTIONS=0` available per project means a noisy IP never blocks
         the whole suite.
+
+### 3.4 User-Width Truncation at the NoC Border Join (Isle Export Only)
+
+A NoC project exported as an isle macro adapts its border to a single joined AXI port through
+FlooNoC's `floo_nw_join`. That module is parametrized twice, by us: numerically, with the
+`AxiCfg*` structs FlooGen writes into the generated NoC package, and structurally, with the SoC's
+own channel types. The two disagree on the user field: FlooGen sizes the wide network at
+`UserWidth: 1` (narrow: 5) while the SoC declares `AxiUserWidth = 10`, so the ID/user converter
+inside the join declares ports from the numeric config and gets connected to the SoC structs.
+QuestaSim reports it as five `vsim-3015` (PCDPC) warnings on `axi_id_prepend` — the measured
+deltas decompose exactly as user 10-vs-1 plus ID 4-vs-1 — and then connects by truncation.
+
+The consequence is that **the SoC user bits do not cross the macro border intact on the wide
+path**. Its severity, however, is bounded by how the widths were chosen, which turned out to be
+deliberate rather than accidental: the network user widths are hardcoded in our own
+`src/templates/cfg/floogen_cfg.yml.mako` (`user: 5` on the narrow protocols, no `user:` entry at
+all on the wide ones), and 5 is exactly the meaningful span of the SoC user field — the AMO
+encoding sits in `[2:0]` and the ECC error flag at bit 4, while bits `[9:5]` are spare today. The
+narrow network therefore already carries every bit that means something, and the wide network
+carrying none reads as a deliberate economy ("no AMO/ECC semantics on the DMA path"), not an
+oversight. Nothing meaningful is being lost **today**; the task is future-proofing the border
+before the spare bits, or wide-path user semantics, gain a meaning. Hello-world traffic through
+the border (the testbench preload of `noc_isle`) exercises none of this, which is why every
+simulation passes. The warning appears only where the join exists: `noc_isle` and any project
+embedding its macro (`super_crossbar`); the subtile export has native dual NoC ports and no join,
+so `noc_subtile` and `super_noc` are unaffected.
+
+*Decision to take*: where to make the widths agree, and how far to widen.
+
+#### Advantages
+*   **Removes a silent contract violation** at the one boundary where a macro meets a foreign
+    interconnect, before any workload relies on AMOs or ECC signalling across it.
+
+#### Difficulties & Mitigation Strategies
+*   **Option A — size the FlooNoC networks from the SoC user width** (two hardcoded values in
+    `floogen_cfg.yml.mako`; everything downstream — package, channel types, chimneys, links, RoBs
+    — resizes on regeneration, at +5/+9 bits per link). The mechanical edit is trivial; the effort
+    is three verifications. (1) In the floogen `user_width` structure, `user` coexists with
+    `collective_mask: 48` and `collective_op: 4`: the multicast path packs mask and opcode into
+    the same endpoint user signal, so if any consumer (the mcast xbar of the axi fork, or
+    `sram_isle` with `multicast_target`) derives those offsets positionally rather than from the
+    generated package, widening `user` shifts them and breaks multicast silently — this is the
+    primary risk to rule out. (2) `AtopUserAsId` at the joins uses user LSBs as an atomic ID;
+    widening should be safe but wants confirming, along with any FlooNoC width assertions.
+    (3) One full NoC-family regression per iteration (~1h).
+*   **Option A' — `user: 5` on the wide network too**: preserves every currently-meaningful bit
+    (AMO + ECC) across the wide path at half the blast radius, deferring the jump to the full SoC
+    width until bits `[9:5]` mean something. Same verifications as A, smaller delta; the border
+    join still mismatches formally (5 vs 10), so the `vsim-3015` warnings would shrink, not
+    disappear.
+*   **Option B — upstream, complementary to either of the above**: `floo_nw_join` could derive
+    its internal converter types from the port types instead of the numeric config, making a
+    config-versus-struct mismatch structurally impossible. This is module hygiene, not a fix for
+    the semantic loss: what survives the border is still decided by the network width, i.e. by
+    A or A'. Worth raising upstream regardless.
+*   **Separate, either way**: the ID component of the mismatch (macro port `AxiIdWidth` 4 versus
+    the join's computed width) is untouched by user sizing and needs its own look at how the
+    macro port ID width is chosen relative to `floo_pkg::axi_join_cfg`.
+
+### 3.5 Dangling Optional Ports in Upstream IPs (Audit Verdict, 2026-07-30)
+
+The recurring `vopt-2685`/`vopt-2718` (TFMPC) warnings were audited across all seven projects so
+the exercise does not get repeated: every occurrence lies in **upstream** instantiations under
+`bender_work`, none in generated RTL. Unconnected *outputs* (`empty_o`/`full_o` of id queues,
+`busy_o`/`mem_atop_o` in the OpenTitan wrap, `reg_id_o` in cheshire, `any_outstanding_trx_o` in
+FlooNoC, `clk180_o`/`clk270_o` in pulp-ethernet) are unread status signals — benign by
+construction. The two unconnected *inputs* looked dangerous and are not: `hmr_unit`'s
+`core_axi_outputs_i` is consumed only under `HMRSeparateAxiBus`, which the default configuration
+both clusters use sets to 0, and `sys_bootaddress_i` feeds a recovery mux whose output
+(`core_bootaddress_o`) is itself left unconnected by the same instantiation — the clusters
+deliberately use a subset of the HMR unit. The related `vsim-3015` on `hmr_unit.core_axi_outputs_i`
+is the same gated path. Nothing to fix on our side; explicit tie-offs would be cosmetic upstream
+PRs at best.

@@ -17,8 +17,8 @@ from core.soc_schema import (
 # 1. CONSTANTS & ADDRESS MAP
 # ------------------------------------------------------------------------------
 # Using Python allows us to define the memory map using variables.
-# We place the nested crux macro safely beyond the 0x87FFFFFF hyperbus boundary.
-BASE_CRUX_MACRO = 0x90000000
+# We place the nested mesh macro safely beyond the 0x87FFFFFF hyperbus boundary.
+BASE_MESH_MACRO = 0x90000000
 
 # ------------------------------------------------------------------------------
 # 2. CONFIGURATION OBJECT EXPORT
@@ -26,7 +26,7 @@ BASE_CRUX_MACRO = 0x90000000
 config = OllivanderConfig(
     project=Project(
         name="super_crux",
-        description="Super Crux Heterogeneous Multi-Core SoC Specification with Nested Crux Macro",
+        description="Super Crux Heterogeneous Multi-Core SoC Specification with Nested Mesh Macro",
         author="Ollivander Generator",
         vendor="Chips-IT",     # IP-XACT component vendor metadata
         library="SoC",         # IP-XACT component library name metadata
@@ -237,7 +237,6 @@ config = OllivanderConfig(
             description="Multicore array for integer math acceleration",
             type="pulp_cluster_isle",
             clock_domain="pulp",
-            defines=["FEATURE_ICACHE_STAT"],
             interfaces={
                 "axi_master": True,
                 "axi_slave": [{"base_addr": 0x50000000, "size": 0x00800000, "sync_domain": False}],
@@ -365,16 +364,19 @@ config = OllivanderConfig(
             ]
         ),
         
-        # --- THE NEW CRUX ISLE MACRO ---
-        # Instantiates the standalone Crux macro inside this parent SoC.
+        # --- THE NESTED MESH ISLE MACRO ---
+        # Instantiates the standalone Mesh macro (exported by the noc_isle example) inside
+        # this crossbar parent. Deliberately cross-topology: together with super_mesh, which
+        # nests the Crux macro, the two super examples exercise the external IPs of BOTH
+        # families in a single Bender resolution.
         Component(
-            name="crux_subsystem",
-            description="Nested Crux Subsystem Macro",
-            type="crux_isle",
+            name="mesh_subsystem",
+            description="Nested Mesh Subsystem Macro",
+            type="mesh_isle",
             clock_domain="host",
             interfaces={
                 "axi_master": True,
-                "axi_slave": [{"name": "crux_isle_mem_map", "base_addr": BASE_CRUX_MACRO, "size": 0x88000000, "sync_domain": False}]
+                "axi_slave": [{"name": "mesh_isle_mem_map", "base_addr": BASE_MESH_MACRO, "size": 0x88000000, "sync_domain": False}]
             }
         )
     ],

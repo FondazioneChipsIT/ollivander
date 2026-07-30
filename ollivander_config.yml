@@ -225,6 +225,15 @@ dependencies:
     rev: "a779a93426abe80e6c82418e678cec9b70af56ed"
     bender_targets:
       - "spatz"
+    # spatz vendors its own copies of the snitch core and of its companion interface IPs, which
+    # collide with snitch_cluster on dozens of package, module and interface names once both
+    # families share one library: the last declaration compiled wins, and elaboration stops on
+    # the symbols only the newer revision declares. The script discovers the colliding set at
+    # every run by intersecting the declarations of the two checkouts, renames spatz's side to
+    # spatz_*, and does nothing when snitch_cluster is not part of the SoC, so a project without
+    # it compiles spatz exactly as fetched. See the script header for the full analysis.
+    pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/patch_spatz_snitch.py {bender_work}"
   timer_unit:
     git: "https://github.com/pulp-platform/timer_unit.git"
     version: "1.0.3"
@@ -291,6 +300,15 @@ overrides:
   # overrides; the upstream requirements are satisfied by source compatibility, not by version.
   idma: { git: "https://github.com/FondazioneChipsIT/iDMA.git", rev: "2e637216e0455d77706a50d0639b86891e2a83aa" }
 
+  # --- A package vendored as a path dependency inside another IP, while the rest of the graph
+  # requires it from git. Bender demands that a package be a path dependency everywhere or nowhere,
+  # and refuses the mixed graph outright: "not declared as a path dependency everywhere".
+  # axi_obi: safety_island ships its own copy under future/axi_obi and declares it with 'path:',
+  # while sram_isle requires the released v0.1.0 from git. The two never met before the super
+  # examples put both families in one graph. The forcing makes the released source win graph-wide;
+  # Bender still prints warning W09 for the vendored copy, and then ignores it.
+  axi_obi: { git: "https://github.com/pulp-platform/axi_obi.git", rev: "84f21a6524bedcf17a569a62ac01b8a5610819c8" }
+
   # --- A branch requirement, which no released version can ever satisfy.
   # common_cells: axi requires branch 'multicast-xbar', snitch_cluster branch 'snitch', redmule exactly =1.38.0.
   # The value must come from the branch lineage rather than master: snitch_cluster uses
@@ -332,6 +350,11 @@ overrides:
   # common solution.
   # axi_riscv_atomics: cheshire and safety_island require the 0.8.x series, dyn_mem and spatz the 0.7.x one.
   axi_riscv_atomics: { git: "https://github.com/pulp-platform/axi_riscv_atomics.git", rev: "97a1dd2ac643c276880420a0cf8eea697f228aa9" }
+  # cluster_icache: pulp_cluster demands exactly =0.2.0 while snitch_cluster requires ^0.3.0 and
+  # spatz ^0.2.0. Surfaced by the super examples, the first projects to put both cluster families
+  # in one graph. Forced to v0.3.1, the value the NoC family always compiled; the crossbar family
+  # elaborates against it too.
+  cluster_icache: { git: "https://github.com/pulp-platform/cluster_icache.git", rev: "1642961b9561513f283674efc2c90f24855e8d39" }
   # register_interface: cheshire requires ^0.4.5 and hci ^0.3.1, two ranges with no overlap, while redmule demands
   # exactly =0.4.5.
   register_interface: { git: "https://github.com/pulp-platform/register_interface.git", rev: "d6e1d4cdaab7870f4faf3f88a1c788eaf5ac129d" }
