@@ -120,7 +120,34 @@ A NoC project exported as an isle macro adapts its border to a single joined AXI
 *   **Upstream, complementary**: `floo_nw_join` could derive its internal converter types from the port types instead of the numeric config, making a config-versus-struct mismatch structurally impossible. Module hygiene, not a fix for what survives the border. Worth raising regardless.
 *   **The ID component**: the macro port `AxiIdWidth` 4 versus the join's computed width needs its own look at how the macro port ID width is chosen relative to `floo_pkg::axi_join_cfg`. Same thread, same template: the schema gives `NoCNetwork.id_width` a default of 4, so the auto-calculation branch for the narrow-in ID width in `floogen_cfg.yml.mako` is dead code, and the other three protocol ID widths (`narrow_out: 2`, `wide_in: 3`, `wide_out: 1`) are hardcoded with no schema counterpart. Unifying who decides the per-network, per-direction ID widths belongs here.
 
-### 3.5 NoC Feature Toggles Not Exposed in the Schema
+### 3.5 The pulp_cluster Isle: Fixed Parameters and a Misaligned AXI Adaptation
+
+`components/isles/pulp_cluster_isle.sv` declares its whole standard parameter set as `localparam`, and a note in the file explains that the parameters exist only to satisfy the generator's interface contract because the instantiated IP is immutable. The first half of that is accurate: `pulp_cluster_wrap` has **no parameter list at all** — the module name is followed directly by the ports, whose widths come from `pulp_cluster_wrap_package::Cfg`, a `localparam` fixed to `PulpClusterDefaultCfg`. Nothing can be propagated into it.
+
+The second half is not: the `wrap` is a pure pass-through that declares that package and instantiates `pulp_cluster #(.Cfg(...))`, with the same 60 async ports on both sides, and `pulp_cluster` itself takes a full `pulp_cluster_cfg_t` parameter. The immutability is a property of the convenience shell, not of the IP.
+
+Because the shell fixes the geometry, the isle bridges the two sides by remapping each CDC entry, guarded by ten hardcoded `Inner*Width` constants. Those constants are correct — all ten match `axi_pkg` evaluated on the real inner configuration (`addr=32`, `data=64`, `user=10`, `idIn=4`, `idOut=6`) — but two things follow that the file does not state. The inner address width is **32**, not the 48 the isle advertises, and the inner slave ID width is **4**, not the 5 named in the comment.
+
+More importantly, **the remapping is not width adaptation but field reinterpretation**. In the AXI channel typedefs `id` is the first struct member, so in a packed struct it occupies the most significant bits; the low fields (`len` through `user`) align because both structs end at the same LSB, but the `{id, addr}` pair at the top does not:
+
+*   *Request into the cluster* (98-bit outer entry sliced to 81): the inner reads `id = outer_addr[35:32]` and `addr = outer_addr[31:0]`. The outer ID is discarded.
+*   *Response out of the cluster* (16-bit inner entry into a 17-bit outer): the crossbar always sees `id = 0`. A request issued with a non-zero ID — which a crossbar with several managers does — gets its response misrouted.
+*   *Request from the cluster into the SoC* (83-bit inner entry into a 95-bit outer): the inner ID lands inside `outer_addr[37:32]`, corrupting the address by `id << 32` whenever it is non-zero.
+
+The file's justification for this ("functionally correct since the AXI ID field resides in the MSB") is inverted: it is *because* the ID sits in the MSB that dropping the low bits loses it. Nothing detects this today because no example addresses the cluster — hello world never does — so the ID paths are never exercised.
+
+*Decision to take*: whether to instantiate `pulp_cluster` directly instead of `pulp_cluster_wrap`.
+
+#### Advantages
+*   **Removes the adaptation entirely**: with a `pulp_cluster_cfg_t` built from the isle's own parameters, the inner CDC widths equal the outer ones by construction, so the eighty-line remapping block and the ten hardcoded constants disappear — along with the misalignment they encode.
+*   **Makes the parameters real**: the isle's standard parameters could become genuine `parameter`s, honouring the SoC geometry instead of documenting a contract it does not keep.
+
+#### Difficulties & Mitigation Strategies
+*   **Not every field of the config struct is free.** `NumCores` comes from the `` `NB_CORES `` define (8, in `pulp_soc_defines.sv`), `AxiIdOutWidth` is derived from `NumAxiSubordinatePorts`, and fields such as `HMRSeparateAxiBus` are inherited from the default today. Which are safe to drive from the SoC description and which must stay fixed needs establishing before the switch.
+*   **Widening the inner address from 32 to 48 bits touches the cluster's internal decoding**, which is exactly the kind of change that a passing hello world cannot validate.
+    *   *Mitigation*: do this when a test drives the cluster — the same trigger as section 3.1 — so the ID round-trip and the address decoding can be observed rather than argued. Making the parameters `parameter` without replacing the instantiation would be the worst of both: a configurable contract that is still mistranslated.
+
+### 3.6 NoC Feature Toggles Not Exposed in the Schema
 
 `floogen_cfg.yml.mako` hardcodes a set of NoC design choices that the SoC description cannot express: the collective-communication enables (`en_narrow_multicast`, `en_wide_multicast`, `en_barrier`, `en_wide_reduction` with its `rd_pipeline_depth: 5` and `cut_offload_intf`), `decouple_rw: Phys`, `vc_impl: naive` and `use_id_table`. Every generated NoC therefore gets the same routing and collective feature set regardless of what the project needs.
 
