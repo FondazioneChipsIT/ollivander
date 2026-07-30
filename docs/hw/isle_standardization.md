@@ -5,8 +5,7 @@ In the Ollivander SoC Generator, all hardware components (clusters, memories, pe
 
 The purpose of the Isle is to provide a **uniform, generator-friendly interface** that decouples the complexity and the specific dialects of individual IPs from the Python generator logic. Python only sees standard parameters and standard ports, allowing it to seamlessly stitch together complex SoCs (either Crossbar-based or NoC-based) without embedding IP-specific SystemVerilog code.
 
-**Cross-Topology Reusability (`_isle` vs `_subtile`)**:
-To maximize IP reuse, Ollivander establishes a strict hierarchical naming convention:
+**Cross-Topology Reusability (`_isle` vs `_subtile`)**: To maximize IP reuse, Ollivander establishes a strict hierarchical naming convention:
 *   **`*_isle.sv` (Topology-Agnostic)**: Uses standard single-network AXI/RegBus ports. Can be instantiated safely in both Crossbar and NoC topologies. In a NoC, Ollivander automatically generates a Tile wrapper for it.
 *   **`*_subtile.sv` (NoC-Specific)**: Designed natively for NoC topologies (e.g., uses `noc_mode: "dual"` to expose physically separate narrow and wide AXI networks). **Cannot** be used in a Crossbar topology. (See `subtile_standardization.md` for details).
 
@@ -15,15 +14,13 @@ This document provides the definitive guide for hardware designers looking to in
 ---
 
 ## 2. Parameter Interface (`parameter` vs `localparam`)
-Every Isle MUST expose a standardized set of parameters to define bus geometries and microarchitectural behaviors. 
-Ollivander's parser (`sv_parser.py`) actively scans the module header and treats `parameter` and `localparam` differently:
+Every Isle MUST expose a standardized set of parameters to define bus geometries and microarchitectural behaviors. Ollivander's parser (`sv_parser.py`) actively scans the module header and treats `parameter` and `localparam` differently:
 
 *   **`parameter` (Configurable):** Use this for values that the IP can adapt to dynamically. Ollivander will override these at instantiation time in the top-level based on the YAML configuration.
 *   **`localparam` (Fixed Constraint):** Use this in the module header for values that **cannot** be changed (e.g., a hardware IP that strictly requires a 64-bit data bus). Ollivander will add these to a `fixed_params` list, skip them during parameter assignment in the top-level, and **strictly validate** that the global YAML configuration does not violate them. If a violation occurs, the generator halts with an architectural error.
 
 ### 2.1 Expected Bus Geometries
-These parameters define the physical width of the AXI lines. They are directly driven by the `global_bus` section of the YAML configuration. 
-*(Note: Isles support only a single, unified AXI network. For dual-network NoC IPs, see Subtiles).*
+These parameters define the physical width of the AXI lines. They are directly driven by the `global_bus` section of the YAML configuration. *(Note: Isles support only a single, unified AXI network. For dual-network NoC IPs, see Subtiles).*
 *   `AxiAddrWidth`
 *   `AxiDataWidth`
 *   `AxiUserWidth`
@@ -53,12 +50,7 @@ SystemVerilog enforces strict type equivalence for structs. To avoid compilation
 
 Ollivander will automatically inject the local SoC package types (e.g., `my_soc_pkg::soc_axi_req_t`) when instantiating the Isle.
 
-The package name follows the **top-level module name**, not the bare project name, so it
-carries the same suffix that `build_mode: "macro"` adds. A project `crux` built standalone
-produces `crux_soc_pkg`, while the same project built as a macro with `export_type: "isle"`
-produces `crux_isle_soc_pkg`. This is what allows both builds of a project — and a parent SoC
-that instantiates one of them — to be compiled into a single simulation library without the
-two packages colliding under the same name.
+The package name follows the **top-level module name**, not the bare project name, so it carries the same suffix that `build_mode: "macro"` adds. A project `crux` built standalone produces `crux_soc_pkg`, while the same project built as a macro with `export_type: "isle"` produces `crux_isle_soc_pkg`. This is what allows both builds of a project — and a parent SoC that instantiates one of them — to be compiled into a single simulation library without the two packages colliding under the same name.
 
 ### 2.5 Memory Mapping Parameters
 For topology-agnostic memory wrappers (e.g., L2 memory wrapper `l2_isle.sv`), the wrapper should expose standard configurable parameters defining its size and base address:
@@ -72,9 +64,7 @@ These parameters are dynamically overridden at instantiation time by the generat
 ## 3. Supported Interfaces & Port Naming
 Isles abstract away the native interfaces of their underlying IPs. Ollivander automatically maps these interfaces during generation if they are declared in the YAML and match the exact naming conventions below.
 
-> **⚠️ STRICT NAMING ENFORCEMENT**
-> The naming conventions defined below are **strictly enforced**. No deviations, custom prefixes, or alternative spellings (e.g., using `spih_` instead of `spi_`, or `bootmode` instead of `boot_mode`) are permitted. 
-> The primary purpose of the Isle wrapper is to adapt the inner IP's arbitrary port names to match this exact Ollivander standard. Failure to expose these exact names at the Isle boundary will result in unconnected wires and architectural validation errors.
+> **⚠️ STRICT NAMING ENFORCEMENT** The naming conventions defined below are **strictly enforced**. No deviations, custom prefixes, or alternative spellings (e.g., using `spih_` instead of `spi_`, or `bootmode` instead of `boot_mode`) are permitted. The primary purpose of the Isle wrapper is to adapt the inner IP's arbitrary port names to match this exact Ollivander standard. Failure to expose these exact names at the Isle boundary will result in unconnected wires and architectural validation errors.
 
 **Dimensionality (Scalars vs. Arrays) & Direction:** 
 *   **Standard Components**: Typically expose flat vectors (a single connection). However, if a component defines multiple interfaces of the same type in the YAML (e.g., `ports: 2` for a dual-port `l2_shared_memory`), its ports MUST be packed into arrays indexed by the port number (e.g., `logic [NumPort-1:0][AsyncAxiInAwWidth-1:0] async_axi_in_aw_data_i`).
@@ -171,8 +161,7 @@ Certain Hosts (like Cheshire) expose a dedicated asynchronous AXI Master port in
 *   *(... and all other standard AXI channels following the `async_axi_llc_*` prefix)*
 *   `async_axi_llc_isolate_i` / `async_axi_llc_isolated_o`: Dedicated isolation fence for the LLC domain.
 
-**Peripheral Side (Slave):**
-Components marked with the `llc_port` interface in the YAML (e.g., `hyperbus_isle`) simply expose the standard asynchronous AXI Slave ports (`async_axi_in_*`). 
+**Peripheral Side (Slave):** Components marked with the `llc_port` interface in the YAML (e.g., `hyperbus_isle`) simply expose the standard asynchronous AXI Slave ports (`async_axi_in_*`).
 *   **Ollivander Handling**: The generator automatically creates direct point-to-point wires between the Host's `async_axi_llc_*` master ports and the peripheral's `async_axi_in_*` slave ports, creating a private high-speed link.
 
 ### 3.4 RegBus Slave (`regbus_slave`)
@@ -331,8 +320,7 @@ These signals are mapped automatically if their exact name is found in the modul
 The Host Isle (e.g., `cheshire_isle.sv`) is the most critical component, acting as the system orchestrator.
 
 ### 6.1 The Crossbar Mandate
-In a Crossbar-based topology, **the Host Isle MUST internally contain the AXI crossbar** (or the NoC injection points).
-Ollivander builds the address map and routing arrays in the Python generator and passes them via the `ollivander_soc_pkg`. The Host Isle is responsible for reading these arrays and instantiating the physical crossbar that demultiplexes `axi_ext_slv` traffic and multiplexes `axi_ext_mst` traffic.
+In a Crossbar-based topology, **the Host Isle MUST internally contain the AXI crossbar** (or the NoC injection points). Ollivander builds the address map and routing arrays in the Python generator and passes them via the `ollivander_soc_pkg`. The Host Isle is responsible for reading these arrays and instantiating the physical crossbar that demultiplexes `axi_ext_slv` traffic and multiplexes `axi_ext_mst` traffic.
 
 ### 6.2 Dynamic Configuration Builder Pattern
 To maintain a standardized interface while supporting massive Host configurations (like Cheshire's `cheshire_cfg_t` struct), the Host Isle implements the **Dynamic Configuration Builder Pattern**:
@@ -341,8 +329,7 @@ To maintain a standardized interface while supporting massive Host configuration
 2.  **Internal Builder:** A SystemVerilog `function automatic cheshire_cfg_t build_cheshire_cfg()` is defined locally inside the wrapper.
 3.  **Struct Assembly:** The function takes the scalar parameters and the arrays provided by the generator package and translates them into the complex struct required by the inner IP.
 
-This strictly enforces a unidirectional data flow:
-`YAML Topology -> Python Generator -> ollivander_soc_pkg.sv -> cheshire_isle.sv -> cheshire_soc`
+This strictly enforces a unidirectional data flow: `YAML Topology -> Python Generator -> ollivander_soc_pkg.sv -> cheshire_isle.sv -> cheshire_soc`
 
 ### 6.3 Auto-Calculated Host Parameters
 
@@ -390,8 +377,7 @@ For standard `.sv` files, declare dependencies using special comments anywhere i
     // BENDER: name="axi"
     // BENDER: name="common_cells"
     ```
-    You can also override the registry inline (though not recommended for SSoT):
-    `// BENDER: name="my_ip" git="https://..." version="1.0"`
+    You can also override the registry inline (though not recommended for SSoT): `// BENDER: name="my_ip" git="https://..." version="1.0"`
 
 *   **Local Infrastructure Files**: Use `// OLLIVANDER: require="<filename.sv>"` to include a local file from the `components/` directories. Ollivander will automatically locate it and add its relative path to the manifest.
     ```systemverilog
@@ -399,18 +385,11 @@ For standard `.sv` files, declare dependencies using special comments anywhere i
     // OLLIVANDER: require="tc_clk_gating.sv"
     ```
 
-*   **Compilation Macros**: Use `// DEFINE: name="<macro>"` when the IPs this Isle pulls in do not
-    compile without a `+define+`. It is the compile-time counterpart of the `BENDER` pragma: every
-    project that instantiates the Isle inherits the define, without having to know why it is
-    needed, and a project exported as a macro re-exports it to its own consumers, so the define
-    travels across nesting levels together with the RTL that needs it.
+*   **Compilation Macros**: Use `// DEFINE: name="<macro>"` when the IPs this Isle pulls in do not compile without a `+define+`. It is the compile-time counterpart of the `BENDER` pragma: every project that instantiates the Isle inherits the define, without having to know why it is needed, and a project exported as a macro re-exports it to its own consumers, so the define travels across nesting levels together with the RTL that needs it.
     ```systemverilog
     // DEFINE: name="FEATURE_ICACHE_STAT"
     ```
-    Defines are merged **by macro name**, and a `defines` entry in the project's own SoC
-    description wins over the pragma, so a project can replace a valued define (`NAME=VAL`)
-    without editing the wrapper. Note that `+define+` applies to the whole compilation library,
-    not just to this Isle's sources.
+    Defines are merged **by macro name**, and a `defines` entry in the project's own SoC description wins over the pragma, so a project can replace a valued define (`NAME=VAL`) without editing the wrapper. Note that `+define+` applies to the whole compilation library, not just to this Isle's sources.
 
 ### 7.2 Dynamic Dependencies (Mako Templates)
 If your Isle is dynamically generated (a `.sv.mako` file), you should avoid hardcoding dependency comments if the underlying hardware instantiation is conditional (e.g., inside an `% if` block). 
@@ -449,46 +428,30 @@ Declare the following localparams inside your memory wrapper's parameter list:
 
 ### 8.2 Interleaving Schemes
 
-**Declaring the wrong scheme is never caught by a tool.** Generation, hex splitting,
-compilation and elaboration all succeed: the firmware is simply written into the wrong
-physical locations, and nothing compares it against what the RTL will read back.
+**Declaring the wrong scheme is never caught by a tool.** Generation, hex splitting, compilation and elaboration all succeed: the firmware is simply written into the wrong physical locations, and nothing compares it against what the RTL will read back.
 
-The simulation does fail, but late and with a misleading symptom. The CPU boots normally,
-executes correctly until the end of the first AXI word that happens to land where the RTL
-expects it, then fetches whatever the mis-split image left behind — typically raising an
-illegal-instruction exception. Because the host reboots and retries, the log fills with
-identical exceptions at a fixed PC and the run ends on the testbench timeout with no UART
-output, which looks far more like a broken boot flow than a corrupted memory image.
+The simulation does fail, but late and with a misleading symptom. The CPU boots normally, executes correctly until the end of the first AXI word that happens to land where the RTL expects it, then fetches whatever the mis-split image left behind — typically raising an illegal-instruction exception. Because the host reboots and retries, the log fills with identical exceptions at a fixed PC and the run ends on the testbench timeout with no UART output, which looks far more like a broken boot flow than a corrupted memory image.
 
-If you suspect this failure mode, compare a wide read from the memory against the linked
-binary: the first `PreloadBankWidth` bits will match and the rest will not. Pick the value
-that matches how your wrapper is actually wired.
+If you suspect this failure mode, compare a wide read from the memory against the linked binary: the first `PreloadBankWidth` bits will match and the rest will not. Pick the value that matches how your wrapper is actually wired.
 
-Throughout this section, `W` is the AXI word index of a byte address relative to the base of
-the memory, `W = rel_addr / (AxiDataWidth / 8)`, and a *lane* is one `PreloadBankWidth`-wide
-slice of the AXI data word.
+Throughout this section, `W` is the AXI word index of a byte address relative to the base of the memory, `W = rel_addr / (AxiDataWidth / 8)`, and a *lane* is one `PreloadBankWidth`-wide slice of the AXI data word.
 
 #### `"lane-group"` — groups are data lanes
 
-Used by `sram_isle` and `spm_isle`. Every AXI word is spread across **all** groups
-simultaneously, one lane each, and the `{bank}` index is the depth (row-select) coordinate
-taken from the high address bits:
+Used by `sram_isle` and `spm_isle`. Every AXI word is spread across **all** groups simultaneously, one lane each, and the `{bank}` index is the depth (row-select) coordinate taken from the high address bits:
 
-*   `{group}` = the lane index, holding bits `[group*PreloadBankWidth +: PreloadBankWidth]` of
-    every AXI word. `PreloadNumGroups` therefore equals `AxiDataWidth / PreloadBankWidth`.
+*   `{group}` = the lane index, holding bits `[group*PreloadBankWidth +: PreloadBankWidth]` of every AXI word. `PreloadNumGroups` therefore equals `AxiDataWidth / PreloadBankWidth`.
 *   `{bank}` = `W / words_per_macro`, where `words_per_macro = (MemSize / (AxiDataWidth/8)) / PreloadBanksPerGroup`.
 *   The word address inside the selected SRAM macro is `W % words_per_macro`.
 
 #### `"word-group"` — groups are address-interleaved
 
-Used by `l2_isle`. Consecutive AXI words rotate across the groups, and each AXI word is then
-sliced lane by lane across consecutive banks *of the selected group*:
+Used by `l2_isle`. Consecutive AXI words rotate across the groups, and each AXI word is then sliced lane by lane across consecutive banks *of the selected group*:
 
 *   `{group}` = `W % PreloadNumGroups`.
-*   `{bank}` = `d * num_lanes + lane`, where `num_lanes = AxiDataWidth / PreloadBankWidth` and
-    `d` is the depth index derived from `W / PreloadNumGroups`.
+*   `{bank}` = `d * num_lanes + lane`, where `num_lanes = AxiDataWidth / PreloadBankWidth` and `d` is the depth index derived from `W / PreloadNumGroups`.
 
 ### 8.3 Execution Workflow
 When Ollivander parses a YAML configuration where `preload_memories` refers to a component wrapper declaring `PreloadType = "interleaved"`, the generator:
 1.  **Testbench Generation**: Automatically iterates over `PreloadNumGroups` and `PreloadBanksPerGroup` (falling back to `AxiDataWidth / PreloadBankWidth` if undefined) to generate individual `$readmemh` statements targeted at each physical bank using the resolved hierarchical path from `PreloadTemplate`.
-2.  **Hex Splitting Target**: Automatically appends a call to the generic `split_hex.py` script under the Makefile's `build-sw` target, passing the base address, size, and parsed width/group parameters, plus `--interleave <PreloadInterleave>` so the split matches the physical wiring described above.
+2.  **Hex Splitting Target**: Automatically appends a call to the generic `split_hex.py` script under the Makefile's `build-sw` target, passing the base address, size, and parsed width/group parameters, plus `--interleave <PreloadInterleave>` so the split matches the physical wiring described above.

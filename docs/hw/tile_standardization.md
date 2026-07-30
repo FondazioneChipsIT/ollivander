@@ -53,14 +53,9 @@ If the Tile is subject to an `auto_control_group` in the System Controller, it c
 *   **`tile_rst_ni`** (`logic`): Software-controlled reset, **active low** at the pin. It is driven by the *inverse* of bit `i` of the group's `<group>_rst` register, which is active high (`1` = held in reset); the inversion happens in the SoC top-level.
 *   **`clk_rst_bypass_i`** (`logic`): Hardware override to bypass clock gating and software resets during test modes. It is also the escape hatch that allows a Tile to be used before any CSR has been written.
 
-The power-on value of both registers is set by `system_controller.power_on_state`, which
-defaults to `"gated"`: the Tile comes up with its clock disabled and its reset asserted, and
-must be brought up explicitly. See the System Controller section of
-`soc_configuration_guide.md`.
+The power-on value of both registers is set by `system_controller.power_on_state`, which defaults to `"gated"`: the Tile comes up with its clock disabled and its reset asserted, and must be brought up explicitly. See the System Controller section of `soc_configuration_guide.md`.
 
-Gating a Tile must never break traffic that merely routes *through* it. Keep the NoC router
-(and, preferably, the chimney) on the ungated `clk_i` / `rst_ni`, and confine `tile_clk` and
-`tile_rst_n` to the payload IP.
+Gating a Tile must never break traffic that merely routes *through* it. Keep the NoC router (and, preferably, the chimney) on the ungated `clk_i` / `rst_ni`, and confine `tile_clk` and `tile_rst_n` to the payload IP.
 
 ### Optional Interconnect Signals
 *   **`sys_clk_i`** / **`sys_rst_ni`**: Global system clock and reset (`host_clk`).
@@ -73,9 +68,7 @@ Custom Tiles support the same generic port export and interrupt routing mechanis
 
 Any port listed in the `export_interfaces` YAML list (e.g., `uart`, `jtag`, `gpio`) or mapped in the `interrupts` dictionary will be automatically extracted from the Tile's SystemVerilog header and routed to the SoC top-level or the appropriate destination component.
 
-> **⚠️ STRICT NAMING ENFORCEMENT**
-> The naming conventions for standard interfaces are **strictly enforced**. No deviations, custom prefixes, or alternative spellings (e.g., using `bootmode` instead of `boot_mode`) are permitted. 
-> The primary purpose of the wrapper is to adapt the inner IP's arbitrary port names to match the exact Ollivander standard. Failure to expose these exact names at the boundary will result in unconnected wires and architectural validation errors.
+> **⚠️ STRICT NAMING ENFORCEMENT** The naming conventions for standard interfaces are **strictly enforced**. No deviations, custom prefixes, or alternative spellings (e.g., using `bootmode` instead of `boot_mode`) are permitted. The primary purpose of the wrapper is to adapt the inner IP's arbitrary port names to match the exact Ollivander standard. Failure to expose these exact names at the boundary will result in unconnected wires and architectural validation errors.
 
 ---
 
@@ -158,4 +151,4 @@ For memory Custom Tiles that require simulation-only binary preloading (via `$re
 *   **`PreloadNumGroups`** (`int unsigned`): The number of bank groups.
 *   **`PreloadBankWidth`** (`int unsigned`): The data width of a single physical SRAM bank in bits.
 *   **`PreloadBanksPerGroup`** (`int unsigned`): The number of physical SRAM banks in each group (optional, dynamically calculated as `AxiDataWidth / PreloadBankWidth` if omitted or set to 0).
-*   **`PreloadInterleave`** (`string`): The physical interleaving scheme, `"lane-group"` or `"word-group"` (default). Declaring the wrong value silently places the firmware in the wrong physical locations; see the "Interleaving Schemes" section of `isle_standardization.md` for the exact address mapping of each scheme.
+*   **`PreloadInterleave`** (`string`): The physical interleaving scheme, `"lane-group"` or `"word-group"` (default). Declaring the wrong value silently places the firmware in the wrong physical locations; see the "Interleaving Schemes" section of `isle_standardization.md` for the exact address mapping of each scheme.

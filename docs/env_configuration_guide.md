@@ -113,9 +113,7 @@ The following substitutions are applied to each command:
 | `$(MAKE)`          | `make`.                                                                |
 | `$(BENDER)`        | `bender`.                                                              |
 
-The virtual environment's `bin/` is prepended to `PATH`, so a script whose shebang says `python`
-picks up the right interpreter. Any other tool must simply be reachable on `PATH`; there is no
-macro for it. An external script of any language is therefore invoked as an ordinary command:
+The virtual environment's `bin/` is prepended to `PATH`, so a script whose shebang says `python` picks up the right interpreter. Any other tool must simply be reachable on `PATH`; there is no macro for it. An external script of any language is therefore invoked as an ordinary command:
 
 ```yaml
 dependencies:
@@ -136,14 +134,7 @@ dependencies:
       - "vsim -c -do {ollivander_dir}/scripts/gen_mem_models.tcl -quit"
 ```
 
-Unlike `patches`, these commands are **not** undone between runs, so a command that modifies the
-checkout must take care of its own idempotency. Two strategies are in use: restore what you are
-about to touch before editing it, the way `scripts/patch_cva6_aes.py` does with a fixed target
-list; or record every edited file in the checkout's `.ollivander_patched` ledger, the way
-`scripts/patch_spatz_snitch.py` does when the target set is discovered at run time - the generator
-restores every ledger entry to its fetched state before each run, which also means deleting the
-command undoes its edits on the next generation. Use `pre_build_cmds` when the repair needs logic
-a text substitution cannot express: generating RTL, or deciding *whether* to modify something.
+Unlike `patches`, these commands are **not** undone between runs, so a command that modifies the checkout must take care of its own idempotency. Two strategies are in use: restore what you are about to touch before editing it, the way `scripts/patch_cva6_aes.py` does with a fixed target list; or record every edited file in the checkout's `.ollivander_patched` ledger, the way `scripts/patch_spatz_snitch.py` does when the target set is discovered at run time - the generator restores every ledger entry to its fetched state before each run, which also means deleting the command undoes its edits on the next generation. Use `pre_build_cmds` when the repair needs logic a text substitution cannot express: generating RTL, or deciding *whether* to modify something.
 
 ### 3.4 On-the-fly Code Patching (`patches`)
 If an external IP contains a bug, a missing import, or requires a small tweak to compile within your specific environment, you can instruct Ollivander to patch the source code automatically using simple text replacement.
@@ -159,17 +150,9 @@ If an external IP contains a bug, a missing import, or requires a small tweak to
 
 Three properties of the mechanism are worth knowing, because they decide how you use it:
 
-* **Every target file is restored to its fetched state before the patches are applied.** The result
-  therefore does not depend on how many times the generator has run, nor on what a previous
-  configuration did. Editing a fetched file by hand is pointless, since the next generation reverts
-  it: to work on a dependency, use `bender clone`.
-* **Removing a patch undoes it.** Ollivander records, inside each checkout, the files it has ever
-  patched, so deleting a patch - or the whole entry that carried it - restores the original on the
-  next run rather than leaving the last edit in place.
-* **A patch that no longer matches is reported.** Since the file was just restored, a `search`
-  string that does not occur can only mean the IP has changed and the patch has become a no-op, so
-  Ollivander prints a warning naming it. Take it seriously: a silent no-op patch is how a repair
-  survives long after the defect it addressed has been fixed upstream.
+* **Every target file is restored to its fetched state before the patches are applied.** The result therefore does not depend on how many times the generator has run, nor on what a previous configuration did. Editing a fetched file by hand is pointless, since the next generation reverts it: to work on a dependency, use `bender clone`.
+* **Removing a patch undoes it.** Ollivander records, inside each checkout, the files it has ever patched, so deleting a patch - or the whole entry that carried it - restores the original on the next run rather than leaving the last edit in place.
+* **A patch that no longer matches is reported.** Since the file was just restored, a `search` string that does not occur can only mean the IP has changed and the patch has become a no-op, so Ollivander prints a warning naming it. Take it seriously: a silent no-op patch is how a repair survives long after the defect it addressed has been fixed upstream.
 
 **Example of patching a file:**
 ```yaml
@@ -187,29 +170,18 @@ dependencies:
 
 ## 4. Forced Resolutions (`overrides`)
 
-`dependencies` declares *requirements*, which Bender must reconcile with the requirements every
-other package brings. `overrides` declares *forcings*, which bypass that reconciliation: Bender
-applies them to the whole dependency graph, transitive dependencies included, and never reports an
-override it honours. They silence the resolver rather than satisfying it, so the list should stay as
-short as the IP set allows.
+`dependencies` declares *requirements*, which Bender must reconcile with the requirements every other package brings. `overrides` declares *forcings*, which bypass that reconciliation: Bender applies them to the whole dependency graph, transitive dependencies included, and never reports an override it honours. They silence the resolver rather than satisfying it, so the list should stay as short as the IP set allows.
 
 ```yaml
 overrides:
   axi: { git: "https://github.com/colluca/axi.git", rev: "06410c36819924e32db2afa428d244dbdbcd5d4e" }
 ```
 
-Two consequences of that difference matter in practice. An override on a package that never enters
-your graph is **inert**, which is why the catalogue shipped with Ollivander can list entries that
-only some topologies need. And an override must carry a `git` plus a `rev`: a `version` is still a
-constraint, so it participates in resolution instead of replacing it, and forces nothing.
+Two consequences of that difference matter in practice. An override on a package that never enters your graph is **inert**, which is why the catalogue shipped with Ollivander can list entries that only some topologies need. And an override must carry a `git` plus a `rev`: a `version` is still a constraint, so it participates in resolution instead of replacing it, and forces nothing.
 
-Ollivander collects the entries and writes them into the project's `Bender.local`, a file it owns:
-it is rewritten on every generation, and removed once no forcing is left. It is therefore not a
-place to record anything by hand - a hand-written forcing would survive exactly until the next
-`make generate`.
+Ollivander collects the entries and writes them into the project's `Bender.local`, a file it owns: it is rewritten on every generation, and removed once no forcing is left. It is therefore not a place to record anything by hand - a hand-written forcing would survive exactly until the next `make generate`.
 
-Because Bender says nothing about a forcing it honours, every generation reports the set that is in
-effect, and where each entry came from:
+Because Bender says nothing about a forcing it honours, every generation reports the set that is in effect, and where each entry came from:
 
 ```
   [INFO] Forced resolutions in effect: 17, of which 2 declared by the project (*), the rest by ollivander_config.yml.
@@ -218,23 +190,13 @@ effect, and where each entry came from:
          riscv-dbg, scm, tech_cells_generic
 ```
 
-Read it when a package behaves as if it were at a revision nobody asked for: a name in that list is
-pinned graph-wide, whatever the requirements around it say. Entries the project replaced count as its
-own, since from Bender's point of view that is what they are.
+Read it when a package behaves as if it were at a revision nobody asked for: a name in that list is pinned graph-wide, whatever the requirements around it say. Entries the project replaced count as its own, since from Bender's point of view that is what they are.
 
 ### 4.1 When you need one
 
-Bender refuses to resolve when the requirements it collects admit no common solution, and stops with
-a report naming every package involved. That happens more often than one would like in this
-ecosystem: one package required from two different repositories, a requirement expressed as a branch
-name, an untagged commit set against a semantic version range, two exact pins to different versions,
-or a package that one IP vendors as a `path:` dependency inside its own tree while the rest of the
-graph requires it from git - Bender demands that a package be a path dependency everywhere or
-nowhere, and refuses the mixed graph outright. None of these can be repaired by choosing better
-revisions - only by forcing one.
+Bender refuses to resolve when the requirements it collects admit no common solution, and stops with a report naming every package involved. That happens more often than one would like in this ecosystem: one package required from two different repositories, a requirement expressed as a branch name, an untagged commit set against a semantic version range, two exact pins to different versions, or a package that one IP vendors as a `path:` dependency inside its own tree while the rest of the graph requires it from git - Bender demands that a package be a path dependency everywhere or nowhere, and refuses the mixed graph outright. None of these can be repaired by choosing better revisions - only by forcing one.
 
-The report is also the recipe. It names the revision each requirement asks for, including the one
-your own SoC asks for:
+The report is also the recipe. It names the revision each requirement asks for, including the one your own SoC asks for:
 
 ```
 Error: Dependency requirements conflict with each other on dependency axi.
@@ -243,39 +205,26 @@ Error: Dependency requirements conflict with each other on dependency axi.
 - package cheshire   requires  ^0.39.8 (0.39.8 <= x < 0.40.0)            at pulp-platform/axi.git
 ```
 
-Copy the source and revision you intend to win into the `overrides` block of your own environment
-file. Entries there take precedence over the ones shipped with Ollivander, key by key, so you can
-also disagree with a forced resolution from the catalogue without touching it.
+Copy the source and revision you intend to win into the `overrides` block of your own environment file. Entries there take precedence over the ones shipped with Ollivander, key by key, so you can also disagree with a forced resolution from the catalogue without touching it.
 
-Record *why*, next to each entry. A forcing whose reason is lost is indistinguishable from a
-superstition, and the only way to re-derive it is to remove every override and let Bender report the
-conflicts again, one run at a time.
+Record *why*, next to each entry. A forcing whose reason is lost is indistinguishable from a superstition, and the only way to re-derive it is to remove every override and let Bender report the conflicts again, one run at a time.
 
 ### 4.2 Disabling one, instead of replacing it
 
-Replacing a forced resolution is not always enough. A project that adds an IP of its own may find
-that no single revision satisfies both that IP and the forcing it inherits - which is precisely the
-kind of contradiction the catalogue exists to describe. Give the key a **null** value to drop the
-forcing altogether:
+Replacing a forced resolution is not always enough. A project that adds an IP of its own may find that no single revision satisfies both that IP and the forcing it inherits - which is precisely the kind of contradiction the catalogue exists to describe. Give the key a **null** value to drop the forcing altogether:
 
 ```yaml
 overrides:
   common_cells: null    # 'false' works too: hand this package back to Bender's own resolution
 ```
 
-The package then takes part in normal resolution again, so Bender either resolves it or stops with
-the report of section 4.1 - which is the input you need in order to choose a revision, and which a
-silently honoured forcing would have hidden.
+The package then takes part in normal resolution again, so Bender either resolves it or stops with the report of section 4.1 - which is the input you need in order to choose a revision, and which a silently honoured forcing would have hidden.
 
-A removal that removes nothing is reported as having no effect, for the same reason a stale patch is:
-it outlives the update that made it pointless. Any value that is neither a mapping nor null is
-refused with an error naming the file and the key, since it would otherwise be copied verbatim into
-the generated `Bender.local` and fail there, inside a file the project never wrote.
+A removal that removes nothing is reported as having no effect, for the same reason a stale patch is: it outlives the update that made it pointless. Any value that is neither a mapping nor null is refused with an error naming the file and the key, since it would otherwise be copied verbatim into the generated `Bender.local` and fail there, inside a file the project never wrote.
 
 ### 4.3 Taking over the whole set
 
-A project that re-pins many IPs is better served by owning the entire set than by disabling inherited
-forcings one at a time:
+A project that re-pins many IPs is better served by owning the entire set than by disabling inherited forcings one at a time:
 
 ```yaml
 inherit_default_overrides: false
@@ -283,23 +232,11 @@ overrides:
   # the project's own forcings, and nothing else
 ```
 
-The flag defaults to `true`, and governs only what the base configuration contributes: your own
-`overrides` block is kept either way. With it set to `false` no forcing reaches Bender that you did
-not write, which is worth having precisely because an honoured override is never reported - the
-inherited set is otherwise invisible from inside the project. Ollivander prints how many forcings it
-dropped, and from which file.
+The flag defaults to `true`, and governs only what the base configuration contributes: your own `overrides` block is kept either way. With it set to `false` no forcing reaches Bender that you did not write, which is worth having precisely because an honoured override is never reported - the inherited set is otherwise invisible from inside the project. Ollivander prints how many forcings it dropped, and from which file.
 
-Be aware of what is given up. The forcings shipped with Ollivander are what makes its example
-topologies resolvable at all: most of them exist because external IPs contradict *each other*, in
-ways no choice of revisions can repair. Declining them means taking that whole conflict set upon
-yourself, so the flag suits a project bringing its own IP catalogue rather than one starting from the
-examples.
+Be aware of what is given up. The forcings shipped with Ollivander are what makes its example topologies resolvable at all: most of them exist because external IPs contradict *each other*, in ways no choice of revisions can repair. Declining them means taking that whole conflict set upon yourself, so the flag suits a project bringing its own IP catalogue rather than one starting from the examples.
 
-There is deliberately no equivalent flag for the `dependencies` registry of section 3, and the reason
-is the asymmetry this section opened with: a registry entry only reaches Bender when a component or a
-template requires it by pragma, so an entry no project uses is already inert and there is nothing to
-decline. Forcings are the opposite - they apply to the whole graph unconditionally - which is why they
-alone need a way out.
+There is deliberately no equivalent flag for the `dependencies` registry of section 3, and the reason is the asymmetry this section opened with: a registry entry only reaches Bender when a component or a template requires it by pragma, so an entry no project uses is already inert and there is nothing to decline. Forcings are the opposite - they apply to the whole graph unconditionally - which is why they alone need a way out.
 
 ---
 

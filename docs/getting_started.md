@@ -35,8 +35,7 @@ prometheus_soc/
 
 ## 2. Prerequisites
 
-Before running the generator, ensure you have `make` installed on your system.
-You don't even need to worry about having the correct version of Python installed: the `make setup` command will automatically download and configure a fully isolated Python environment (using `uv`) along with all the required dependencies.
+Before running the generator, ensure you have `make` installed on your system. You don't even need to worry about having the correct version of Python installed: the `make setup` command will automatically download and configure a fully isolated Python environment (using `uv`) along with all the required dependencies.
 
 ---
 
@@ -183,11 +182,7 @@ dependencies:
 ```
 
 > [!NOTE]
-> Unlike `patches` below, these commands are not undone between runs. A command that modifies the
-> checkout must therefore be idempotent: restore what it touches before editing it, or record the
-> edited files in the checkout's `.ollivander_patched` ledger, which the generator restores before
-> every run. Use `pre_build_cmds` when the repair needs logic a text substitution cannot express -
-> generating RTL, or deciding *whether* to modify something at all.
+> Unlike `patches` below, these commands are not undone between runs. A command that modifies the checkout must therefore be idempotent: restore what it touches before editing it, or record the edited files in the checkout's `.ollivander_patched` ledger, which the generator restores before every run. Use `pre_build_cmds` when the repair needs logic a text substitution cannot express - generating RTL, or deciding *whether* to modify something at all.
 
 #### 4.2.4 On-the-fly Code Patching (`patches`)
 If an external IP contains a compilation error, a broken path, or requires a custom modification, you can specify text-replacement patches. Every occurrence of `search` is replaced, and a literal `\n` in `replace` becomes a newline.
@@ -204,18 +199,9 @@ dependencies:
 ```
 
 > [!IMPORTANT]
-> Each target file is restored to its fetched state before the patches are applied, so the result
-> never depends on how many times you have generated. Three consequences: editing a fetched file by
-> hand is pointless, since the next run reverts it - use `bender clone` to work on a dependency;
-> deleting a patch undoes it, because Ollivander records which files it has patched; and a `search`
-> string that no longer occurs is reported as a stale patch, since on a freshly restored file it can
-> only mean the IP has changed.
+> Each target file is restored to its fetched state before the patches are applied, so the result never depends on how many times you have generated. Three consequences: editing a fetched file by hand is pointless, since the next run reverts it - use `bender clone` to work on a dependency; deleting a patch undoes it, because Ollivander records which files it has patched; and a `search` string that no longer occurs is reported as a stale patch, since on a freshly restored file it can only mean the IP has changed.
 
-See section 4 of [the environment configuration guide](env_configuration_guide.md) for the companion
-mechanism, `overrides`, which forces a revision when Bender cannot reconcile the requirements at all.
-It also covers the two ways out when a forcing shipped with Ollivander gets in the way of an IP of
-your own: dropping that single entry, or declining the inherited set as a whole with
-`inherit_default_overrides: false`.
+See section 4 of [the environment configuration guide](env_configuration_guide.md) for the companion mechanism, `overrides`, which forces a revision when Bender cannot reconcile the requirements at all. It also covers the two ways out when a forcing shipped with Ollivander gets in the way of an IP of your own: dropping that single entry, or declining the inherited set as a whole with `inherit_default_overrides: false`.
 
 #### 4.2.5 Custom Register Inclusion (`rdl_include_dirs`)
 To let PeakRDL know where to search for SystemRDL register specifications inside the dependency repository:
@@ -303,7 +289,6 @@ See the [Environment Configuration Guide](file:///s:/ollivander/docs/env_configu
 > The `fast-check` mode is intended primarily for the development of Ollivander itself. It performs "dirty" in-place operations on the source files of external libraries to resolve dependencies.
 > * It requires that the RTL code has already been generated at least once.
 > * If you change the pointers to external libraries or add new components, this mode might fail or produce incorrect results.
->
 > For a clean and definitive build, always rely on the full `make generate` command.
 
 ### 7.3 IP-XACT Component Export & Validation
