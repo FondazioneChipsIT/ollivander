@@ -57,6 +57,12 @@ To avoid strict type equivalence errors, Subtiles should expose their AXI struct
 
 Ollivander will automatically inject the appropriate network types from the local NoC package when instantiating the Subtile.
 
+In dual mode both pairs carry the **input** type of the network — the slave port and the master port alike. FlooNoC compresses IDs across a network (`InIdWidth` > `OutIdWidth`), so the output of one chimney can never be handed straight to the input of the next one: each side widens its own chimney output back to the input width before exporting it, which keeps the adaptation next to the chimney that narrowed the ID and lets the two boundaries connect directly. The widening is field-wise, so that it applies to `id` alone.
+
+Typing these ports from the Subtile's own SoC package instead exports a single ID and user width for both networks and both directions, which matches neither of them: since `id` is the first member of the struct, and therefore occupies its most significant bits, the resulting connection does not merely truncate the ID but misaligns every field of the channel.
+
+A wrapper that does **not** expose these as `parameter type`, typing its ports from its own IP package instead, is left connected to the chimney output directly — that is the width a subordinate side expects, and the `snitch_cluster` subtile is the example in the tree.
+
 ### 2.5 Memory Mapping Parameters
 For memory subtiles (e.g., `l2_subtile.sv`), the wrapper should expose standard configurable parameters defining its size and base address:
 *   `L2BaseAddr` (`parameter logic [63:0]`): Base address of the memory mapping range. Defaults to a standard constant (e.g., `64'h88000000`).

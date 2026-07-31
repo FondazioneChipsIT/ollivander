@@ -182,6 +182,37 @@
           if 'AxiDataWidth' in all_params: all_params['AxiDataWidth'] = f"{cfg_slv_pfx}.DataWidth"
           if 'AxiAddrWidth' in all_params: all_params['AxiAddrWidth'] = f"{cfg_slv_pfx}.AddrWidth"
           
+  # A subtile macro exports one AXI pair per network, both typed with the input
+  # type of the network (see the boundary comment in noc_soc_top.sv.mako). Hand it
+  # this parent's own per-direction types, so the boundary follows the network the
+  # macro is plugged into rather than the one it was generated against: left alone,
+  # the macro keeps its own SoC types, a single ID and user width for both networks
+  # and both directions, which matches neither of them.
+  #
+  # Only a generated macro exposes these as type parameters, and the condition is
+  # load-bearing: a hand-written dual isle types its ports from its own IP package,
+  # and the snitch cluster subtile takes OutIdWidth on its subordinate side, which
+  # is exactly what the chimney output already carries. Hence macro_boundary_*
+  # below, which keeps the two decisions together - an isle gets the input-typed
+  # signals if and only if its port types were overridden to match.
+  #
+  # The types are package-qualified because a NoC macro inside a NoC parent imports
+  # both FlooNoC packages, which declare the very same names: a bare name is
+  # ambiguous (vlog-2542) and resolves to whichever package came first.
+  if noc_mode == "dual":
+      dual_boundary_types = {
+          'axi_narrow_req_t':  f"{noc_pkg}::axi_narrow_in_req_t",
+          'axi_narrow_resp_t': f"{noc_pkg}::axi_narrow_in_rsp_t",
+          'axi_wide_req_t':    f"{noc_pkg}::axi_wide_in_req_t",
+          'axi_wide_resp_t':   f"{noc_pkg}::axi_wide_in_rsp_t",
+      }
+      for boundary_param, boundary_type in dual_boundary_types.items():
+          if boundary_param in all_params:
+              isle_type_overrides[boundary_param] = boundary_type
+
+  macro_boundary_narrow = 'axi_narrow_req_t' in isle_type_overrides and noc_mode == "dual"
+  macro_boundary_wide   = 'axi_wide_req_t'   in isle_type_overrides and noc_mode == "dual"
+
   for k in isle_type_overrides.keys():
       if k.endswith('_t') and k in all_params: del all_params[k]
 
@@ -453,6 +484,26 @@ module ${p_name}_${c_type}
   ${noc_pkg}::axi_wide_in_rsp_t    wide_in_rsp;
   ${noc_pkg}::axi_wide_out_req_t   wide_out_req;
   ${noc_pkg}::axi_wide_out_rsp_t   wide_out_rsp;
+% if has_slave and (macro_boundary_narrow or macro_boundary_wide):
+
+  // A subtile macro presents the network's input type on both of its AXI ports,
+  // while the chimney output carries OutIdWidth: the ID is widened back here, next
+  // to the chimney that narrowed it. Field-wise, so that the extension applies to
+  // 'id' alone; a whole-struct assignment would misalign every field, 'id' being
+  // the first member and therefore the most significant bits.
+ % if has_slave_narrow and macro_boundary_narrow:
+  ${noc_pkg}::axi_narrow_in_req_t border_narrow_req;
+  ${noc_pkg}::axi_narrow_in_rsp_t border_narrow_rsp;
+  `AXI_ASSIGN_REQ_STRUCT(border_narrow_req, narrow_out_req)
+  `AXI_ASSIGN_RESP_STRUCT(narrow_out_rsp, border_narrow_rsp)
+ % endif
+ % if has_slave_wide and macro_boundary_wide:
+  ${noc_pkg}::axi_wide_in_req_t   border_wide_req;
+  ${noc_pkg}::axi_wide_in_rsp_t   border_wide_rsp;
+  `AXI_ASSIGN_REQ_STRUCT(border_wide_req, wide_out_req)
+  `AXI_ASSIGN_RESP_STRUCT(wide_out_rsp, border_wide_rsp)
+ % endif
+% endif
 
   floo_nw_chimney #(
     .AxiCfgN             ( ${noc_pkg}::AxiCfgN ),
@@ -822,12 +873,17 @@ module ${p_name}_${c_type}
       
   if has_slave:
       if noc_mode == "dual":
+          # A macro boundary takes the input-typed signals, see the widening next to
+          # the chimney declarations; any other dual isle takes the chimney output
+          # directly, which already carries the width its subordinate side expects.
           if has_slave_narrow:
-              isle_connections.append(".axi_narrow_req_i  ( narrow_out_req )")
-              isle_connections.append(".axi_narrow_resp_o ( narrow_out_rsp )")
+              nsig = "border_narrow" if macro_boundary_narrow else "narrow_out"
+              isle_connections.append(f".axi_narrow_req_i  ( {nsig}_req )")
+              isle_connections.append(f".axi_narrow_resp_o ( {nsig}_rsp )")
           if has_slave_wide:
-              isle_connections.append(".axi_wide_req_i  ( wide_out_req )")
-              isle_connections.append(".axi_wide_resp_o ( wide_out_rsp )")
+              wsig = "border_wide" if macro_boundary_wide else "wide_out"
+              isle_connections.append(f".axi_wide_req_i  ( {wsig}_req )")
+              isle_connections.append(f".axi_wide_resp_o ( {wsig}_rsp )")
       else:
           req_sig = "join_req" if use_join else ("wide_out_req" if has_slave_wide else "narrow_out_req")
           rsp_sig = "join_rsp" if use_join else ("wide_out_rsp" if has_slave_wide else "narrow_out_rsp")

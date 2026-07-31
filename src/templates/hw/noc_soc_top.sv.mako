@@ -88,6 +88,9 @@ ${license()}\
 
 `include "floo_noc/typedef.svh"
 `include "register_interface/typedef.svh"
+// Field-wise AXI struct assignment, used at the macro boundary to widen a
+// chimney output ID back to the network input width.
+`include "axi/assign.svh"
 
 module ${top_level_module_name}
   import ${pkg}::*;
@@ -141,18 +144,20 @@ module ${top_level_module_name}
   parameter type axi_master_req_t  = ${pkg}::soc_axi_slv_req_t,
   parameter type axi_master_resp_t = ${pkg}::soc_axi_slv_resp_t,
 %   endif
-<%
-  has_narrow = "narrow" in config.topology.noc_settings.networks if config.topology.noc_settings and config.topology.noc_settings.networks else False
-  has_wide   = "wide" in config.topology.noc_settings.networks if config.topology.noc_settings and config.topology.noc_settings.networks else False
-  narrow_req_def = f"{pkg}::soc_axi_narrow_req_t" if has_narrow else f"{pkg}::soc_axi_req_t"
-  narrow_rsp_def = f"{pkg}::soc_axi_narrow_resp_t" if has_narrow else f"{pkg}::soc_axi_resp_t"
-  wide_req_def   = f"{pkg}::soc_axi_wide_req_t" if has_wide else f"{pkg}::soc_axi_req_t"
-  wide_rsp_def   = f"{pkg}::soc_axi_wide_resp_t" if has_wide else f"{pkg}::soc_axi_resp_t"
-%>
-  parameter type axi_narrow_req_t  = ${narrow_req_def},
-  parameter type axi_narrow_resp_t = ${narrow_rsp_def},
-  parameter type axi_wide_req_t    = ${wide_req_def},
-  parameter type axi_wide_resp_t   = ${wide_rsp_def}
+  // Boundary AXI types of a subtile macro, one pair per network. Both the slave
+  // and the master port carry the *input* type of the network, which is what a
+  // manager attached to a FlooNoC network looks like. FlooNoC compresses IDs
+  // across a network (InIdWidth > OutIdWidth), so the output of one chimney can
+  // never be handed straight to the input of the next one: the convention is
+  // that each side widens its own chimney output back to the input width before
+  // exporting it, so the adaptation stays next to the chimney that narrowed the
+  // ID and the two boundaries connect directly. Taking these from the SoC
+  // package instead would export a single ID and user width for both networks
+  // and both directions, which matches neither of them.
+  parameter type axi_narrow_req_t  = ${npkg}::axi_narrow_in_req_t,
+  parameter type axi_narrow_resp_t = ${npkg}::axi_narrow_in_rsp_t,
+  parameter type axi_wide_req_t    = ${npkg}::axi_wide_in_req_t,
+  parameter type axi_wide_resp_t   = ${npkg}::axi_wide_in_rsp_t
 % endif
 )
 (
@@ -378,14 +383,18 @@ ${clock_and_reset_tree(config, p_name)}
   assign ${c_name}_id.x = ${tx} ${'- 1' if tdir == 'West' else '+ 1' if tdir == 'East' else ''};
   assign ${c_name}_id.y = ${ty} ${'- 1' if tdir == 'South' else '+ 1' if tdir == 'North' else ''};
   
-  axi_narrow_req_t   ${c_name}_narrow_in_req;
-  axi_narrow_resp_t  ${c_name}_narrow_in_rsp;
-  axi_narrow_req_t   ${c_name}_narrow_out_req;
-  axi_narrow_resp_t  ${c_name}_narrow_out_rsp;
-  axi_wide_req_t     ${c_name}_wide_in_req;
-  axi_wide_resp_t    ${c_name}_wide_in_rsp;
-  axi_wide_req_t     ${c_name}_wide_out_req;
-  axi_wide_resp_t    ${c_name}_wide_out_rsp;
+  // The signals around the border chimney carry the network's own types, one per
+  // direction: the chimney packs InIdWidth bits on its input ports and
+  // OutIdWidth on its output ports, so a single type for both would mismatch one
+  // of the two inside the IP.
+  ${npkg}::axi_narrow_in_req_t  ${c_name}_narrow_in_req;
+  ${npkg}::axi_narrow_in_rsp_t  ${c_name}_narrow_in_rsp;
+  ${npkg}::axi_narrow_out_req_t ${c_name}_narrow_out_req;
+  ${npkg}::axi_narrow_out_rsp_t ${c_name}_narrow_out_rsp;
+  ${npkg}::axi_wide_in_req_t    ${c_name}_wide_in_req;
+  ${npkg}::axi_wide_in_rsp_t    ${c_name}_wide_in_rsp;
+  ${npkg}::axi_wide_out_req_t   ${c_name}_wide_out_req;
+  ${npkg}::axi_wide_out_rsp_t   ${c_name}_wide_out_rsp;
   
   ${npkg}::floo_req_t  ${c_name}_floo_req_o, ${c_name}_floo_req_i;
   ${npkg}::floo_rsp_t  ${c_name}_floo_rsp_o, ${c_name}_floo_rsp_i;
@@ -415,14 +424,14 @@ ${clock_and_reset_tree(config, p_name)}
     .id_t                ( ${npkg}::id_t ),
     .rob_idx_t           ( ${npkg}::rob_idx_t ),
     .hdr_t               ( ${npkg}::hdr_t ),
-    .axi_narrow_in_req_t ( axi_narrow_req_t ),
-    .axi_narrow_in_rsp_t ( axi_narrow_resp_t ),
-    .axi_narrow_out_req_t( axi_narrow_req_t ),
-    .axi_narrow_out_rsp_t( axi_narrow_resp_t ),
-    .axi_wide_in_req_t   ( axi_wide_req_t ),
-    .axi_wide_in_rsp_t   ( axi_wide_resp_t ),
-    .axi_wide_out_req_t  ( axi_wide_req_t ),
-    .axi_wide_out_rsp_t  ( axi_wide_resp_t ),
+    .axi_narrow_in_req_t ( ${npkg}::axi_narrow_in_req_t ),
+    .axi_narrow_in_rsp_t ( ${npkg}::axi_narrow_in_rsp_t ),
+    .axi_narrow_out_req_t( ${npkg}::axi_narrow_out_req_t ),
+    .axi_narrow_out_rsp_t( ${npkg}::axi_narrow_out_rsp_t ),
+    .axi_wide_in_req_t   ( ${npkg}::axi_wide_in_req_t ),
+    .axi_wide_in_rsp_t   ( ${npkg}::axi_wide_in_rsp_t ),
+    .axi_wide_out_req_t  ( ${npkg}::axi_wide_out_req_t ),
+    .axi_wide_out_rsp_t  ( ${npkg}::axi_wide_out_rsp_t ),
     .floo_req_t          ( ${npkg}::floo_req_t ),
     .floo_rsp_t          ( ${npkg}::floo_rsp_t ),
     .floo_wide_t         ( ${npkg}::floo_wide_t )
@@ -466,10 +475,10 @@ ${clock_and_reset_tree(config, p_name)}
     .AxiCfgJoin      ( floo_pkg::axi_cfg_swap_iw(floo_pkg::axi_join_cfg(${npkg}::AxiCfgN, ${npkg}::AxiCfgW)) ),
     .EnAtopAdapter   ( 1'b0 ), 
     .AtopUserAsId    ( 1'b1 ), 
-    .axi_narrow_req_t( axi_narrow_req_t ),
-    .axi_narrow_rsp_t( axi_narrow_resp_t ),
-    .axi_wide_req_t  ( axi_wide_req_t ),
-    .axi_wide_rsp_t  ( axi_wide_resp_t ),
+    .axi_narrow_req_t( ${npkg}::axi_narrow_out_req_t ),
+    .axi_narrow_rsp_t( ${npkg}::axi_narrow_out_rsp_t ),
+    .axi_wide_req_t  ( ${npkg}::axi_wide_out_req_t ),
+    .axi_wide_rsp_t  ( ${npkg}::axi_wide_out_rsp_t ),
     .axi_req_t       ( axi_master_req_t ),
     .axi_rsp_t       ( axi_master_resp_t )
   ) i_join_${c_name} (
@@ -506,14 +515,19 @@ ${clock_and_reset_tree(config, p_name)}
   assign ${c_name}_wide_in_req = '0;
    % endif
    % if "narrow" in info["masters"]:
-  assign axi_narrow_req_o = ${c_name}_narrow_out_req;
-  assign ${c_name}_narrow_out_rsp = axi_narrow_resp_i;
+  // The chimney output carries OutIdWidth, the boundary carries InIdWidth: the
+  // field-wise assignment widens the ID on the way out and truncates it back on
+  // the response, which is lossless because the extension is a zero-extension of
+  // the same value. A whole-struct assignment would instead misalign every field,
+  // 'id' being the first member and therefore the most significant bits.
+  `AXI_ASSIGN_REQ_STRUCT(axi_narrow_req_o, ${c_name}_narrow_out_req)
+  `AXI_ASSIGN_RESP_STRUCT(${c_name}_narrow_out_rsp, axi_narrow_resp_i)
    % else:
   assign ${c_name}_narrow_out_rsp = '0;
    % endif
    % if "wide" in info["masters"]:
-  assign axi_wide_req_o = ${c_name}_wide_out_req;
-  assign ${c_name}_wide_out_rsp = axi_wide_resp_i;
+  `AXI_ASSIGN_REQ_STRUCT(axi_wide_req_o, ${c_name}_wide_out_req)
+  `AXI_ASSIGN_RESP_STRUCT(${c_name}_wide_out_rsp, axi_wide_resp_i)
    % else:
   assign ${c_name}_wide_out_rsp = '0;
    % endif
