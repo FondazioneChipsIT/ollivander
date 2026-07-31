@@ -232,4 +232,4 @@ For memory Subtiles that require simulation-only binary preloading (via `$readme
 *   **`PreloadNumGroups`** (`int unsigned`): The number of bank groups.
 *   **`PreloadBankWidth`** (`int unsigned`): The data width of a single physical SRAM bank in bits.
 *   **`PreloadBanksPerGroup`** (`int unsigned`): The number of physical SRAM banks in each group (optional, dynamically calculated as `AxiDataWidth / PreloadBankWidth` if omitted or set to 0).
-*   **`PreloadInterleave`** (`string`): The physical interleaving scheme, `"lane-group"` or `"word-group"` (default). Declaring the wrong value silently places the firmware in the wrong physical locations; see the "Interleaving Schemes" section of `isle_standardization.md` for the exact address mapping of each scheme.
+*   **`PreloadInterleave`** (`string`): The physical interleaving scheme, `"lane-group"` or `"word-group"` (default). Declaring the wrong value silently places the firmware in the wrong physical locations; see the "Interleaving Schemes" section of `isle_standardization.md` for the exact address mapping of each scheme.
