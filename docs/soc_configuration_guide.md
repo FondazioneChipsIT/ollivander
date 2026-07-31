@@ -249,9 +249,10 @@ The `host` block and the items in the `components` list share the **exact same s
 *   `regbus_slave`: List of register regions. Same format as `axi_slave`, plus an `external` boolean flag. Setting `external: true` means the IP is physically outside the generated Top-Level (e.g., in the Padframe); Ollivander will NOT instantiate it, but will export its RegBus ports to the SoC I/O.
 *   `llc_port`: List of memory regions. Point-to-point asynchronous AXI link to the Host.
 *   `noc_networks` (NoC Only): Dictionary with `master` (list of networks, e.g. `["narrow"]`), `slave` (list of networks), and `noc_mode` (`"joined"` or `"dual"`). `"joined"` automatically instantiates a FlooNoC Join adapter to merge narrow and wide traffic into a single AXI port. `"dual"` requires the component to natively expose two separate AXI ports.
+    *   An AXI port and the network it rides on are **two halves of one statement**: `axi_master` says the component has a master port, `noc_networks.master` says which network that port injects into. Declaring either half without the other is refused, in both directions and for both `master` and `slave`. Nothing can be inferred here — a 64-bit master port injected on the wide network instead of the narrow one is a silently malformed connection, not a detail the generator can guess.
 
 > [!IMPORTANT]
-> The entries above are the complete set: `interfaces` accepts nothing else, and neither do the nested address ranges. An unknown entry is refused by name, with the closest accepted one suggested, and a value of the wrong shape is refused too (`'interfaces'.axi_slave[0].size should be an integer, not str`). The same holds for every block of this section. This is deliberate — an entry nothing implements used to be accepted and ignored, which meant a component silently wired to nothing — and it makes this guide the authoritative list rather than a helpful one.
+> The entries above are the complete set: `interfaces` accepts nothing else, and neither do the nested address ranges. An unknown entry is refused by name, with the closest accepted one suggested, and a value of the wrong shape is refused too (`'interfaces'.axi_slave[0].size should be an integer, not str`). The same holds for every block of this section, which makes this guide the authoritative list of what is accepted rather than a description of it.
 
 ### 3.2 System Configuration (`system_config`)
 Wires the component to the central `system_controller`.
@@ -451,7 +452,7 @@ Some values name something else in the same file. Those references are resolved,
 [software_stack] boot_memory 'l2_shared_memry' is not a component of this SoC. Did you mean 'l2_shared_memory'?
 ```
 
-This class of mistake is worth understanding, because it is the one that used to be invisible. A component's `clock_domain` becomes the name of a signal in the generated top-level; a domain that does not exist yields a signal nobody declares, and SystemVerilog turns an undeclared identifier into an implicit wire. The result was a peripheral with a floating clock, generated without a single warning and reaching simulation.
+These references are resolved rather than trusted because of what they become: a component's `clock_domain` is used as the name of a signal in the generated top-level, so a domain that does not exist would yield a signal nobody declares — and SystemVerilog turns an undeclared identifier into an implicit wire, leaving the peripheral with a floating clock instead of an elaboration error.
 
 ### 6.4 A name that must match the hardware
 
@@ -474,3 +475,14 @@ while parsing a block mapping
   in "my_project_env.yml", line 2, column 3
 expected <block end>, but found '<block mapping start>'
 ```
+
+### 6.6 Two declarations that contradict each other
+
+Some values are only meaningful together, and a check on each one separately cannot see the contradiction: both keys are legitimate, both are spelled correctly, and only their combination is wrong. The AXI-port-versus-network pair of section 3.1 is the case that exists today:
+
+```
+[crux_subsystem] declares 'axi_master' but noc_networks names no 'master' network for it to use.
+[crux_subsystem] noc_networks lists a 'slave' network (['narrow']) but the component declares no 'axi_slave'.
+```
+
+This class deserves its own attention because the checks of the previous sections cannot reach it: unknown keys, wrong shapes and dangling names are each detectable by looking at one place at a time, whereas a pair of coherent-looking declarations that disagree only shows up when the two are read together. The consequence, when it slips through, is a connection that elaborates and is wrong — a 64-bit master port injected on a 512-bit network, for instance.

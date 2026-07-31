@@ -736,6 +736,28 @@ def validate_cross_references(config: OllivanderConfig):
             errors.append(f"[{comp.name}] clock_domain '{bare}' is not declared in clock_tree.domains."
                           f"{_suggest(bare, bare_declared)}")
 
+    # In a NoC, an AXI port and the network it rides on are two halves of one statement: the
+    # component says it has a master port, and 'noc_networks' says which network that port injects
+    # into. Declaring one without the other used to be accepted, and the generator then wired the
+    # port to whichever network came first - in super_mesh that connected the Crux macro's 64-bit
+    # master to the 512-bit wide injection, a 280-bit struct on a 751-bit port, reported by nothing
+    # because no traffic exercised it. Neither half is optional, and neither implies the other.
+    if config.topology.type == "noc":
+        for comp in all_comps:
+            ifaces = comp.interfaces or {}
+            networks = ifaces.get('noc_networks') or {}
+            if not isinstance(networks, dict):
+                continue
+            for port, key in (('axi_master', 'master'), ('axi_slave', 'slave')):
+                declares_port = bool(ifaces.get(port))
+                declares_net = bool(networks.get(key))
+                if declares_port and not declares_net:
+                    errors.append(f"[{comp.name}] declares '{port}' but noc_networks names no"
+                                  f" '{key}' network for it to use.")
+                elif declares_net and not declares_port:
+                    errors.append(f"[{comp.name}] noc_networks lists a '{key}' network"
+                                  f" ({networks[key]}) but the component declares no '{port}'.")
+
     boot_memory = (config.software_stack or {}).get('boot_memory')
     if boot_memory:
         comp_names = {c.name for c in all_comps}

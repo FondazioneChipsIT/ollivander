@@ -184,7 +184,11 @@ config = OllivanderConfig(
             placement={"logical": {"x": 1, "y": 1}},
             interfaces={
                 "axi_master": True,
-                "noc_networks": {"slave": ["narrow", "wide"], "noc_mode": "joined_narrow"}, # 64-bit unified AXI: join on the narrow side
+                # The macro exports one standard 64-bit AXI port, so its master side injects on the
+                # narrow network - the same side the join adapts, per noc_mode below. Naming it is
+                # not optional: without it the master port was wired to the wide injection instead,
+                # putting a 64-bit request struct on a 512-bit port.
+                "noc_networks": {"master": ["narrow"], "slave": ["narrow", "wide"], "noc_mode": "joined_narrow"},
                 "axi_slave": [{"name": "crux_isle_mem_map", "base_addr": BASE_CRUX_MACRO, "size": 0x88000000}]
             }
         ),
