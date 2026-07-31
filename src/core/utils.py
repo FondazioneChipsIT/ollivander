@@ -104,6 +104,10 @@ def simplify_port_ranges(decl: str) -> str:
                 if isinstance(val, (int, float)):
                     return str(int(val))
             except Exception:
+                # Returning the expression untouched IS this function's contract - it simplifies
+                # what it can and leaves the rest alone - so the failure is not swallowed
+                # information. The regex above already rejects anything holding an identifier, so
+                # what reaches here is malformed arithmetic, which the caller must keep verbatim.
                 pass
         return expr
 

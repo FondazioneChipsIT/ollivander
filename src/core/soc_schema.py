@@ -17,15 +17,34 @@ from core.sv_parser import get_isle_info
 
 
 # ==============================================================================
+# 0. VALIDATION POLICY
+# ==============================================================================
+
+class StrictModel(BaseModel):
+    """Base class for every block of the SoC description.
+
+    Pydantic ignores unknown keys by default, which turns a mistyped field into a silently
+    missing one: 'data_widht: 128' used to be accepted and dropped, leaving the bus at its
+    default width with nothing reported. Forbidding extras makes the generator name the
+    offending key and its path instead, at the only moment when the user can still act on it.
+
+    This does not reach the blocks declared 'Dict[str, Any]' (interfaces, system_config, features,
+    placement, dedicated_clock_div, testbench, software_stack): there is no field list to check
+    them against, so those are validated separately by validate_untyped_blocks below.
+    """
+    model_config = {"extra": "forbid"}
+
+
+# ==============================================================================
 # 1. PROJECT & TOPOLOGY
 # ==============================================================================
 
-class MacroExport(BaseModel):
+class MacroExport(StrictModel):
     """Defines an exported AXI interface and its internal connection target."""
     bus_type: Literal["standard", "narrow", "wide"]
     target: str
 
-class MacroSettings(BaseModel):
+class MacroSettings(StrictModel):
     """
     Defines how the SoC should be wrapped when exported as a macro IP.
     """
@@ -39,7 +58,7 @@ class MacroSettings(BaseModel):
             raise ValueError("A macro must export at least one AXI master or slave interface.")
         return self
 
-class Project(BaseModel):
+class Project(StrictModel):
     """
     Basic project metadata.
     Used for naming the top-level module and global SV packages.
@@ -117,7 +136,7 @@ class Project(BaseModel):
         return f"{self.top_level_module_name}_soc"
 
 
-class GlobalBus(BaseModel):
+class GlobalBus(StrictModel):
     """
     Defines the properties of the central interconnect in a Crossbar topology.
     These widths are used to size the global AXI typedefs (macros) in the SV top-level.
@@ -128,13 +147,13 @@ class GlobalBus(BaseModel):
     user_width: int
     mst_id_width: int
 
-class NoCNetwork(BaseModel):
+class NoCNetwork(StrictModel):
     """Defines the dimensions for a specific NoC physical sub-network."""
     data_width: int
     addr_width: int
     id_width: Optional[int] = 4
 
-class NoCSettings(BaseModel):
+class NoCSettings(StrictModel):
     """
     Configuration for Network-on-Chip (NoC) topologies (e.g., FlooNoC).
     Manages multiple parallel networks (e.g., narrow and wide).
@@ -144,7 +163,7 @@ class NoCSettings(BaseModel):
     networks: Dict[str, NoCNetwork]
     default_tile: str
 
-class Topology(BaseModel):
+class Topology(StrictModel):
     """Defines the main architectural interconnect style of the SoC."""
     type: Literal["crossbar", "noc"]
     global_bus: Optional[GlobalBus] = None
@@ -162,7 +181,7 @@ class Topology(BaseModel):
 # 2. SYSTEM MICROARCHITECTURE SETTINGS
 # ==============================================================================
 
-class UserMapping(BaseModel):
+class UserMapping(StrictModel):
     """
     Maps the bits of the AXI 'user' sideband signal to specific hardware features
     like Atomics (AMO) and Error Correction (ECC), ensuring system-wide coherence.
@@ -171,7 +190,7 @@ class UserMapping(BaseModel):
     amo_lsb: int
     ecc_err_bit: int
 
-class LlcMicroarch(BaseModel):
+class LlcMicroarch(StrictModel):
     """
     Microarchitectural properties of the Last Level Cache (LLC) to size
     tracking FIFOs and ATOP adapters correctly.
@@ -181,7 +200,7 @@ class LlcMicroarch(BaseModel):
     amo_num_cuts: int
     amo_post_cut: Optional[bool] = None
 
-class RegBusMicroarch(BaseModel):
+class RegBusMicroarch(StrictModel):
     """
     Microarchitectural properties of the internal Register Bus (RegBus) 
     peripheral interconnect tree.
@@ -191,7 +210,7 @@ class RegBusMicroarch(BaseModel):
     amo_num_cuts: int
     amo_post_cut: bool
 
-class SystemSettings(BaseModel):
+class SystemSettings(StrictModel):
     """
     Container for all low-level system configuration tuning.
     These parameters affect the generation of hardware adapters and 
@@ -205,7 +224,7 @@ class SystemSettings(BaseModel):
 # 3. CLOCK TREE
 # ==============================================================================
 
-class ClockDomain(BaseModel):
+class ClockDomain(StrictModel):
     """
     Defines a single clock routing domain within the SoC.
     It orchestrates the generation of Glitch-Free Muxes and Fractional Dividers.
@@ -226,7 +245,7 @@ class ClockDomain(BaseModel):
             self.name = f"{self.name}_clk"
         return self
 
-class ClockTree(BaseModel):
+class ClockTree(StrictModel):
     """Root definition for the SoC clock generation and distribution tree."""
     generators: int                            # Total number of analog Clock Generators (PLLs/FLLs) available
     generator_periods_ns: Optional[List[float]] = None
@@ -237,7 +256,7 @@ class ClockTree(BaseModel):
 # 4. REGISTERS (Crossbar & NoC variations)
 # ==============================================================================
 
-class ExternalRegister(BaseModel):
+class ExternalRegister(StrictModel):
     """
     A register block physically located outside the generated top-level (e.g., in a padframe).
     Ollivander handles exporting the RegBus ports to reach it.
@@ -246,7 +265,7 @@ class ExternalRegister(BaseModel):
     base_addr: Union[str, int]
     size: Optional[Union[str, int]] = None
 
-class AutoControlGroup(BaseModel):
+class AutoControlGroup(StrictModel):
     """
     Rules for auto-generating distributed control registers (used mainly in NoC topologies).
     Aggregates control signals of multiple identical tiles into a single packed CSR.
@@ -256,7 +275,7 @@ class AutoControlGroup(BaseModel):
     target_component_type: Optional[str] = None
     target_tile_type: Optional[str] = None
 
-class SystemController(BaseModel):
+class SystemController(StrictModel):
     """
     Unified System Controller definition. Used to generate the main control 
     register file (PCRs) managing resets, AXI isolation, clock gating, and boot addresses.
@@ -453,7 +472,7 @@ def parse_pad_py(py_path: Path) -> dict:
                 
     return pad_domains
 
-class PadDomainConfig(BaseModel):
+class PadDomainConfig(StrictModel):
     """
     Configuration for a single Padframe domain (power/voltage domain).
     """
@@ -461,7 +480,7 @@ class PadDomainConfig(BaseModel):
     tech: str
     pad_list: Optional[str] = None
 
-class PadframeConfig(BaseModel):
+class PadframeConfig(StrictModel):
     """
     Configuration for the Padrick Padframe and Pinmux generator.
     Delegates the physical pad definitions (technology macros, orientation, etc.) 
@@ -511,7 +530,7 @@ class PadframeConfig(BaseModel):
 # 5. HOST & COMPONENTS
 # ==============================================================================
 
-class Component(BaseModel):
+class Component(StrictModel):
     """
     A generic hardware block (Isle/Tile) instantiated in the SoC.
     This is the core building block of Ollivander. It captures functional properties, 
@@ -582,7 +601,7 @@ class Component(BaseModel):
 # OLLIVANDER ROOT CONFIGURATION
 # ==============================================================================
 
-class OllivanderConfig(BaseModel):
+class OllivanderConfig(StrictModel):
     """
     Root Pydantic Model mapping the entire YAML configuration.
     Contains the top-level sections defining the SoC and acts as the 
@@ -677,6 +696,156 @@ class OllivanderConfig(BaseModel):
     # Allows Mako templates to safely use config.get("key", default) as if it were a dictionary
     def get(self, key, default=None):
         return getattr(self, key, default)
+
+
+def _suggest(name: str, candidates) -> str:
+    """Propose the closest declared name, so a typo reads as one rather than as a mystery."""
+    import difflib
+    match = difflib.get_close_matches(name, sorted(candidates), n=1, cutoff=0.5)
+    return f" Did you mean '{match[0]}'?" if match else \
+           (f" Declared: {', '.join(sorted(candidates))}." if candidates else "")
+
+
+def validate_cross_references(config: OllivanderConfig):
+    """Check the references the description makes by name against what it declares.
+
+    Forbidding unknown keys catches a misspelled *field*; it cannot catch a misspelled *value*
+    that names something else in the same file. Those are the more dangerous of the two, because
+    several of them are used directly as identifiers in the generated RTL: a component whose
+    'clock_domain' names a domain that does not exist is wired to a signal nobody declares, and
+    since the generated sources do not set `default_nettype none`, that signal becomes an
+    implicit wire - a peripheral silently left with a floating clock, with no message at any
+    stage. Every check below therefore reports at generation time, where the user can act on it.
+
+    Note that the '_clk' suffix is appended by the model validators of both ClockDomain and
+    Component, so the comparison happens between normalized names; messages strip it again, to
+    quote the user their own spelling.
+    """
+    errors = []
+
+    declared_domains = {d.name for d in (config.clock_tree.domains or [])} if config.clock_tree else set()
+    all_comps = [config.host] + (config.components or [])
+
+    for comp in all_comps:
+        # An unset clock_domain is legitimate and inherits the host's (see managed_clock_domains),
+        # and a 'dedicated_clock_div' *declares* a derived clock rather than referencing one, so
+        # neither takes part in this check.
+        if comp.clock_domain and comp.clock_domain not in declared_domains:
+            bare = comp.clock_domain[:-4] if comp.clock_domain.endswith('_clk') else comp.clock_domain
+            bare_declared = {d[:-4] if d.endswith('_clk') else d for d in declared_domains}
+            errors.append(f"[{comp.name}] clock_domain '{bare}' is not declared in clock_tree.domains."
+                          f"{_suggest(bare, bare_declared)}")
+
+    boot_memory = (config.software_stack or {}).get('boot_memory')
+    if boot_memory:
+        comp_names = {c.name for c in all_comps}
+        if boot_memory not in comp_names:
+            errors.append(f"[software_stack] boot_memory '{boot_memory}' is not a component of this SoC."
+                          f"{_suggest(boot_memory, comp_names)}")
+
+    if errors:
+        raise ValueError("\n".join(f"\n{e}" for e in errors))
+
+
+# The entries each untyped block accepts. Forbidding unknown *fields* cannot reach these: they are
+# keys of 'Dict[str, Any]' members, so 'axi_slaves' is not a misspelled field but an unknown
+# dictionary entry, and Pydantic has no list to check it against. Every set below is exactly what
+# the generator and the templates read, which is the point: an entry outside it is inert by
+# construction, meaning the user asked for something nothing implements. Extending a set is
+# therefore part of implementing the feature that reads it, never a step taken on its own.
+#
+# 'parameters' and 'interrupts' are deliberately absent. Their keys are SystemVerilog names, and
+# both are already validated against the module itself - an unsupported parameter and a
+# non-existent interrupt port are each fatal today - so checking them against a hardcoded list
+# would be strictly worse than checking them against the hardware.
+# The shape language used below is deliberately tiny: a Python type means "a value of this type",
+# a one-element list means "a list of that shape" (a single entry may also be written bare, which
+# the generator accepts), and a dict means "a mapping whose keys are exactly these". That is
+# enough to describe every one of these blocks, and it keeps them as plain dictionaries at
+# run time - the alternative, real Pydantic models, would have to be threaded through 123
+# dictionary-style accesses of 'interfaces' alone, across Python and Mako, for no additional
+# validation. That refactor is now internal cleanup rather than a correctness matter.
+_ADDR_RANGE = {"name": str, "base_addr": int, "size": int, "size_per_instance": int,
+               "ports": int, "sync_domain": bool}
+_PLACEMENT_NODE = {"x": int, "y": int,
+                   "box": {"x_start": int, "x_end": int, "y_start": int, "y_end": int}}
+
+_COMPONENT_BLOCK_SPEC = {
+    "interfaces": {
+        "axi_master": bool,
+        "axi_slave": [_ADDR_RANGE],
+        "llc_port": [_ADDR_RANGE],
+        # 'external' marks a register block whose bus is exported at the chip boundary instead of
+        # being driven internally, and only a register-bus slave can be one.
+        "regbus_slave": [dict(_ADDR_RANGE, external=bool)],
+        "noc_networks": {"master": [str], "slave": [str], "noc_mode": str},
+    },
+    "system_config": {"boot_addr": int, "boot_enable": bool, "debug_req": bool,
+                      "fetch_enable": bool, "has_busy_status": bool, "has_eoc_status": bool,
+                      "is_l2_mem": bool, "isolate": bool},
+    "features": {"error_slaves": [str], "multicast_target": bool, "terminate_ports": [str]},
+    "placement": {"logical": [_PLACEMENT_NODE]},
+    "dedicated_clock_div": {"name": str, "default_div": int, "port": str},
+}
+
+_ROOT_BLOCK_SPEC = {
+    "testbench": {"boot_force_delay_ns": int, "boot_force_fast_delay_ns": int,
+                  "boot_timeout_ns": int, "boot_timeout_fast_ns": int, "sim_timeout_ns": int,
+                  "preload_memories": [{"instance": str, "file": str}]},
+    "software_stack": {"toolchain": str, "boot_memory": str,
+                       "test_app": {"name": str, "auto_generate_c": bool}},
+}
+
+
+def _check_shape(spec, value, where, errors):
+    """Match one value against the shape language described above, collecting every mismatch."""
+    if isinstance(spec, dict):
+        if not isinstance(value, dict):
+            errors.append(f"{where} should be a mapping, not {type(value).__name__}.")
+            return
+        for key, item in value.items():
+            if key not in spec:
+                errors.append(f"{where} does not accept the entry '{key}'.{_suggest(key, spec)}")
+            else:
+                _check_shape(spec[key], item, f"{where}.{key}", errors)
+    elif isinstance(spec, list):
+        # A lone entry written without its surrounding list is accepted by the generator, so it is
+        # accepted here too rather than reported as a shape error.
+        for i, item in enumerate(value if isinstance(value, list) else [value]):
+            _check_shape(spec[0], item, f"{where}[{i}]", errors)
+    elif spec is bool:
+        if not isinstance(value, bool):
+            errors.append(f"{where} should be true or false, not {type(value).__name__}.")
+    elif spec is int:
+        # bool is a subclass of int in Python, so it has to be excluded explicitly: 'size: true'
+        # is a mistake, not a zero-or-one size.
+        if isinstance(value, bool) or not isinstance(value, int):
+            errors.append(f"{where} should be an integer, not {type(value).__name__}.")
+    elif spec is str and not isinstance(value, str):
+        errors.append(f"{where} should be a string, not {type(value).__name__}.")
+
+
+def validate_untyped_blocks(config: OllivanderConfig):
+    """Validate the blocks the schema types only as 'Dict[str, Any]', names and values alike.
+
+    Those blocks carry the densest part of the description - which ports a component exposes,
+    whether it boots, how the testbench preloads it - and used to accept anything. Writing
+    'axi_slaves' instead of 'axi_slave' silently meant "this component has no slave port", and
+    'siez' inside an address range silently meant a range of no size; in both cases the
+    consequence surfaced much later, as a component wired to nothing or mapped nowhere.
+    """
+    errors = []
+    for comp in [config.host] + (config.components or []):
+        for block, spec in _COMPONENT_BLOCK_SPEC.items():
+            value = getattr(comp, block, None)
+            if isinstance(value, dict):
+                _check_shape(spec, value, f"[{comp.name}] '{block}'", errors)
+    for block, spec in _ROOT_BLOCK_SPEC.items():
+        value = getattr(config, block, None)
+        if isinstance(value, dict):
+            _check_shape(spec, value, f"'{block}'", errors)
+    if errors:
+        raise ValueError("\n".join(f"\n{e}" for e in errors))
 
 
 def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] = None, exclude_dir: str = None, original_types: Dict[str, str] = None):

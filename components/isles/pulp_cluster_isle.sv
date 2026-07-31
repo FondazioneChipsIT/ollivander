@@ -261,6 +261,15 @@ module pulp_cluster_isle
     .busy_o                      ( busy_o          ),
     .axi_isolate_i               ( axi_isolate_i   ),
     .axi_isolated_o              ( axi_isolated_o  ),
+    // The cluster drives these through 'edge_propagator_tx', the transmit half of a four-phase
+    // CDC handshake: it holds valid_o until it sees ack_i resynchronized. Tying ack HIGH is
+    // therefore the correct way to leave them unused, because valid_o then simply follows the
+    // internal event. Tying it LOW would latch valid_o high forever after the first event
+    // (r_input_reg <= valid_i | (r_input_reg & ~sync_a[0])). The astral reference ties
+    // dma_pe_evt_ack_i to '0 and has that stuck signal: do not "align" this to it.
+    // Connecting them for real means instantiating the receive half in the destination clock
+    // domain (olli_edge_propagator wraps both) and exposing the pulses as ordinary outputs, which
+    // the existing 'interrupts' routing then handles like pulp_cluster.eoc_o.
     .dma_pe_evt_ack_i            ( 1'b1            ),
     .dma_pe_evt_valid_o          (                 ), // Unused at SoC level
     .dma_pe_irq_ack_i            ( 1'b1            ),

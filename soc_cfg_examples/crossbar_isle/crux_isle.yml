@@ -314,7 +314,6 @@ components:
         - base_addr: 0x50000000
           size: 0x00800000
           sync_domain: false
-      dma_events: true
     system_config:
       isolate: true
       fetch_enable: true

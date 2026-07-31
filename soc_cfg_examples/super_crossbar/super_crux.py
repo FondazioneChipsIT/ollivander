@@ -239,8 +239,7 @@ config = OllivanderConfig(
             clock_domain="pulp",
             interfaces={
                 "axi_master": True,
-                "axi_slave": [{"base_addr": 0x50000000, "size": 0x00800000, "sync_domain": False}],
-                "dma_events": True
+                "axi_slave": [{"base_addr": 0x50000000, "size": 0x00800000, "sync_domain": False}]
             },
             system_config={
                 "isolate": True, "fetch_enable": True, "boot_enable": True, "boot_addr": 0x70000000,

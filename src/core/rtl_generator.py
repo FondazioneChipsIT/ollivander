@@ -354,6 +354,9 @@ class RTLGenerator:
                 sv_path = self.find_file_in_paths(f"{c.type}.sv", self.env.component_paths)
                 
             if sv_path:
+                # A read that fails here used to be swallowed, and the consequence was invisible:
+                # without the pragma the component's registers are simply not generated, so the
+                # first sign would be a missing register block much later. Report the file instead.
                 try:
                     content = sv_path.read_text(encoding='utf-8', errors='ignore')
                     peakrdl_match = re.search(r'(?://|##)\s*PEAKRDL:\s*source="([^"]+)"(?:.*?map="([^"]+)")?', content)
@@ -361,8 +364,9 @@ class RTLGenerator:
                         info["rdl_file"] = Path(peakrdl_match.group(1)).name
                         if peakrdl_match.group(2):
                             info["rdl_map"] = peakrdl_match.group(2)
-                except Exception:
-                    pass
+                except OSError as e:
+                    print(f"  [WARNING] Cannot read '{sv_path}' to look for its PEAKRDL pragma: {e}."
+                          f" Any register block {c.name} declares there will not be generated.")
 
             if "dependencies" in info:
                 for dep_name, dep_dict in info["dependencies"].items():

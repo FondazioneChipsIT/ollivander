@@ -24,9 +24,9 @@ import yaml
 from pydantic import ValidationError
 from mako.lookup import TemplateLookup
 
-from core.soc_schema import OllivanderConfig, validate_soc_components, Component
+from core.soc_schema import OllivanderConfig, validate_soc_components, validate_cross_references, validate_untyped_blocks, Component
 from core.stub_generator import generate_stubs
-from core.env_manager import setup_environment
+from core.env_manager import setup_environment, load_env_yaml
 from core.arch_optimizer import optimize_clock_tree, autoconfigure_host, warn_boot_memory_gated
 from core.tool_runners import run_floogen, run_peakrdl, run_verible, run_pre_build_steps, run_padrick
 from core.reporter import print_generation_report
@@ -305,6 +305,8 @@ def main():
     # new intermediate modules (like the APB subsystem). This is a crucial
     # "Hardware-First" correctness check.
     try:
+        validate_cross_references(soc_config)
+        validate_untyped_blocks(soc_config)
         validate_soc_components(soc_config, search_paths, exclude_dir, generator.original_isle_types)
         warn_boot_memory_gated(soc_config, generator.original_isle_types)
         if soc_config.topology.type == "noc":
@@ -347,11 +349,7 @@ def main():
     loaded = []
     for p in env_yaml_paths:
         if p and Path(p).is_file():
-            try:
-                with open(p, 'r', encoding='utf-8') as f:
-                    loaded.append((Path(p).name, yaml.safe_load(f) or {}))
-            except Exception:
-                pass
+            loaded.append((Path(p).name, load_env_yaml(p)))
 
     # A project may decline the forced resolutions of the base configuration as a whole, with
     # "inherit_default_overrides: false". That is what a project re-pinning many IPs wants: it
@@ -473,21 +471,46 @@ def main():
             locked = (yaml.safe_load(lock_path.read_text(encoding="utf-8")) or {}).get("packages", {}) or {}
         except Exception:
             return True  # An unreadable lock is not worth trusting.
-        declared = {}
         try:
-            declared.update((yaml.safe_load(env.bender_manifest_path.read_text(encoding="utf-8")) or {}).get("dependencies", {}) or {})
-        except Exception:
-            pass
+            manifest_deps = (yaml.safe_load(env.bender_manifest_path.read_text(encoding="utf-8")) or {}).get("dependencies", {}) or {}
+        except (OSError, yaml.YAMLError):
+            # The manifest was written by this very run, so failing to read it back means something
+            # is badly wrong. Carrying on with an empty declaration set would compare the lock
+            # against nothing and pronounce it valid, which is the one answer that cannot be right.
+            return True
+        declared = dict(manifest_deps)
         declared.update(overrides)  # An override wins over the manifest, exactly as in Bender.
         for name, spec in declared.items():
             if not isinstance(spec, dict):
                 continue
             entry = locked.get(name)
             if entry is None:
-                return True
-            if spec.get("git") and entry.get("source", {}).get("Git") != spec["git"]:
-                return True
+                # A forced resolution for a package that never enters this SoC's graph is inert by
+                # design - the catalogue is deliberately a superset - so its absence from the lock
+                # is the normal case, not a disagreement. A dependency the manifest actually
+                # declares is another matter: if the lock does not carry it, the lock is behind.
+                if name in manifest_deps:
+                    return True
+                continue
+            source = entry.get("source", {}) or {}
             rev = str(spec.get("rev", ""))
+            if "Path" in source:
+                # Bender degraded this package to a path dependency because its checkout is not in
+                # a clean state (warning W06) - which is the expected consequence of patching it,
+                # since a patch modifies tracked files. The lock entry then carries neither a Git
+                # source nor a revision, so comparing the declaration against those nulls reports
+                # the lock stale on *every* run and re-resolves the whole graph each time: minutes
+                # per project, for a state we created on purpose. Ask git instead, which still
+                # knows the revision the checkout was fetched at, so a genuine revision bump on a
+                # patched IP is still detected.
+                if re.fullmatch(r"[0-9a-f]{40}", rev):
+                    head = subprocess.run(["git", "-C", str(env.bender_dir / source["Path"]),
+                                           "rev-parse", "HEAD"], capture_output=True, text=True)
+                    if head.returncode == 0 and head.stdout.strip() != rev:
+                        return True
+                continue
+            if spec.get("git") and source.get("Git") != spec["git"]:
+                return True
             # Only an explicit commit can be compared: a branch or tag name is a moving target
             # by definition, and the lock legitimately freezes it to whatever it pointed at.
             # Semantic-version constraints resolve to a revision that cannot be predicted here.
@@ -520,19 +543,16 @@ def main():
     # Merge custom patches and pre-build commands from Environment YAMLs
     for p in [args.env_config, args.append_env]:
         if p and Path(p).is_file():
-            try:
-                with open(p, 'r', encoding='utf-8') as f:
-                    env_data = yaml.safe_load(f)
-                if env_data and 'dependencies' in env_data:
-                    for dep_name, dep_info in env_data['dependencies'].items():
-                        if dep_name not in env.registry_dependencies:
-                            env.registry_dependencies[dep_name] = {}
-                        if 'patches' in dep_info:
-                            env.registry_dependencies[dep_name].setdefault('patches', []).extend(dep_info['patches'])
-                        if 'pre_build_cmds' in dep_info:
-                            env.registry_dependencies[dep_name].setdefault('pre_build_cmds', []).extend(dep_info['pre_build_cmds'])
-            except Exception:
-                pass
+            env_data = load_env_yaml(p)
+            for dep_name, dep_info in (env_data.get('dependencies') or {}).items():
+                if not dep_info:
+                    continue
+                if dep_name not in env.registry_dependencies:
+                    env.registry_dependencies[dep_name] = {}
+                if 'patches' in dep_info:
+                    env.registry_dependencies[dep_name].setdefault('patches', []).extend(dep_info['patches'])
+                if 'pre_build_cmds' in dep_info:
+                    env.registry_dependencies[dep_name].setdefault('pre_build_cmds', []).extend(dep_info['pre_build_cmds'])
 
     # Execute Pre-Build commands and patches on fetched IPs
     run_pre_build_steps(env)
@@ -552,16 +572,12 @@ def main():
     custom_rdl_paths = list(getattr(env, 'rdl_include_paths', getattr(env, 'rdl_includes', [])))
     for p in [args.env_config, args.append_env]:
         if p and Path(p).is_file():
-            try:
-                with open(p, 'r', encoding='utf-8') as f:
-                    env_data = yaml.safe_load(f)
-                if env_data:
-                    if 'rdl_includes' in env_data:
-                        custom_rdl_paths.extend(env_data['rdl_includes'])
-                    if 'paths' in env_data and isinstance(env_data['paths'], dict) and 'rdl_includes' in env_data['paths']:
-                        custom_rdl_paths.extend(env_data['paths']['rdl_includes'])
-            except Exception:
-                pass
+            env_data = load_env_yaml(p)
+            if 'rdl_includes' in env_data:
+                custom_rdl_paths.extend(env_data['rdl_includes'])
+            paths_cfg = env_data.get('paths')
+            if isinstance(paths_cfg, dict) and 'rdl_includes' in paths_cfg:
+                custom_rdl_paths.extend(paths_cfg['rdl_includes'])
     run_peakrdl(soc_config, reg_dir, hw_dir, sw_dir, registry_dependencies, bender_dir, custom_rdl_paths)
     
     # =========================================================================

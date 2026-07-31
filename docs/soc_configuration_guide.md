@@ -6,6 +6,8 @@ You can write this configuration using either **YAML** (static, easy to read) or
 
 Ollivander uses a "Hardware-First" validation engine (combining `soc_schema.py` for configuration schema checking and `sv_parser.py` for SystemVerilog AST parsing) to validate these configurations and guarantee that they are physically compatible with the underlying SystemVerilog modules.
 
+**Nothing in this file is accepted silently.** An unknown field is refused with its full path, a value of the wrong shape is refused with the shape expected, and a name that refers to something else in the file — a clock domain, a boot memory — must resolve to a declaration. This guide is therefore the authoritative list of what is accepted, not merely a description of it: a field it does not mention is a field the generator refuses. Section 6 shows what each kind of mistake reports.
+
 ---
 
 ## 1. Root Structure
@@ -217,7 +219,9 @@ The `host` block and the items in the `components` list share the **exact same s
 | `type`              | String  | **Required**. Must match the exact filename of the SystemVerilog wrapper     |
 |                     |         | (e.g., `cheshire_isle`).                                                     |
 | `clock_domain`      | String  | **Required**. Assigns the component's `clk_i` to a domain in the             |
-|                     |         | `clock_tree`.                                                                |
+|                     |         | `clock_tree`. The name must be one of the declared domains: a value that      |
+|                     |         | matches none stops generation, suggesting the closest one. Omitting the field  |
+|                     |         | is legitimate and inherits the host's domain.                                 |
 | `reset_domain`      | String  | *Optional*. Derived automatically from `clock_domain` if omitted.            |
 | `isa`               | String  | *Optional (Host only)*. Host Instruction Set Architecture (e.g., `rv64imafdc`).|
 | `abi`               | String  | *Optional (Host only)*. Host Application Binary Interface (e.g., `lp64d`).     |
@@ -246,6 +250,9 @@ The `host` block and the items in the `components` list share the **exact same s
 *   `llc_port`: List of memory regions. Point-to-point asynchronous AXI link to the Host.
 *   `noc_networks` (NoC Only): Dictionary with `master` (list of networks, e.g. `["narrow"]`), `slave` (list of networks), and `noc_mode` (`"joined"` or `"dual"`). `"joined"` automatically instantiates a FlooNoC Join adapter to merge narrow and wide traffic into a single AXI port. `"dual"` requires the component to natively expose two separate AXI ports.
 
+> [!IMPORTANT]
+> The entries above are the complete set: `interfaces` accepts nothing else, and neither do the nested address ranges. An unknown entry is refused by name, with the closest accepted one suggested, and a value of the wrong shape is refused too (`'interfaces'.axi_slave[0].size should be an integer, not str`). The same holds for every block of this section. This is deliberate — an entry nothing implements used to be accepted and ignored, which meant a component silently wired to nothing — and it makes this guide the authoritative list rather than a helpful one.
+
 ### 3.2 System Configuration (`system_config`)
 Wires the component to the central `system_controller`.
 *   `isolate`: Boolean. Generates AXI isolation fences and status registers.
@@ -255,13 +262,33 @@ Wires the component to the central `system_controller`.
 *   `is_l2_mem`: Boolean. Set to `true` if this component acts as the Level 2 (L2) shared memory. Used by the generator to identify L2 components and parameterize their base addresses/sizes.
 *   `has_busy_status` / `has_eoc_status`: Boolean. Exposes status flags to software.
 
-### 3.3 Parameters (`parameters`)
+### 3.3 Features (`features`)
+Optional switches that change how the generator treats the component, rather than what it contains.
+*   `multicast_target`: Boolean. Marks the component as a destination of NoC collective (multicast) traffic, so its endpoint is generated with collective support.
+*   `error_slaves`: List of strings. Names the slave ports of this component that must be terminated with an error slave instead of being connected.
+*   `terminate_ports`: List of strings. Names the ports to tie off at the top level, for interfaces the SoC deliberately leaves unused.
+
+### 3.4 Parameters (`parameters`)
 Key-value pairs corresponding to SystemVerilog `parameter` declarations in the Isle/Tile wrapper. 
 *   Ollivander verifies that the parameter physically exists in the SV file.
 *   Ollivander ensures you do not attempt to override a fixed `localparam`.
 *   You can pass standard integer values, booleans (`true`/`false`), or even SystemVerilog macros (e.g., `pkg::MyParam`).
 
-### 3.4 Compilation Macros (`defines`)
+Unlike the blocks above, the *names* here are not checked against a fixed list: they are checked against the module itself, which is stricter. An unsupported parameter stops generation naming the component and its wrapper.
+
+### 3.5 Dedicated Clock Divider (`dedicated_clock_div`)
+Gives the component its own programmable clock branch, derived from the domain it sits in — used, for instance, by an Ethernet MAC that needs a slower reference than the rest of the peripheral domain.
+*   `name`: String. Name of the derived clock; the generator appends `_clk` and creates the divider registers under it.
+*   `default_div`: Integer. Division factor at boot.
+*   `port`: String. *Optional*. The component port the derived clock drives, when it is not the main `clk_i`.
+
+```yaml
+dedicated_clock_div:
+  name: "eth"
+  default_div: 10
+```
+
+### 3.6 Compilation Macros (`defines`)
 A list of `+define+` macros the component's sources must be compiled with, applied to every `vlog` invocation of the project (the compilation library is one, so a define is global by nature):
 
 ```yaml
@@ -272,7 +299,7 @@ defines:
 
 Most components do not need this field: a wrapper that *requires* a define declares it itself, with a `// DEFINE: name="..."` pragma next to its `// BENDER:` ones (see the Isle standardization guide, section 7.1), and the project inherits it automatically - including through a nested macro, which re-exports the defines its internals were generated with. Declare `defines` in the SoC description only for project-level choices; entries here are merged with the inherited ones **by macro name**, and the project's value wins, so this field is also how a valued define from a wrapper is overridden.
 
-### 3.5 Interrupts (`interrupts`)
+### 3.7 Interrupts (`interrupts`)
 Defines the routing of level-sensitive interrupts. The key is the destination port name on the component, and the value is an object defining the source. Ollivander will automatically instantiate edge-to-level propagators or synchronizers if the source is in a different clock domain and `cdc: false` is not explicitly set.
 
 *   **Simple Wire Routing:**
@@ -301,7 +328,7 @@ Defines the routing of level-sensitive interrupts. The key is the destination po
           }
     ```
 
-### 3.6 NoC Placement (`placement`) - *Topology: "noc" only*
+### 3.8 NoC Placement (`placement`) - *Topology: "noc" only*
 Maps the component to the logical 2D FlooNoC mesh grid.
 
 *   **Single Node:**
@@ -327,10 +354,15 @@ Maps the component to the logical 2D FlooNoC mesh grid.
 
 Instructs the simulation environment on how to initialize the SoC. Since Ollivander targets bare-metal validation, the most common action is preloading compiled software binaries directly into the hardware memory arrays before the processor comes out of reset.
 
-| Field              | Type | Description                                                                      |
-| :----------------- | :--- | :------------------------------------------------------------------------------- |
-| `preload_memories` | List | A list of memory arrays to be initialized in the SystemVerilog testbench using   |
-|                    |      | `$readmemh`.                                                                     |
+| Field                       | Type    | Description                                                    |
+| :-------------------------- | :------ | :------------------------------------------------------------- |
+| `preload_memories`          | List    | Memory arrays to initialize in the testbench via `$readmemh`.   |
+| `boot_force_delay_ns`       | Integer | How long the testbench holds the boot-mode and scratchpad force |
+|                             |         | values, in ns. Must outlast the host's internal reset sequence. |
+| `boot_force_fast_delay_ns`  | Integer | The same, for the shorter `fast` variant of the run.            |
+| `boot_timeout_ns`           | Integer | Deadline for the design to start fetching, in ns.               |
+| `boot_timeout_fast_ns`      | Integer | The same, for the `fast` variant.                               |
+| `sim_timeout_ns`            | Integer | Overall simulation deadline, in ns.                             |
 
 **Memory Preload Object**
 *   `instance`: String. The hierarchical RTL path to the memory array instance inside the top-level.
@@ -357,7 +389,8 @@ Defines the parameters for automated bare-metal C firmware generation and compil
 | `toolchain`   | String | The GCC toolchain prefix (e.g., `"riscv64-unknown-elf-"`). Compiler flags (ISA, ABI, Code Model) are defined under the `host` block. |
 | `boot_memory` | String | **Required**. The `name` of the memory component (from the `components` list) where |
 |               |        | the boot`.text`, `.data`, and `.bss` sections will be placed. Ollivander will       |
-|               |        | automatically fetch its `base_addr` and `size`.                                     |
+|               |        | automatically fetch its `base_addr` and `size`. The name must resolve to a declared  |
+|               |        | component: a value that names nothing stops generation, suggesting the closest one.  |
 | `test_app`    | Object | Configuration for the automatically generated test application.                     |
 
 **Test App Object**:
@@ -372,4 +405,72 @@ software_stack:
   test_app:
     name: "hello_world"
     auto_generate_c: true
+```
+---
+
+## 6. What Happens When the Configuration Is Wrong
+
+Ollivander refuses a configuration it cannot make sense of, rather than generating from the part it understood. Every check below runs before any file is written, so the report you get is the whole story and the output directory is left untouched.
+
+### 6.1 An unknown field
+
+Fields are matched exactly. A misspelling is reported with the path that leads to it, so a typo deep inside a nested block is as easy to find as one at the top:
+
+```
+Location : topology -> global_bus -> data_widht
+Error    : Extra inputs are not permitted
+```
+
+This applies to every block described in this guide. It is the reason the guide is the authoritative list of what is accepted: **a field it does not mention is a field the generator refuses.** If you need one that does not exist, the generator has no code reading it, so accepting it would only postpone the surprise.
+
+### 6.2 An unknown entry, or one of the wrong shape
+
+The blocks whose contents are free-form dictionaries — `interfaces`, `system_config`, `features`, `placement`, `dedicated_clock_div`, `testbench`, `software_stack` — are checked entry by entry, at every level of nesting, and the closest accepted entry is suggested:
+
+```
+[l2_shared_memory] 'interfaces' does not accept the entry 'axi_slaves'. Did you mean 'axi_slave'?
+[l2_shared_memory] 'interfaces'.axi_slave[0] does not accept the entry 'siez'. Did you mean 'size'?
+'testbench'.preload_memories[0] does not accept the entry 'fil'. Did you mean 'file'?
+```
+
+Values are checked too, against the shape each entry expects:
+
+```
+[l2_shared_memory] 'interfaces'.axi_slave[0].size should be an integer, not str.
+[l2_shared_memory] 'interfaces'.axi_master should be true or false, not str.
+```
+
+All the mismatches found are reported together, so a configuration with several mistakes takes one run to fix rather than one run each.
+
+### 6.3 A name that refers to nothing
+
+Some values name something else in the same file. Those references are resolved, and a name that matches no declaration stops generation — with the closest declared name when there is one, and the full list when there is not:
+
+```
+[hyperbus] clock_domain 'perifh' is not declared in clock_tree.domains. Did you mean 'periph'?
+[software_stack] boot_memory 'l2_shared_memry' is not a component of this SoC. Did you mean 'l2_shared_memory'?
+```
+
+This class of mistake is worth understanding, because it is the one that used to be invisible. A component's `clock_domain` becomes the name of a signal in the generated top-level; a domain that does not exist yields a signal nobody declares, and SystemVerilog turns an undeclared identifier into an implicit wire. The result was a peripheral with a floating clock, generated without a single warning and reaching simulation.
+
+### 6.4 A name that must match the hardware
+
+`parameters` and the keys of `interrupts` are SystemVerilog names, and they are checked against the wrapper itself rather than against a list in the generator — a stricter test, and one that stays correct as an IP evolves:
+
+```
+[mailbox] Parameter 'NumMailboxez' is not supported by component 'mailbox_isle'.
+[ERROR] Port 'mbox_irq_j_i' connected on instance 'i_pulp_cluster' does not exist in module definition.
+```
+
+The same mechanism refuses an attempt to override a parameter the wrapper declares as a fixed `localparam`, and reports when a value violates a constraint the hardware imposes.
+
+### 6.5 An environment file that cannot be parsed
+
+Environment files (see [the environment configuration guide](env_configuration_guide.md)) are optional to exist but not optional to parse. A YAML syntax error in one of them stops the generator, naming the file and the position the parser reports:
+
+```
+[ERROR] Cannot parse the project environment configuration 'my_project_env.yml':
+while parsing a block mapping
+  in "my_project_env.yml", line 2, column 3
+expected <block end>, but found '<block mapping start>'
 ```

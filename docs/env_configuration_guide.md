@@ -21,6 +21,8 @@ make generate SOC_YAML=my_project.yaml ENV_YAML=my_project_env.yaml
 
 Ollivander will automatically merge your custom environment file with the base one. If a path or a dependency is defined in both, **your custom file takes precedence**.
 
+Both files are optional to *exist*, but neither is optional to *parse*: a YAML syntax error in either one stops the generator, naming the file and the position the parser reports. This used to be skipped silently, which meant the paths and the forced resolutions of a file you had just edited vanished and generation continued with the defaults — the failure then surfaced much later, as an output written to the wrong directory or a package resolved to an unexpected revision.
+
 ---
 
 ## 2. Paths Configuration (`paths`)

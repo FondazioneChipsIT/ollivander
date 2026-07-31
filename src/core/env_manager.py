@@ -6,6 +6,31 @@ import sys
 import yaml
 from pathlib import Path
 
+
+def load_env_yaml(path, what="environment configuration"):
+    """Read one environment YAML file, or stop with the parser's own diagnostic.
+
+    An environment file that cannot be parsed used to be skipped: the paths and the forced
+    resolutions it declared simply vanished, and generation carried on with the base
+    configuration alone, reporting nothing. The failure then surfaced much later as a wrong
+    output directory or a package resolved to an unexpected revision, with nothing pointing
+    back at the real cause. A syntax error in a file the user just edited is not a condition
+    to recover from, so it is fatal here, where yaml reports the exact line and column.
+
+    A missing file is a different matter and is not this function's business: every
+    environment file is optional, and its absence is handled by the callers.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        print(f"\n[ERROR] Cannot parse the {what} '{path}':\n{e}")
+        sys.exit(1)
+    except OSError as e:
+        print(f"\n[ERROR] Cannot read the {what} '{path}': {e}")
+        sys.exit(1)
+
+
 class OllivanderEnv:
     """
     Data class that holds the resolved environment configuration for the current run.
@@ -50,11 +75,7 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     env_config_path = Path(args.env_config) if args.env_config else base_dir / "ollivander_config.yml"
     env_cfg = {}
     if env_config_path.is_file():
-        try:
-            with open(env_config_path, "r", encoding="utf-8") as f:
-                env_cfg = yaml.safe_load(f) or {}
-        except Exception as e:
-            print(f"[WARNING] Failed to parse environment config '{env_config_path}': {e}")
+        env_cfg = load_env_yaml(env_config_path, "base environment configuration")
     elif args.env_config:
         print(f"[ERROR] Specified environment config not found: {env_config_path}")
         sys.exit(1)
@@ -71,12 +92,8 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     if args.append_env:
         append_env_path = Path(args.append_env)
         if append_env_path.is_file():
-            try:
-                with open(append_env_path, "r", encoding="utf-8") as f:
-                    append_env_cfg = yaml.safe_load(f) or {}
-                append_env_base = append_env_path.parent
-            except Exception as e:
-                print(f"[WARNING] Failed to parse appended environment config '{append_env_path}': {e}")
+            append_env_cfg = load_env_yaml(append_env_path, "project environment configuration")
+            append_env_base = append_env_path.parent
         else:
             print(f"[ERROR] Specified append environment config not found: {append_env_path}")
             sys.exit(1)

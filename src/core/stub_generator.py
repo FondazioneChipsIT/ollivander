@@ -8,6 +8,39 @@ import pyslang
 from pathlib import Path
 from core.utils import strip_comments, get_generation_comment
 
+
+# Files the best-effort source scans below could not process, collected instead of discarded.
+# These scans walk the whole compile list - thousands of third-party files - to learn struct
+# fields, module hierarchies and interfaces, and each of them used to swallow any failure
+# silently. That is the wrong trade in both directions: a hard failure on an oddity inside an IP
+# we do not own would block a fast-check for no good reason, while total silence hides the case
+# that matters, where a file is skipped and the stub built from it is therefore incomplete. So
+# they are counted and summarized at the end, naming the first few, and the run continues.
+_scan_failures = []
+
+
+def _note_scan_failure(what, exc, scope=None):
+    """Record one skipped file. 'scope' is the caller's locals(), from which the file is inferred:
+    these scans are nested loops whose file variable goes by several names."""
+    path = "?"
+    for key in ("f_path", "f_clean", "path", "f", "bld_path", "file_path"):
+        value = (scope or {}).get(key)
+        if value:
+            path = value
+            break
+    _scan_failures.append((what, str(path), f"{type(exc).__name__}: {exc}"))
+
+
+def _report_scan_failures():
+    if not _scan_failures:
+        return
+    print(f"\n  [WARNING] {len(_scan_failures)} source file(s) could not be scanned while preparing"
+          f" the fast-check stubs. The stubs built from them may be incomplete:")
+    for what, path, err in _scan_failures[:5]:
+        print(f"            - {what}: {Path(path).name} ({err})")
+    if len(_scan_failures) > 5:
+        print(f"            ... and {len(_scan_failures) - 5} more.")
+
 def neutralize_body_relative_param_defaults(text):
     """
     Replace parameter defaults that reference an item declared in the module body.
@@ -185,6 +218,8 @@ def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_
                         if child is not None and type(child).__name__ != 'Token':
                             traverse(child)
                 except TypeError:
+                    # A leaf of the pyslang AST is not iterable, so TypeError *is* the recursion's
+                    # base case rather than an error: it must stay silent and stay this narrow.
                     pass
             
             traverse(tree.root)
@@ -206,8 +241,8 @@ def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_
                         package_to_file[p] = []
                     package_to_file[p].append(str(f_path))
                     
-        except Exception:
-            pass
+        except Exception as e:
+            _note_scan_failure("scanning package definitions", e, locals())
 
     # 2. Trace transitively starting from top-level seeds
     needed_files = set()
@@ -250,11 +285,13 @@ def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_
                             if child is not None and type(child).__name__ != 'Token':
                                 traverse_stub(child)
                     except TypeError:
+                        # A leaf of the pyslang AST is not iterable, so TypeError *is* the recursion's
+                        # base case rather than an error: it must stay silent and stay this narrow.
                         pass
                 
                 traverse_stub(tree.root)
-            except Exception:
-                pass
+            except Exception as e:
+                _note_scan_failure("parsing with pyslang", e, locals())
 
     while queue:
         sys.stdout.write(f"\r  -> Tracing active dependencies: {len(needed_files)} files resolved ({len(queue)} in queue) ...")
@@ -314,11 +351,13 @@ def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_
                                     if child is not None and type(child).__name__ != 'Token':
                                         traverse_stub_target(child, in_header)
                             except TypeError:
+                                # A leaf of the pyslang AST is not iterable, so TypeError *is* the recursion's
+                                # base case rather than an error: it must stay silent and stay this narrow.
                                 pass
                                 
                         traverse_stub_target(tree.root)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _note_scan_failure("parsing with pyslang", e, locals())
 
     sys.stdout.write(f"\r  -> Tracing active dependencies: Done! ({len(needed_files)} active files resolved)     \n")
     sys.stdout.flush()
@@ -336,6 +375,7 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
     allowing developers to quickly check if the Top-Level wiring generated by
     Ollivander is syntactically and dimensionally correct.
     """
+    _scan_failures.clear()
 
     def parse_struct_literal(body):
         fields = {}
@@ -692,11 +732,13 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
                         if child is not None and type(child).__name__ != 'Token':
                             traverse_our(child)
                 except TypeError:
+                    # A leaf of the pyslang AST is not iterable, so TypeError *is* the recursion's
+                    # base case rather than an error: it must stay silent and stay this narrow.
                     pass
             
             traverse_our(tree.root)
-        except Exception:
-            pass
+        except Exception as e:
+            _note_scan_failure("parsing with pyslang", e, locals())
 
     # 2. Extract paths from the Bender-generated compile script
     # We use the standard QuestaSim compile script generated by Bender to locate
@@ -752,8 +794,8 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
                                         bp_path = bld_path.parent / bp_path
                                 if bp_path.exists():
                                     sv_files.append(str(bp_path))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _note_scan_failure("reading a Bender file list", e, locals())
     # Pre-scan all SystemVerilog files in the compile list to discover struct fields, package definitions, and packed types
     global_struct_fields = {}
     global_name_to_pkg = {}
@@ -846,8 +888,8 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
                         fields = parse_struct_literal(body_match.group(1))
                         if name not in global_struct_fields or len(fields) > len(global_struct_fields[name]):
                             global_struct_fields[name] = fields
-        except Exception:
-            pass
+        except Exception as e:
+            _note_scan_failure("pre-scanning struct definitions", e, locals())
 
     # Transitive propagation of struct fields across assignments
     propagated = True
@@ -871,8 +913,8 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
                     if parent_base in global_struct_fields and name not in global_struct_fields:
                         global_struct_fields[name] = global_struct_fields[parent_base]
                         propagated = True
-            except Exception:
-                pass
+            except Exception as e:
+                _note_scan_failure("propagating struct fields", e, locals())
         pass_idx += 1
 
     # 2b. Also include modules/interfaces defined and instantiated in files that are compiled completely (fast compile targets)
@@ -918,11 +960,13 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
                                 if child is not None and type(child).__name__ != 'Token':
                                     traverse_fast(child)
                         except TypeError:
+                            # A leaf of the pyslang AST is not iterable, so TypeError *is* the recursion's
+                            # base case rather than an error: it must stay silent and stay this narrow.
                             pass
                     
                     traverse_fast(tree.root)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _note_scan_failure("parsing with pyslang", e, locals())
 
     # Filter out SystemVerilog keywords that might have triggered the instantiation regex
     keywords = {'if', 'case', 'for', 'while', 'always', 'always_comb', 'always_ff', 'always_latch', 'assign', 'logic', 'wire', 'reg', 'bit', 'int', 'struct', 'typedef', 'enum', 'return', 'else', 'begin', 'end'}
@@ -957,8 +1001,8 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
                 content_clean = strip_comments(Path(f).read_text(encoding='utf-8', errors='ignore'))
                 for m in re.findall(r'\b(?:module|interface)\s+([a-zA-Z_0-9]+)\b', content_clean):
                     completely_compiled_names.add(m)
-        except Exception:
-            pass
+        except Exception as e:
+            _note_scan_failure("analyzing module hierarchies", e, locals())
 
     # 3. Extract exact signatures
     stubs_out = []
@@ -1086,8 +1130,8 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
                     intf_code += "\n".join(imports) + "\n"
                 intf_code += intf_match.group(0)
                 extracted.append(intf_code)
-        except Exception:
-            pass
+        except Exception as e:
+            _note_scan_failure("extracting interfaces", e, locals())
         return "\n\n".join(extracted)
 
     # Generate in-place stubs for each skipped file
@@ -1314,8 +1358,8 @@ endmodule
                                                 rel_path = os.path.relpath(stub_abs, bld_path.parent).replace('\\', '/')
                                                 bld_tokens.append(rel_path)
                                                 verilator_files.append(f'generated/.stubs/{stub_file_mapping[bp_resolved_abs]}')
-                                            except Exception:
-                                                pass
+                                            except Exception as e:
+                                                _note_scan_failure("mapping a stub into the compile list", e, locals())
                             else:
                                 bld_tokens.append(bp)
 
@@ -1437,3 +1481,7 @@ endmodule
 
     with open(outdir_path / "compile_verilator_fast.f", "w") as f:
         f.write(comment_hash + "\n" + '\n'.join(verilator_f))
+
+    # Whatever the scans could not read or parse, said once, at the end: a fast-check that passes
+    # over incomplete stubs is the failure mode this reporting exists to make visible.
+    _report_scan_failures()

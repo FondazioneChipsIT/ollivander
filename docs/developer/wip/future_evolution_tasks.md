@@ -2,6 +2,8 @@
 
 This document tracks possible future architectural improvements and features for the Ollivander SoC Generator.
 
+Companion document in this directory: [`circt_vs_custom_ir_analysis.md`](circt_vs_custom_ir_analysis.md).
+
 ---
 
 ## 1. Extension of the SystemVerilog Intermediate Representation (SV-IR)
@@ -152,3 +154,35 @@ The file's justification for this ("functionally correct since the AXI ID field 
 `floogen_cfg.yml.mako` hardcodes a set of NoC design choices that the SoC description cannot express: the collective-communication enables (`en_narrow_multicast`, `en_wide_multicast`, `en_barrier`, `en_wide_reduction` with its `rd_pipeline_depth: 5` and `cut_offload_intf`), `decouple_rw: Phys`, `vc_impl: naive` and `use_id_table`. Every generated NoC therefore gets the same routing and collective feature set regardless of what the project needs.
 
 *Decision to take*: whether to extend `NoCSettings` to expose them, and with what defaults. Not urgent — the current values suit all seven examples — but any project that wants, say, multicast disabled or a different reduction pipeline depth currently has no knob, and the knob must live in the schema rather than in a template copy, for the same single-source-of-truth reason that drove the width hookup.
+
+---
+
+## 4. Input Validation: What Is Still Missing
+
+Ollivander refuses malformed input rather than absorbing it, and what it does refuse is documented for users in section 6 of `docs/soc_configuration_guide.md`. Three gaps remain.
+
+### 4.1 The Remaining By-Name References
+
+`clock_domain` and `software_stack.boot_memory` are resolved against what the description declares. Three other references are not, each for a reason that has to be decided before it can be checked:
+
+*   The component and port named in an `interrupts` source (`"mailbox.snd_irq_o[4]"`). The port half is already caught, fatally, when the wiring resolves it against the module; the *component* half is not, and a source may deliberately be `none`, or a bitwise expression over several components.
+*   The hierarchical `instance` of a `testbench.preload_memories` entry. It names RTL hierarchy that the generator only partly knows — a path inside an external IP is legitimate and unverifiable at generation time.
+*   The `target` of a `macro_settings` export (`"[9,3].East"` for NoC, `"host"` for crossbar). A malformed coordinate is caught downstream; one that is well formed but names a router outside the grid is not.
+
+*Decision to take*: for each, whether a reference that cannot be resolved is an error or a legitimately deferred one. The preload path is the clearest case for leaving it alone; the interrupt source component is the clearest case for checking it.
+
+### 4.2 `` `default_nettype none `` in Generated Sources
+
+An independent safety net: it would turn any undeclared signal into an elaboration error instead of an implicit wire. Attractive because it catches a whole family of mistakes by their *consequence* rather than their cause — the floating clock that motivated the validation work would have been caught by this too, from the other end.
+
+#### Difficulties & Mitigation Strategies
+*   **It may surface implicit nets that already exist**, in generated code or in the hand-written components, and each would have to be judged rather than mechanically fixed.
+    *   *Mitigation*: add the directive to one generated file at a time, starting with the SoC top-level, and run the fast-check after each — it is the cheapest gate that sees elaboration.
+
+### 4.3 Pydantic Models for the Free-Form Blocks
+
+`interfaces`, `system_config`, `features`, `placement`, `dedicated_clock_div`, `testbench` and `software_stack` are validated by a shape specification in `soc_schema.py` while remaining plain dictionaries at run time. Turning them into real models would remove that parallel specification, but it validates nothing more, so this is internal cleanup rather than a correctness matter.
+
+#### Difficulties & Mitigation Strategies
+*   **The consumer surface is large**: 123 dictionary-style accesses of `interfaces` alone, across Python and Mako, plus the equivalent for the other blocks.
+    *   *Mitigation*: worth doing only alongside a refactor that already touches those consumers — the SV-IR extension of chapter 1 is the natural occasion.
