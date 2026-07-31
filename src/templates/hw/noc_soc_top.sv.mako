@@ -114,8 +114,8 @@ module ${top_level_module_name}
       g_id_w   = config.topology.global_bus.mst_id_width
   else:
       narrow_net = config.topology.noc_settings.networks.get('narrow') if config.topology.noc_settings and config.topology.noc_settings.networks else None
-      g_addr_w = narrow_net.addr_width if narrow_net else 48
-      g_data_w = narrow_net.data_width if narrow_net else 64
+      g_addr_w = narrow_net.addr_width
+      g_data_w = narrow_net.data_width
       g_user_w = 10
       g_id_w   = 4
 %>

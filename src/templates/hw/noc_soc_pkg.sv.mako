@@ -94,9 +94,15 @@ package ${pkg};
       g_id_w   = config.topology.global_bus.mst_id_width
   else:
       narrow_net = config.topology.noc_settings.networks.get('narrow')
-      g_addr_w = narrow_net.addr_width if narrow_net else 48
-      g_data_w = narrow_net.data_width if narrow_net else 64
-      g_user_w = 10
+      g_addr_w = narrow_net.addr_width
+      g_data_w = narrow_net.data_width
+      ## A crossbar SoC takes the user width from the global bus the user declares; a NoC SoC has
+      ## no such field, so it is derived from the same user_mapping the networks are derived from -
+      ## the span up to the highest bit that means something, the AMO reservation id and the ECC
+      ## error flag. It used to be a hardcoded 10, which had no relation to that mapping and made
+      ## every macro export ports five bits wider than the network they were connected to.
+      um = config.system_settings.user_mapping if config.system_settings else None
+      g_user_w = (max(um.amo_msb, um.ecc_err_bit) + 1) if um else 1
       g_id_w   = 4
       
   wide_net = config.topology.noc_settings.networks.get('wide') if config.topology.noc_settings and config.topology.noc_settings.networks else None

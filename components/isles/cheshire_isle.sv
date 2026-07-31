@@ -329,6 +329,14 @@ module cheshire_isle
     
     cfg.AxiUserAmoMsb     = ollivander_soc_pkg::AxiUserAmoMsb;
     cfg.AxiUserAmoLsb     = ollivander_soc_pkg::AxiUserAmoLsb;
+    // The serial link raises one bit of the AMO field to tell its own atomics apart from a core's
+    // ('user |= 1 << SlinkUserAmoBit' in cheshire_soc.sv), while each core writes its index into
+    // the same field ('user[AmoMsb:AmoLsb] = CoreUserAmoOffs + i'). The bit must therefore be one
+    // no core index can set, which is what cheshire's convention means by reserving the field's
+    // MSB for the link - so it follows AxiUserAmoMsb rather than cheshire's own default of 1.
+    // With the default and our three-bit field the two collide from the third core onwards, since
+    // index 2 raises bit 1: two atomics that the LLC could no longer distinguish, silently.
+    cfg.SlinkUserAmoBit   = ollivander_soc_pkg::AxiUserAmoMsb;
 
     // RegBus Atomics
     cfg.RegMaxReadTxns    = ollivander_soc_pkg::RegMaxReadTxns;

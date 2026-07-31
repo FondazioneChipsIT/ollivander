@@ -175,6 +175,17 @@ class Topology(StrictModel):
             raise ValueError("Topology type 'crossbar' requires a 'global_bus' definition.")
         if self.type == "noc" and not self.noc_settings:
             raise ValueError("Topology type 'noc' requires a 'noc_settings' definition.")
+        if self.type == "noc" and self.noc_settings:
+            # Ollivander emits a FlooNoC of type "narrow-wide", with the four protocols
+            # narrow_in/narrow_out/wide_in/wide_out, so both networks are structurally required by
+            # what is generated rather than merely conventional. Leaving one out used to be
+            # accepted: the templates fell back to inventing its widths, and the result was a
+            # network the description never asked for, sized by numbers nobody chose.
+            missing = {"narrow", "wide"} - set(self.noc_settings.networks or {})
+            if missing:
+                raise ValueError(
+                    f"Topology type 'noc' requires both a 'narrow' and a 'wide' network in "
+                    f"'noc_settings.networks'; missing: {', '.join(sorted(missing))}.")
         return self
 
 # ==============================================================================

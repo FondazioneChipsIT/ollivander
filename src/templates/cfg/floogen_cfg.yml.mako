@@ -145,8 +145,10 @@ routing:
   vc_impl: naive
 
 <%
-  narrow_net = config.topology.noc_settings.networks.get('narrow') if config.topology.noc_settings and config.topology.noc_settings.networks else None
-  user_id_w = getattr(narrow_net, 'id_width', None) if narrow_net else None
+  ## Both networks are guaranteed by the schema (Topology.check_topology_config), so neither the
+  ## lookup nor the widths below need a fallback.
+  narrow_net = config.topology.noc_settings.networks['narrow']
+  user_id_w = getattr(narrow_net, 'id_width', None)
   if user_id_w is not None:
       g_id_w = user_id_w
   else:
@@ -185,11 +187,11 @@ routing:
   ## so reading them here is what keeps the FlooNoC network and the SoC-side types a single
   ## source of truth: a hardcoded copy would drift silently the day a project changes them.
   ## The multicast mask is an address mask, so its width IS the address width.
-  wide_net = config.topology.noc_settings.networks.get('wide') if config.topology.noc_settings and config.topology.noc_settings.networks else None
-  n_data_w = narrow_net.data_width if narrow_net else 64
-  n_addr_w = narrow_net.addr_width if narrow_net else 48
-  w_data_w = wide_net.data_width if wide_net else 512
-  w_addr_w = wide_net.addr_width if wide_net else 48
+  wide_net = config.topology.noc_settings.networks['wide']
+  n_data_w = narrow_net.data_width
+  n_addr_w = narrow_net.addr_width
+  w_data_w = wide_net.data_width
+  w_addr_w = wide_net.addr_width
 %>
 protocols:
   - name: "narrow_in"
