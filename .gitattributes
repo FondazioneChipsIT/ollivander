@@ -1,0 +1,19 @@
+# Copyright 2026 Fondazione Chips-IT.
+# Licensed under the Solderpad Hardware License, Version 0.51, see LICENSE for details.
+# SPDX-License-Identifier: SHL-0.51
+#
+# Line-ending policy: everything in this repository is LF, in the working tree as well as in the
+# index. Every tool the flow uses writes LF (Bender, Verible, PeakRDL, FlooGen, Padrick, and the
+# generated Makefiles and TCL scripts), and so do the two reference SoCs this project is modelled
+# on, so LF is the ecosystem's convention rather than a preference.
+#
+# Before this file existed the repository was mixed - 44 CRLF files against 83 LF, with no rule by
+# directory or extension - because part of the sources had been authored through the now-obsolete
+# Windows workflow. That mixture cost two accidental conversions, each inflating a hundred-line
+# change into a two-thousand-line diff, and it required a manual check before rewriting any file
+# from a script. Declaring the policy here removes the class of mistake instead of guarding
+# against it: a checkout normalizes on the way in, so a file edited on a Windows host and
+# committed back arrives as LF.
+#
+# 'text=auto' lets git detect text files, and 'eol=lf' fixes what it writes to the working tree.
+* text=auto eol=lf
