@@ -161,15 +161,24 @@ routing:
       extra_bits = math.ceil(math.log2(max(tot_slvs, 1))) if tot_slvs > 1 else 0
       g_id_w = max(host_mst_id + extra_bits + 1, 6)
 
-  ## Width of the AXI user field carried by BOTH NoC networks: the span of the SoC user
-  ## mapping that has defined semantics, i.e. up to the highest of the AMO reservation bits
-  ## and the ECC error flag. Derived rather than hardcoded so the networks keep carrying
-  ## every meaningful bit if the mapping ever moves. Atomics are resolved inside the isles
-  ## (every generated join sets EnAtopAdapter=0), so the AMO bits must survive whichever
-  ## network a request happens to ride - including the wide one, which previously carried
-  ## a single user bit and silently stripped them.
+  ## Width of the AXI user field carried by the NARROW network: the span of the SoC user mapping
+  ## that has defined semantics, i.e. up to the highest of the AMO reservation bits and the ECC
+  ## error flag. Derived rather than hardcoded so the network keeps carrying every meaningful bit
+  ## if the mapping ever moves.
+  ##
+  ## The WIDE network deliberately keeps a single user bit, and the reason is worth stating because
+  ## widening it looks like an improvement and is not. Every endpoint that reads user bits sits
+  ## behind a narrow/wide join, and floo_pkg::axi_join_cfg takes UserWidth as the *maximum* of the
+  ## two configurations - so the joined port already carries the narrow width whatever the wide one
+  ## is, and the L2, the only endpoint using those bits (AxiUserAtop over user[1:0]), gains nothing
+  ## from a wider wide network. What it does gain is a mismatch: snitch_cluster generates its own
+  ## wide port as 'typedef logic user_dma_t', one bit, because a DMA transfer carries no atomic
+  ## reservation. Raising the network to 5 therefore moved the truncation from the network to every
+  ## cluster port instead of removing it, at 4 user bits per channel - measured as 64 vopt-2241
+  ## warnings across the 16 clusters of super_mesh.
   um = config.system_settings.user_mapping if config.system_settings else None
-  g_user_w = (max(um.amo_msb, um.ecc_err_bit) + 1) if um else 1
+  g_narrow_user_w = (max(um.amo_msb, um.ecc_err_bit) + 1) if um else 1
+  g_wide_user_w = 1
 
   ## Physical dimensions of the two networks, from the SoC description. The generated SoC
   ## package derives its narrow/wide channel types from the same fields (noc_soc_pkg.sv.mako),
@@ -192,7 +201,7 @@ protocols:
     user_width:
       collective_mask: ${n_addr_w}
       collective_op: 4 # width of FlooNoC collect_op_e, fixed by the IP
-      user: ${g_user_w}
+      user: ${g_narrow_user_w}
   - name: "narrow_out"
     type: "narrow"
     protocol: "AXI4"
@@ -202,7 +211,7 @@ protocols:
     user_width:
       collective_mask: ${n_addr_w}
       collective_op: 4
-      user: ${g_user_w}
+      user: ${g_narrow_user_w}
   - name: "wide_in"
     type: "wide"
     protocol: "AXI4"
@@ -212,7 +221,7 @@ protocols:
     user_width:
       collective_mask: ${w_addr_w}
       collective_op: 4
-      user: ${g_user_w}
+      user: ${g_wide_user_w}
   - name: "wide_out"
     type: "wide"
     protocol: "AXI4"
@@ -222,7 +231,7 @@ protocols:
     user_width:
       collective_mask: ${w_addr_w}
       collective_op: 4
-      user: ${g_user_w}
+      user: ${g_wide_user_w}
 
 endpoints:
 % for ep in endpoints:
