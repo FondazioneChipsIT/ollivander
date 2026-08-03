@@ -80,7 +80,7 @@ export INJECT_MACROS_SCRIPT
 % endif
 
 $(abspath ./bender):
-	@echo "\n[MAKE] Downloading Bender..."
+	@printf "\n[MAKE] Downloading Bender...\n"
 	@curl --proto '=https' --tlsv1.2 -sSf https://fabianschuiki.github.io/bender/init | bash -s -- 0.31.0
 
 .PHONY: prep-sim build-sim run-sim fast-check build-sw
@@ -95,10 +95,14 @@ bender_work/.fetched: $(BENDER_PREREQ) Bender.yml
 
 update-hw: bender_work/.fetched
 
+<%
+  sw_toolchain = (config.get("software_stack") or {}).get("toolchain", "riscv64-unknown-elf-")
+%>\
 build-sw:
 % if config.get("software_stack"):
-	@echo "\n[MAKE] Compiling C firmware..."
-	@$(MAKE) -C $(OUT_DIR)/sw all || { echo "\n[ERROR] Software compilation failed!"; exit 1; }
+	@printf "\n[MAKE] Compiling C firmware...\n"
+	@$(call ensure-tools,${sw_toolchain}gcc:riscv-gcc); \
+	$(MAKE) -C $(OUT_DIR)/sw all || { printf "\n[ERROR] Software compilation failed!\n"; exit 1; }
 <%
 testbench_cfg = config.testbench or {}
 preload_mems = testbench_cfg.get("preload_memories", [])
@@ -260,33 +264,35 @@ for mem in preload_mems:
     % endif
   % endfor
 % else:
-	@echo "\n[MAKE] No software stack configured. Skipping firmware compilation."
+	@printf "\n[MAKE] No software stack configured. Skipping firmware compilation.\n"
 % endif
 
 prep-sim: update-hw
-	@echo "\n[MAKE] Extracting SystemVerilog compilation script via Bender..."
+	@printf "\n[MAKE] Extracting SystemVerilog compilation script via Bender...\n"
 	$(BENDER) script vsim $(BENDER_TARGETS) > $(OUT_DIR)/compile_vsim.tcl
 % if global_defines:
-	@echo "\n[MAKE] Injecting compilation macros (+define+) into compilation script..."
+	@printf "\n[MAKE] Injecting compilation macros (+define+) into compilation script...\n"
 	@python3 -c "$$INJECT_MACROS_SCRIPT" $(OUT_DIR)/compile_vsim.tcl
 % endif
 
 build-sim: prep-sim build-sw
-	@echo "\n[MAKE] Compiling RTL with QuestaSim (vlog)..."
+	@printf "\n[MAKE] Compiling RTL with QuestaSim (vlog)...\n"
 	@mkdir -p logs
+	@$(call ensure-tools,vsim:questa); \
 	$(VSIM) -c -l logs/compile.log -suppress 13233 -do "set err [source $(OUT_DIR)/compile_vsim.tcl]; if {\$$err == 1} {quit -code 1}; quit"
 
 fast-check: prep-sim
-	@echo "\n[MAKE] Generating exact stubs for external IPs..."
-	@FAST_CHECK_TOOL=$(FAST_CHECK_TOOL) $(PYTHON) $(OLLIVANDER) -c $(SOC_YAML) $$(if [ -n "$(ENV_YAML)" ]; then echo "-a $(ENV_YAML)"; fi) -o $(OUT_DIR) --generate-stubs || { echo "\n[ERROR] Stub generation failed!"; exit 1; }
-	@if [ "$(FAST_CHECK_TOOL)" = "verilator" ]; then \
-		echo "\n[MAKE] Linting/Checking fast RTL with Verilator..."; \
+	@printf "\n[MAKE] Generating exact stubs for external IPs...\n"
+	@FAST_CHECK_TOOL=$(FAST_CHECK_TOOL) $(PYTHON) $(OLLIVANDER) -c $(SOC_YAML) $$(if [ -n "$(ENV_YAML)" ]; then echo "-a $(ENV_YAML)"; fi) -o $(OUT_DIR) --generate-stubs || { printf "\n[ERROR] Stub generation failed!\n"; exit 1; }
+	@$(call ensure-tools,$(if $(filter verilator,$(FAST_CHECK_TOOL)),verilator:verilator,vsim:questa)); \
+	if [ "$(FAST_CHECK_TOOL)" = "verilator" ]; then \
+		printf "\n[MAKE] Linting/Checking fast RTL with Verilator...\n"; \
 		$(VERILATOR) -Wno-TIMESCALEMOD -Wno-ASCRANGE -Wno-SYMRSVDWORD -f $(OUT_DIR)/compile_verilator_fast.f --top-module $(TOP_MOD); \
 	else \
-		echo "\n[MAKE] Compiling fast RTL (packages and stubs) with QuestaSim..."; \
+		printf "\n[MAKE] Compiling fast RTL (packages and stubs) with QuestaSim...\n"; \
 		mkdir -p logs; \
 		$(VSIM) -c -l logs/fast_compile.log -suppress 13233 -do "source $(OUT_DIR)/compile_vsim_fast.tcl; quit"; \
-		echo "\n[MAKE] Elaborating top-level with Unresolved Blackboxes..."; \
+		printf "\n[MAKE] Elaborating top-level with Unresolved Blackboxes...\n"; \
 		: '13314 and 13233 are noise: relaxed SV input port kind, and a design unit'; \
 		: 'overwriting an earlier one in the library, which is normal with Bender.'; \
 		: 'Message 2912 (port connected by name does not exist) and 2241 (connection'; \
@@ -295,10 +301,10 @@ fast-check: prep-sim
 		: 'stub-based elaboration, and those two are the errors that report a mismatch.'; \
 		$(VSIM) -c -l logs/fast_check.log -do "if {[catch {vopt -suppress 13314,13233 +bbox_u ${top_level_module_name} -o ${top_level_module_name}_fast_check}]} {quit -code 1}; quit"; \
 	fi
-	@echo "\n[SUCCESS] Fast architecture check passed!"
+	@printf "\n[SUCCESS] Fast architecture check passed!\n"
 
 run-sim:
-	@echo "\n[MAKE] Running simulation in QuestaSim..."
+	@printf "\n[MAKE] Running simulation in QuestaSim...\n"
 	@# Message severity policy. Only genuine third-party noise is hidden; anything that can
 	@# report a defect in the generated code stays visible. See section 3 of
 	@# docs/developer/wip/future_evolution_tasks.md for the open items behind these choices.
@@ -326,10 +332,11 @@ run-sim:
 	@# (zero replication multiplier) produced no message at all on either crux or mesh.
 	@mkdir -p logs/stdout
 	@ln -snf ../generated logs/generated
+	@$(call ensure-tools,vsim:questa); \
 	cd logs && $(VSIM) -c -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,3009,8386 -warning 2732 -do "run -all; quit"
 
 gui:
-	@echo "\n[MAKE] Launching QuestaSim GUI..."
+	@printf "\n[MAKE] Launching QuestaSim GUI...\n"
 	@# Same message severity policy as run-sim above, kept identical on purpose so that a
 	@# failure reproduced in the GUI reports exactly what the batch run reported.
 	@#
@@ -339,4 +346,5 @@ gui:
 	@# the point of opening the GUI in the first place.
 	@mkdir -p logs/stdout
 	@ln -snf ../generated logs/generated
+	@$(call ensure-tools,vsim:questa); \
 	cd logs && $(VSIM) -gui -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -voptargs=+acc -suppress 13314,3009,8386 -warning 2732

@@ -184,6 +184,8 @@ Two consequences of that difference matter in practice. An override on a package
 
 Ollivander collects the entries and writes them into the project's `Bender.local`, a file it owns: it is rewritten on every generation, and removed once no forcing is left. It is therefore not a place to record anything by hand - a hand-written forcing would survive exactly until the next `make generate`.
 
+More generally, **`Bender.yml`, `Bender.lock` and `Bender.local` are local build state** — git-ignored, and never to be copied between machines or working copies. The lock in particular may record a patched checkout as a *path* dependency, and that path is only meaningful next to the `bender_work/` it was created with: carried elsewhere, Bender will not re-fetch the package, and the generator refuses to proceed, naming the missing packages and the remedy (`make clean` and regenerate).
+
 Because Bender says nothing about a forcing it honours, every generation reports the set that is in effect, and where each entry came from:
 
 ```

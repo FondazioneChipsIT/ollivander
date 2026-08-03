@@ -37,6 +37,11 @@ prometheus_soc/
 
 Before running the generator, ensure you have `make` installed on your system. You don't even need to worry about having the correct version of Python installed: the `make setup` command will automatically download and configure a fully isolated Python environment (using `uv`) along with all the required dependencies.
 
+Two environment prerequisites are worth knowing before the first `make generate`:
+
+*   **Bender** must be reachable on `PATH` (it is not covered by `make setup`). It is a single static binary; the official installer drops it in the current directory, so installing it straight into the virtual environment's `bin/` — which the Makefile targets already prepend to `PATH` — works well: `cd .venv/bin && curl --proto '=https' --tlsv1.2 -sSf https://pulp-platform.github.io/bender/init | bash && cd -`.
+*   **Some transitive dependencies hardcode SSH URLs** (`git@github.com:...`) in their own manifests. GitHub does not allow anonymous SSH, so on a machine without a registered key those fetches fail. Redirect them to HTTPS once per machine: `git config --global url."https://github.com/".insteadOf "git@github.com:"`.
+
 ---
 
 ## 3. Step-by-Step Integration

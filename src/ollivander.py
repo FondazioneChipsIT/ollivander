@@ -535,10 +535,38 @@ def main():
                 print("  [INFO] Bender.lock disagrees with the declared revisions: re-resolving dependencies.")
             with Spinner("  -> Running 'bender update' (this may take a minute)..."):
                 subprocess.run([bender_exe, "update"], cwd=env.bender_dir, check=True, capture_output=True)
-        print("  [SUCCESS] External IPs successfully fetched and resolved.")
     except subprocess.CalledProcessError as e:
         print(f"\n[ERROR] Failed to fetch dependencies with Bender.\nStdout: {e.stdout.decode(errors='ignore')}\nStderr: {e.stderr.decode(errors='ignore')}")
         sys.exit(1)
+
+    # A package the lock records as a path dependency is one Bender never re-fetches:
+    # if the directory is gone, 'bender checkout' merely warns (W22) and exits 0, and
+    # the failure surfaces phases later disguised as something else - a PeakRDL include
+    # that cannot be found, an RTL file missing from the manifest. Patched checkouts are
+    # exactly the packages that end up recorded this way (a dirty checkout is degraded
+    # to a path dependency, as the registry documents), so the two ways to get here are
+    # both realistic: a lost bender_work/ with a surviving lock, or Bender.* files
+    # carried over from another machine, whose paths were valid only there.
+    missing_paths = []
+    if lock_file.is_file():
+        try:
+            lock_data = yaml.safe_load(lock_file.read_text()) or {}
+            for pkg_name, entry in (lock_data.get("packages") or {}).items():
+                source = entry.get("source") or {}
+                if "Path" in source and not (env.bender_dir / source["Path"]).is_dir():
+                    missing_paths.append(pkg_name)
+        except yaml.YAMLError:
+            pass  # An unreadable lock already fails loudly in bender_lock_is_stale.
+    if missing_paths:
+        print(f"\n[ERROR] These packages are recorded as path dependencies in Bender.lock but are "
+              f"missing from the checkout:\n          {', '.join(sorted(missing_paths))}\n"
+              f"        Bender never re-fetches a path dependency, so generation would fail phases "
+              f"later with an unrelated-looking message.\n"
+              f"        This happens when a patched checkout is lost, or when Bender.yml/Bender.lock/"
+              f"Bender.local are carried over from another machine.\n"
+              f"        Run 'make clean' in the project and regenerate.")
+        sys.exit(1)
+    print("  [SUCCESS] External IPs successfully fetched and resolved.")
         
     # Merge custom patches and pre-build commands from Environment YAMLs
     for p in [args.env_config, args.append_env]:

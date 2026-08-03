@@ -27,12 +27,19 @@ TEST_CLEAN_SETUP ?= 0
 TEST_SIM         ?= 0
 FAST_CHECK_TOOLS ?= questa
 
-MODULES_TO_LOAD := bender riscv-gcc
+# "tool:module" pairs for ensure-tools (defined in ollivander.mk): a tool already
+# on PATH is never displaced, a missing one is loaded from Environment Modules
+# where available. QuestaSim is needed by the simulation run as well as by its
+# fast-check, so TEST_SIM=1 requires it regardless of FAST_CHECK_TOOLS.
+TOOL_PAIRS := bender:bender riscv64-unknown-elf-gcc:riscv-gcc
 ifneq ($(filter questa,$(FAST_CHECK_TOOLS)),)
-  MODULES_TO_LOAD += questa
+  TOOL_PAIRS += vsim:questa
+endif
+ifneq ($(filter 1,$(TEST_SIM)),)
+  TOOL_PAIRS += vsim:questa
 endif
 ifneq ($(filter verilator,$(FAST_CHECK_TOOLS)),)
-  MODULES_TO_LOAD += verilator
+  TOOL_PAIRS += verilator:verilator
 endif
 
 # ------------------------------------------------------------------------------
@@ -85,20 +92,17 @@ test-all:
 	@echo "  -> Clean setup                 : $(TEST_CLEAN)"
 	@echo "  -> Rebuild venv                : $(TEST_CLEAN_SETUP)"
 	@echo "======================================================================"
-	@. /etc/profile.d/modules.sh && module load $(MODULES_TO_LOAD) && \
-	export PATH && \
-	echo "[TEST] Loaded modules: $(MODULES_TO_LOAD)" && \
-	echo "[DEBUG] PATH inside test-all recipe: \$\${PATH}" && \
-	fmt_dur() { printf "%02d:%02d:%02d" $$(($$1/3600)) $$(($$1%3600/60)) $$(($$1%60)); } && \
-	log_step() { printf "  -> %-22s : %s\n" "$$1" "$$2" >> soc_cfg_examples/test_summary.log; } && \
-	close_project() { log_step "Project Total Time" "$$(fmt_dur $$(( $$(date +%s) - $$1 )))"; echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; } && \
-	suite_start=$$(date +%s) && \
+	@$(call ensure-tools,$(sort $(TOOL_PAIRS))); \
+	fmt_dur() { printf "%02d:%02d:%02d" $$(($$1/3600)) $$(($$1%3600/60)) $$(($$1%60)); }; \
+	log_step() { printf "  -> %-22s : %s\n" "$$1" "$$2" >> soc_cfg_examples/test_summary.log; }; \
+	close_project() { log_step "Project Total Time" "$$(fmt_dur $$(( $$(date +%s) - $$1 )))"; echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; }; \
+	suite_start=$$(date +%s); \
 	if [ "$(TEST_CLEAN_SETUP)" = "1" ]; then \
-		echo "\n[TEST] Rebuilding Python virtual environment..."; \
+		printf "\n[TEST] Rebuilding Python virtual environment...\n"; \
 		rm -rf $(VENV_DIR); \
 		$(MAKE) -C $(OLLIVANDER_ROOT) setup || exit 1; \
 	elif [ ! -f "$(PYTHON)" ]; then \
-		echo "\n[TEST] Virtual environment not found. Running root 'make setup'..."; \
+		printf "\n[TEST] Virtual environment not found. Running root 'make setup'...\n"; \
 		$(MAKE) -C $(OLLIVANDER_ROOT) setup || exit 1; \
 	fi; \
 	echo "  -> Cleaning previous log files for selected projects..."; \
@@ -121,7 +125,7 @@ test-all:
 	for p in $(TEST_PROJECTS); do \
 		if [ ! -d "soc_cfg_examples/$$p" ]; then \
 			proj_start=$$(date +%s); \
-			echo "\n----------------------------------------------------------------------"; \
+			printf "\n----------------------------------------------------------------------\n"; \
 			echo "[TEST] Project: $$p"; \
 			echo "----------------------------------------------------------------------"; \
 			echo "[ERROR] Project directory soc_cfg_examples/$$p does not exist!"; \
@@ -144,7 +148,7 @@ test-all:
 		if [ -z "$$proj_name" ]; then \
 			proj_name="$$p"; \
 		fi; \
-		echo "\n----------------------------------------------------------------------"; \
+		printf "\n----------------------------------------------------------------------\n"; \
 		echo "[TEST] Project: $$proj_name ($$p)"; \
 		echo "----------------------------------------------------------------------"; \
 		echo "Project: $$proj_name ($$p)" >> soc_cfg_examples/test_summary.log; \
@@ -225,7 +229,7 @@ test-all:
 		close_project $$proj_start; \
 	done; \
 	suite_dur=$$(fmt_dur $$(( $$(date +%s) - suite_start ))); \
-	echo "\n======================================================================"; \
+	printf "\n======================================================================\n"; \
 	echo "======================================================================" >> soc_cfg_examples/test_summary.log; \
 	if [ -n "$$failed_tests" ]; then \
 		echo "Final Result    : FAILED" >> soc_cfg_examples/test_summary.log; \
