@@ -180,9 +180,53 @@ dependencies:
   obi:
     git: "https://github.com/pulp-platform/obi.git"
     version: "0.1.7"
+    # obi_to_apb uses the same common_cells assertion macros as its twin apb_to_obi but
+    # without the OBI_ASSERTS_OFF guard the twin has - an upstream inconsistency (PR
+    # candidate). Under Verilator's single compilation unit OpenTitan's prim_assert
+    # dummy macros win the name collision and these calls stop parsing, so the verilator
+    # flow defines OBI_ASSERTS_OFF; the guard makes that switch actually cover the file.
+    # No behavioural change for QuestaSim, where the define is never set.
+    patches:
+      - file: "{bender_work}/obi/src/obi_to_apb.sv"
+        search: "  `ASSERT_INIT(no_rready, ObiCfg.UseRReady == 0,"
+        replace: "`ifndef OBI_ASSERTS_OFF\n  `ASSERT_INIT(no_rready, ObiCfg.UseRReady == 0,"
+      - file: "{bender_work}/obi/src/obi_to_apb.sv"
+        search: "      \"Address width mismatch between APB and OBI ports!\")"
+        replace: "      \"Address width mismatch between APB and OBI ports!\")\n`endif"
+  # Transitive dependencies (pulled in by pulp_cluster / redmule / hci): never declared
+  # by a pragma, listed here only to carry patches - run_pre_build_steps applies patches
+  # to any entry whose checkout exists, and an entry with no git source contributes
+  # nothing to the generated manifests.
+  #
+  # hier-icache: a raw SVA property block guarded by SYNTHESIS alone, so every simulator
+  # sees it; Verilator cannot parse the ##[0:1] cycle-delay range (upstream PR candidate:
+  # extend the guard). The added VERILATOR guard nests inside the SYNTHESIS one.
+  hier-icache:
+    patches:
+      - file: "{bender_work}/hier-icache/RTL/L1.5_CACHE/share_icache.sv"
+        search: "   property valid_2_ready;"
+        replace: "`ifndef VERILATOR\n   property valid_2_ready;"
+      - file: "{bender_work}/hier-icache/RTL/L1.5_CACHE/share_icache.sv"
+        search: "       $display(\"@%0dns shared icache ready_2_valid assertion Failed\", $time);"
+        replace: "       $display(\"@%0dns shared icache ready_2_valid assertion Failed\", $time);\n`endif"
+  # neureka: a 36-bit literal in a 9-bit case item; QuestaSim truncates it to the same
+  # 9'h1ff Verilator refuses to guess (upstream PR candidate: fix the literal).
+  neureka:
+    patches:
+      - file: "{bender_work}/neureka/rtl/ctrl/neureka_ctrl.sv"
+        search: "9'h0ffffffff"
+        replace: "9'h1ff"
   opentitan:
     git: "https://github.com/AlSaqr-platform/opentitan.git"
     rev: "212974d8a61c45de6f61354adc55cc08e100ed58"
+    # opentitan's vendored ibex collides with the standalone ibex the safety island brings
+    # into the same graph - every ibex_* global name is declared twice, QuestaSim hides it
+    # as a suppressed design-unit overwrite (13233) and survives on version compatibility,
+    # Verilator's single compilation unit does not. The script renames the vendored side to
+    # ot_ibex_*, discovering the colliding set at every run; inert when either tree is
+    # absent. Same repair family as cva6's aes and spatz/snitch.
+    pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/patch_ibex_ot.py {bender_work}"
   pulp-ethernet:
     git: "https://github.com/pulp-platform/pulp-ethernet.git"
     rev: "db9a90dd27fa85ddbe9b7cd22e03bf43b2c14838"
@@ -191,6 +235,53 @@ dependencies:
     rev: "e8c34e7199cb44417215fa51ccf5b6983599e985"
     bender_targets:
       - "cv32e40p_use_ff_regfile"
+      # cluster_interconnect_wrap still passes hci_interconnect the seven
+    # geometry overrides of an older hci, which current hci derives internally from the
+    # HCI_SIZE macros - four are localparams now and three are not declared at all. Dead
+    # under QuestaSim (discarded with the 2732 warning this suite deliberately keeps
+    # visible, section 3.1 of future_evolution_tasks.md), refused outright by Verilator.
+    # Removing them changes nothing Questa elaborates. NOT an upstream defect: pulp-platform's
+    # master still carries these lines, consistently with the older hci *it* requires - the
+    # incongruence is our own hci forcing (see the hci entry in overrides). This patch aligns
+    # the wrap to that forcing and belongs, at most, in the CHIPS-IT fork alongside it.
+    patches:
+      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
+        search: "        .AWC    ( ADDR_WIDTH             ),"
+        replace: ""
+      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
+        search: "        .DW_LIC ( DATA_WIDTH             ),"
+        replace: ""
+      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
+        search: "        .DW_SIC ( NB_HWPE_PORTS*32       ),"
+        replace: ""
+      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
+        search: "        .AWH    ( 32                     ),"
+        replace: ""
+      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
+        search: "        .DWH    ( 288                    ),"
+        replace: ""
+      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
+        search: "        .OWH    ( 1                      ),"
+        replace: ""
+      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
+        search: "        .AWM    ( ADDR_MEM_WIDTH+2       ),"
+        replace: ""
+      # idma_wrap ties boffs/lrdy on hci_core_intf, members the pinned hci dropped: the
+      # generate branch is dead under our configuration, so QuestaSim never elaborates
+      # it, but Verilator links dotted names in every branch and refuses. Same upstream
+      # thread as the overrides above.
+      - file: "{bender_work}/pulp_cluster/rtl/idma_wrap.sv"
+        search: "        assign tcdm_master[NB_TCDM_PORTS_PER_STRM*s+4].boffs = '0;"
+        replace: ""
+      - file: "{bender_work}/pulp_cluster/rtl/idma_wrap.sv"
+        search: "        assign tcdm_master[NB_TCDM_PORTS_PER_STRM*s+4].lrdy  = '0;"
+        replace: ""
+      - file: "{bender_work}/pulp_cluster/rtl/idma_wrap.sv"
+        search: "        assign tcdm_master[NB_TCDM_PORTS_PER_STRM*s+5].boffs = '0;"
+        replace: ""
+      - file: "{bender_work}/pulp_cluster/rtl/idma_wrap.sv"
+        search: "        assign tcdm_master[NB_TCDM_PORTS_PER_STRM*s+5].lrdy  = '0;"
+        replace: ""
   redmule:
     git: "https://github.com/pulp-platform/redmule.git"
     rev: "dbcba6b1efda24dc909ebdd4ace132f798c8c12b"

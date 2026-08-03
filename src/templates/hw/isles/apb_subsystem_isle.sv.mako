@@ -619,7 +619,7 @@ module ${p_name}_${c_type}
 
  % elif p['type'] == 'aon_timer':
 
-  ${require_file("reg_to_tlul.sv")}
+  ${require_file("olli_reg_to_tlul.sv")}
   // ${p['name']} 
   // This is an OpenTitan IP which natively speaks TileLink-UL (TL-UL).
   // We bridge it seamlessly into the APB subsystem using a double conversion:
@@ -672,12 +672,12 @@ module ${p_name}_${c_type}
   tlul_ot_pkg::tl_h2d_t tl_wdt_req;
   tlul_ot_pkg::tl_d2h_t tl_wdt_rsp;
 
-  reg_to_tlul #(
+  olli_reg_to_tlul #(
     .reg_req_t         ( aon_reg_req_t                   ),
     .reg_rsp_t         ( aon_reg_rsp_t                   ),
     .tl_h2d_t          ( tlul_ot_pkg::tl_h2d_t           ),
     .tl_d2h_t          ( tlul_ot_pkg::tl_d2h_t           )
-  ) i_reg_to_tlul_${p['name']} (
+  ) i_olli_reg_to_tlul_${p['name']} (
     .clk_i     ( clk_i       ),
     .rst_ni    ( pwr_on_rst_ni ),
     .tl_o      ( tl_wdt_req  ),

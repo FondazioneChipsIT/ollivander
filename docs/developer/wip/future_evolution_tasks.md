@@ -2,7 +2,7 @@
 
 This document tracks possible future architectural improvements and features for the Ollivander SoC Generator.
 
-Companion document in this directory: [`circt_vs_custom_ir_analysis.md`](circt_vs_custom_ir_analysis.md).
+Companion documents in this directory: [`circt_vs_custom_ir_analysis.md`](circt_vs_custom_ir_analysis.md), and [`upstream_pr_candidates.md`](upstream_pr_candidates.md) — the single registry of every defect found in an external IP that deserves fixing at its source. Record new ones there, not in commit messages or registry comments alone.
 
 ---
 
@@ -193,13 +193,23 @@ The suite already runs its elaboration gate on two backends: `fast-check` accept
 *   **A second simulator is a second opinion**: the message-suppression work showed how much a single tool's defaults can hide; two-valued simulation semantics and Verilator's stricter scheduling surface a different class of RTL assumptions (X-propagation being the known trade-off in the other direction).
 *   **The suite plumbing already exists**: per-tool log names (`test_fastcheck_<tool>.log`), the `FAST_CHECK_TOOLS` loop in `ollivander_test.mk` and the tool-conditional blocks in `Makefile.vsim.mako` give the pattern to extend rather than a design to invent.
 
+### 5.1 What the 2026-08-03 scouting established
+
+Twelve Verilator iterations over `crossbar` (full design plus testbench, `--binary --timing`, Verilator 5.041) and a probe over `noc`, about three hours in licence-free time. The findings replace the speculation this chapter previously carried.
+
+**Parsing and linking the crossbar family is a solved problem**, and the remedies are one line each: `-t verilator` and `-t cv32e40p_exclude_tracer` at flist generation (upstream manifests already gate their simulation-only files), `+define+ASSERTS_OFF` and `+define+OBI_ASSERTS_OFF` (the IPs' own switches, consistent with a regression that runs `-nosva` anyway), four `+incdir` entries (Verilator does not resolve includes relative to the including file the way `vlog` does), and the exclusion of analog pad primitives (`pmos`, strength specifiers) — the Verilator target simulates the digital top, never the chip wrapper. The banked repairs with value beyond Verilator: five registry patches (obi's unguarded twin, hier-icache's SYNTHESIS-only SVA, neureka's 36-bit literal in a 9-bit case, pulp_cluster's seven dead geometry overrides and four dead interface ties). The first three are genuine upstream defects, verified still present at each repository's HEAD, and are PR candidates; the pulp_cluster pair is not — pulp-platform's master still carries those lines, consistently with the older hci it requires, so they are an alignment to our own hci forcing and live or die with it, `scripts/patch_ibex_ot.py` (opentitan's vendored ibex collides with the standalone ibex on 27 global names), and the rename of our own `reg_to_tlul` to `olli_reg_to_tlul` (it collided with `register_interface`'s module of the same name).
+
+**The structural theme is the single compilation unit.** QuestaSim compiles per file and overwrites same-name design units in the library (message 13233, suppressed as routine); Verilator preprocesses and elaborates everything as one unit, so every same-name package, module, interface and macro in the graph collides visibly. Six distinct manifestations in one day, several of which are latent in the QuestaSim flow too — which side of a collision wins there depends on compile order and is not the side the RTL was written against.
+
+**Where each family stands.** `crossbar` stops in mid-elaboration on LRM-strictness and constant-folding limits inside the two heaviest legacy IPs: incomplete struct assignment patterns in the secure subsystem wrap, packed-union constants and a non-constant `defparam` in `pulp_cluster`'s configuration plumbing. That is per-IP surgery of unknown depth, not flags. `noc` stops earlier but on a single, fully-diagnosed cause: cva6 vendors two old copies of `common_cells/assertions.svh` under the guard name `PRIM_ASSERT_SV` — different from the modern copy's guard, so both macro sets parse and the last include wins, handing FlooNoC's five-argument `ASSERT` calls a four-argument macro. No include-path ordering fixes that; harmonizing the two vendored copies (one small patch, cva6 entry) is the single known blocker to `noc` clearing parse.
+
 #### Difficulties & Mitigation Strategies
-*   **The testbench is event-driven**: `tb_soc.sv.mako` uses delays, `fork`/`join`, and time-based UART sampling. Verilator 5's `--timing` supports most of this, but "most" has to be established case by case, and the testbench may need a `` `ifdef VERILATOR `` seam or two rather than a rewrite.
-    *   *Mitigation*: start from the smallest project (`crossbar`) and make the testbench portable incrementally; the generated TB is ours, so nothing upstream blocks it.
-*   **The external IPs are not Verilator-clean beyond lint**: the fast-check runs `--lint-only` on stubs with the external IPs excluded; full simulation compiles all of them, and the PULP-family IPs carry SVA, hierarchical references and vendor-specific constructs that lint never sees. This is where the real cost lives, and it cannot be estimated from the fast-check experience.
-    *   *Mitigation*: scope it per family — the crossbar family (Cheshire-centred) is known Verilator territory upstream, the NoC family with 16-cluster subtiles may stay Questa-only at first, and a flow that covers a subset of projects is already useful for CI.
+*   **The rollout order is the opposite of what this chapter first assumed**: the crossbar examples carry the least Verilator-clean IPs (pulp_cluster, the OpenTitan secure subsystem), while the NoC family builds on Snitch and FlooNoC, both Verilator-tested upstream, and is one patch away from clearing parse.
+    *   *Mitigation*: phase 2 starts from `noc` — cva6 assertions harmonization, then onward through elaboration, testbench (`--timing`, hierarchical `force` and `$readmemh` still unmeasured) and build; the crossbar family stays QuestaSim-only until someone funds the OT/pulp_cluster surgery.
 *   **A new flow needs a reference to be trusted**: its first green runs prove nothing until they are compared against QuestaSim on the same code.
     *   *Mitigation*: validate it while both backends work — explicitly not during an outage — by requiring identical UART output and EOT on every project it claims to cover.
+*   **The scouting artifacts are session-local** (filelists, define sets, incdir lists under a scratch directory); the flow does not exist until `Makefile.vsim.mako` emits a `run-sim-verilator` target that reproduces them from the project configuration.
+    *   *Mitigation*: that template work is the deliverable of phase 2, and the catalogue above is its specification.
 
 
 ## 6. A Documentation Site (MkDocs Material)
@@ -219,3 +229,15 @@ The documentation is plain GitHub-flavored Markdown, deliberately: it renders in
 *   **A navigation structure is a maintenance surface**: `mkdocs.yml` lists every page, so adding a guide gains a second place to register it.
     *   *Mitigation*: keep `docs/README.md` as the canonical index and generate the `nav` from it, or accept the duplication consciously — it is one line per document.
 
+
+## 7. Full Dependency Autonomy (`inherit_default_dependencies`)
+
+`inherit_default_overrides: false` lets a project decline every forced resolution the catalogue ships; there is no counterpart for the `dependencies` registry, and section 4.3 of the environment guide currently argues there should not be one, because an entry no pragma requires is already inert. That argument covers *resolution* but not *control*: a project whose components legitimately require a package by pragma receives Ollivander's default source for it — the colluca `axi` fork, say — unless it overrides that specific key, and it has no way to declare "no dependency I did not write myself". A user wanting a fully self-contained, auditable dependency description needs the same escape hatch the overrides have.
+
+`inherit_default_dependencies: false` would drop every registry entry contributed by the base configuration, keeping only the project's own; a pragma-required package then missing from the registry becomes the existing hard error instead of a silent fallback to the catalogue, which is exactly the point.
+
+#### Difficulties & Mitigation Strategies
+*   **The registry carries more than sources**: patches and `pre_build_cmds` live in dependency entries, so declining the catalogue also declines the cva6 repair script, the ibex and spatz renames, and every documented patch. A project taking this flag takes that whole burden on itself.
+    *   *Mitigation*: the same stance section 4.3 already takes for the overrides flag — document it as suiting a project that brings its own IP catalogue, and report at generation how many entries were dropped and from which file, symmetrically with the overrides report.
+*   **Section 4.3 of the environment guide must be superseded**, since it currently explains why the flag does not exist; leaving both texts standing would have the documentation argue against the feature it describes.
+    *   *Mitigation*: rewrite the paragraph as the distinction above — inertness holds for resolution, the flag exists for control.

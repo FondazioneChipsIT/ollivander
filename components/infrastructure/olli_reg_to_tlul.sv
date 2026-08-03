@@ -12,7 +12,7 @@
 //
 // BENDER: name="opentitan"
 
-module reg_to_tlul #(
+module olli_reg_to_tlul #(
   // Type definitions for the standard RegBus payload
   parameter type reg_req_t = logic,
   parameter type reg_rsp_t = logic,
