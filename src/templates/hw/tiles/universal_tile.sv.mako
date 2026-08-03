@@ -154,6 +154,19 @@
           if 'axi_rsp_t' in all_params: isle_type_overrides['axi_rsp_t'] = rsp_mst_type
       if 'sync_axi_out_req_t' in all_params: isle_type_overrides['sync_axi_out_req_t'] = req_mst_type
       if 'sync_axi_out_rsp_t' in all_params: isle_type_overrides['sync_axi_out_rsp_t'] = rsp_mst_type
+
+      # An isle exporting both a slave and a master keeps 'axi_req_t' for the slave
+      # side, so the master pair carries its own names - and was therefore never
+      # overridden by the branch above, which only fires when there is no slave. The
+      # macro's own SoC types reached the network untouched: a nested crossbar macro
+      # presented a 6-bit ID and a 10-bit user field to a network carrying 4 and 5.
+      # Package-qualified, so that a NoC macro nested in a NoC parent - which imports
+      # two FlooNoC packages declaring the same names - cannot resolve it to the wrong
+      # one (vlog-2542).
+      if 'axi_master_req_t' in all_params:
+          isle_type_overrides['axi_master_req_t'] = f"{noc_pkg}::{req_mst_type}"
+      if 'axi_master_resp_t' in all_params:
+          isle_type_overrides['axi_master_resp_t'] = f"{noc_pkg}::{rsp_mst_type}"
       
       # Auto-inject physical NoC parameters for Master ports
       if 'AxiOutIdWidth' in all_params: all_params['AxiOutIdWidth'] = f"{cfg_mst_pfx}.InIdWidth"
@@ -212,6 +225,27 @@
 
   macro_boundary_narrow = 'axi_narrow_req_t' in isle_type_overrides and noc_mode == "dual"
   macro_boundary_wide   = 'axi_wide_req_t'   in isle_type_overrides and noc_mode == "dual"
+
+  # A dual isle whose master ports we could not retype - a hand-written wrapper takes
+  # them from its own IP package, as the snitch cluster subtile does - produces the ID
+  # width that IP was built with, which may be narrower than the network's input width.
+  # The zero-extension is done field-wise here: a wire when the widths already agree,
+  # and the correct adaptation when they do not, where before it was a silent aliasing
+  # of the most significant ID bits. The types are read from the isle's own ports, since
+  # only the isle knows them.
+  def isle_port_type(p_name):
+      return (isle_info or {}).get("ports", {}).get(p_name, {}).get("type_dim", "").strip()
+
+  mst_adapt = []
+  if noc_mode == "dual" and has_master:
+      for net, present, is_macro in (("narrow", has_master_narrow, macro_boundary_narrow),
+                                     ("wide", has_master_wide, macro_boundary_wide)):
+          if not present or is_macro:
+              continue
+          req_t, rsp_t = isle_port_type(f"axi_{net}_req_o"), isle_port_type(f"axi_{net}_resp_i")
+          if req_t and rsp_t:
+              mst_adapt.append((net, req_t, rsp_t))
+  adapted_mst_nets = {net for net, _, _ in mst_adapt}
 
   for k in isle_type_overrides.keys():
       if k.endswith('_t') and k in all_params: del all_params[k]
@@ -307,21 +341,27 @@ module ${p_name}_${c_type}
   output ${noc_pkg}::floo_wide_t [West:North] floo_wide_o,
   input wire ${noc_pkg}::floo_req_t  [West:North] floo_req_i,
   output ${noc_pkg}::floo_rsp_t  [West:North] floo_rsp_o,
-  input wire ${noc_pkg}::floo_wide_t [West:North] floo_wide_i
+<%
+  ## Three optional blocks follow, each needing a separator from whatever precedes it.
+  ## The flags let every comma be emitted at the end of the line it belongs to; produced
+  ## from inside the blocks instead, they landed on lines of their own.
+  has_isle_ports = bool(isle_ports)
+  has_sysctrl_ports = bool(is_host and config.system_controller)
+  has_tail_ports = has_isle_ports or has_clk_ctrl or has_sysctrl_ports
+%>\
+  input wire ${noc_pkg}::floo_wide_t [West:North] floo_wide_i${"," if has_tail_ports else ""}
 
   // =======================================================================
   // COMPONENT-SPECIFIC I/Os and INTERRUPTS (Extracted from ${isle_name})
   // =======================================================================
 
 % if isle_ports:
-  ,
  % for i, p in enumerate(isle_ports):
-  ${p['dir']} ${p['type']} ${p['name']}${p.get('unpacked', '')}${"," if i < len(isle_ports)-1 else ""}
+  ${p['dir']} ${p['type']} ${p['name']}${p.get('unpacked', '')}${"," if i < len(isle_ports)-1 or has_clk_ctrl or has_sysctrl_ports else ""}
  % endfor
 % endif
 
 % if has_clk_ctrl:
-  ,
   // =======================================================================
   // CLOCK GATING & RESET CONTROL
   // =======================================================================
@@ -330,17 +370,16 @@ module ${p_name}_${c_type}
   // Groups mechanism, allowing fine-grained power management of the NoC array.
   input  logic tile_clk_en_i,
   input  logic tile_rst_ni,
-  input  logic clk_rst_bypass_i
+  input  logic clk_rst_bypass_i${"," if has_sysctrl_ports else ""}
 % endif
 
-% if is_host and config.system_controller:
+% if has_sysctrl_ports:
 <%
   reg_rsp_type = isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t").strip()
   reg_req_type = isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t").strip()
   if "::" not in reg_rsp_type: reg_rsp_type = f"{soc_pkg}::{reg_rsp_type}"
   if "::" not in reg_req_type: reg_req_type = f"{soc_pkg}::{reg_req_type}"
 %>
-  ,
   // System Controller Hardware Interfaces (Exported to Top-Level)
   output ${top_level_module_name}_sys_regs_pkg::${top_level_module_name}_sys_regs__out_t sys_regs_hwif_out_o,
   input  ${top_level_module_name}_sys_regs_pkg::${top_level_module_name}_sys_regs__in_t  sys_regs_hwif_in_i,
@@ -503,6 +542,18 @@ module ${p_name}_${c_type}
   `AXI_ASSIGN_REQ_STRUCT(border_wide_req, wide_out_req)
   `AXI_ASSIGN_RESP_STRUCT(wide_out_rsp, border_wide_rsp)
  % endif
+% endif
+% if mst_adapt:
+
+  // The master side of an isle that keeps the AXI types of its own IP: its ID is
+  // zero-extended to the network's input width on the way in, and truncated back on the
+  // response, which recovers the original value exactly.
+ % for net, req_t, rsp_t in mst_adapt:
+  ${req_t} isle_${net}_req;
+  ${rsp_t} isle_${net}_rsp;
+  `AXI_ASSIGN_REQ_STRUCT(${net}_in_req, isle_${net}_req)
+  `AXI_ASSIGN_RESP_STRUCT(isle_${net}_rsp, ${net}_in_rsp)
+ % endfor
 % endif
 
   floo_nw_chimney #(
@@ -855,12 +906,16 @@ module ${p_name}_${c_type}
   
   if has_master:
       if noc_mode == "dual":
+          # The adapted signals where the isle keeps its own AXI types, the chimney's own
+          # where it took the network types: see the widening above.
           if has_master_narrow:
-              isle_connections.append(".axi_narrow_req_o  ( narrow_in_req )")
-              isle_connections.append(".axi_narrow_resp_i ( narrow_in_rsp )")
+              nsig = "isle_narrow" if "narrow" in adapted_mst_nets else "narrow_in"
+              isle_connections.append(f".axi_narrow_req_o  ( {nsig}_req )")
+              isle_connections.append(f".axi_narrow_resp_i ( {nsig}_rsp )")
           if has_master_wide:
-              isle_connections.append(".axi_wide_req_o  ( wide_in_req )")
-              isle_connections.append(".axi_wide_resp_i ( wide_in_rsp )")
+              wsig = "isle_wide" if "wide" in adapted_mst_nets else "wide_in"
+              isle_connections.append(f".axi_wide_req_o  ( {wsig}_req )")
+              isle_connections.append(f".axi_wide_resp_i ( {wsig}_rsp )")
       else:
           mst_req_sig = "narrow_in_req" if has_master_narrow else "wide_in_req"
           mst_rsp_sig = "narrow_in_rsp" if has_master_narrow else "wide_in_rsp"

@@ -17,6 +17,7 @@ from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_
 from core.sv_ir import SVArchitectureIR, PortConnection
 from core.rtl_helpers import get_base_name, extract_dims, get_suffixes, norm_type, sv_dependency_sort, PORT_PATTERN
 from core.rtl_ir_builder import build_crossbar_ir, build_noc_ir
+from core.macro_boundary import resolve_noc_id_widths, resolve_noc_user_widths
 
 
 class RTLGenerator:
@@ -866,9 +867,20 @@ class RTLGenerator:
         except Exception as e:
             print(f"[WARNING] Could not parse system registers address width: {e}. Falling back to 8.")
         
+        # Resolved once here rather than inside each template, so that the SoC package
+        # and the FlooGen configuration cannot end up with different ID widths for the
+        # same network. Empty for a crossbar, which has no network to size.
+        noc_id_widths, noc_user_widths = {}, {}
+        if self.soc_config.topology.type == "noc":
+            noc_user_widths = resolve_noc_user_widths(self.soc_config)
+            noc_id_widths = resolve_noc_id_widths(self.soc_config, self.env.component_paths,
+                                                  self.original_isle_types)
+
         template_kwargs = {
             "sys_regs_addr_width": sys_regs_addr_width,
             "config": self.soc_config,
+            "noc_id_widths": noc_id_widths,
+            "noc_user_widths": noc_user_widths,
             "ir": ir,
             "top_level_module_name": top_level_module_name,
             "project_name": self.soc_config.project.name,

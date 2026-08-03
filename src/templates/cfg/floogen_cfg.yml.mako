@@ -148,20 +148,20 @@ routing:
   ## Both networks are guaranteed by the schema (Topology.check_topology_config), so neither the
   ## lookup nor the widths below need a fallback.
   narrow_net = config.topology.noc_settings.networks['narrow']
-  user_id_w = getattr(narrow_net, 'id_width', None)
-  if user_id_w is not None:
-      g_id_w = user_id_w
-  else:
-      # Auto-calculate required ID width based on host internal ID width + total external AXI rules
-      host_params = getattr(config.host, 'parameters', {}) or {}
-      host_mst_id = int(host_params.get('AxiMstIdWidth', 3))
-      tot_slvs = 0
-      for c in comps:
-          if c.interfaces and 'axi_slave' in c.interfaces:
-              slvs = c.interfaces['axi_slave']
-              tot_slvs += len(slvs) if isinstance(slvs, list) else 1
-      extra_bits = math.ceil(math.log2(max(tot_slvs, 1))) if tot_slvs > 1 else 0
-      g_id_w = max(host_mst_id + extra_bits + 1, 6)
+  ## Resolved in src/core/macro_boundary.py, from the ID widths the nested macros impose on
+  ## each network, and handed to this template and to the SoC package alike so the two cannot
+  ## disagree. A network declaring 'id_width' keeps that value and is only checked against
+  ## what the macros need; one that leaves it unset has it derived. The branch that used to
+  ## sit here guessed a width from the host parameters and the slave count, and was dead in
+  ## every project, 'id_width' having a schema default that made it unreachable.
+  g_id_w = noc_id_widths['narrow']
+  g_wide_id_w = noc_id_widths['wide']
+  ## The compressed output side of each network, from the same module that resolves the
+  ## input side, so the capacity check a component is validated against (soc_schema.py)
+  ## and the network emitted here cannot disagree.
+  from core.macro_boundary import NOC_OUTPUT_ID_WIDTH
+  g_out_id_w = NOC_OUTPUT_ID_WIDTH['narrow']
+  g_wide_out_id_w = NOC_OUTPUT_ID_WIDTH['wide']
 
   ## Width of the AXI user field carried by the NARROW network: the span of the SoC user mapping
   ## that has defined semantics, i.e. up to the highest of the AMO reservation bits and the ECC
@@ -178,9 +178,10 @@ routing:
   ## reservation. Raising the network to 5 therefore moved the truncation from the network to every
   ## cluster port instead of removing it, at 4 user bits per channel - measured as 64 vopt-2241
   ## warnings across the 16 clusters of super_mesh.
-  um = config.system_settings.user_mapping if config.system_settings else None
-  g_narrow_user_w = (max(um.amo_msb, um.ecc_err_bit) + 1) if um else 1
-  g_wide_user_w = 1
+  ## Resolved in src/core/macro_boundary.py, which also uses them to refuse a nested macro
+  ## whose meaningful user span would not survive the network it injects on.
+  g_narrow_user_w = noc_user_widths['narrow']
+  g_wide_user_w = noc_user_widths['wide']
 
   ## Physical dimensions of the two networks, from the SoC description. The generated SoC
   ## package derives its narrow/wide channel types from the same fields (noc_soc_pkg.sv.mako),
@@ -209,7 +210,7 @@ protocols:
     protocol: "AXI4"
     data_width: ${n_data_w}
     addr_width: ${n_addr_w}
-    id_width: 2
+    id_width: ${g_out_id_w}
     user_width:
       collective_mask: ${n_addr_w}
       collective_op: 4
@@ -219,7 +220,7 @@ protocols:
     protocol: "AXI4"
     data_width: ${w_data_w}
     addr_width: ${w_addr_w}
-    id_width: 3
+    id_width: ${g_wide_id_w}
     user_width:
       collective_mask: ${w_addr_w}
       collective_op: 4
@@ -229,7 +230,7 @@ protocols:
     protocol: "AXI4"
     data_width: ${w_data_w}
     addr_width: ${w_addr_w}
-    id_width: 1
+    id_width: ${g_wide_out_id_w}
     user_width:
       collective_mask: ${w_addr_w}
       collective_op: 4

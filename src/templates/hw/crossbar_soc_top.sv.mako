@@ -174,26 +174,35 @@ module ${top_level_module_name}
 % for imp in sorted(all_imports):
   import ${imp}::*;
 % endfor
+<%
+  ## Kept in variables so that each separator can be emitted at the end of the line it
+  ## belongs to: a comma produced from inside the conditional block below lands on a
+  ## line of its own instead.
+  is_macro = config.project.build_mode == "macro"
+  has_macro_masters = is_macro and config.project.macro_settings and config.project.macro_settings.masters
+%>
 #(
-  // Standard System Parameters extracted from Configuration
-  localparam int unsigned AxiAddrWidth = ${config.topology.global_bus.addr_width},
-  localparam int unsigned AxiDataWidth = ${config.topology.global_bus.data_width},
-  localparam int unsigned AxiUserWidth = ${config.topology.global_bus.user_width},
-  localparam int unsigned AxiIdWidth   = ${config.topology.global_bus.mst_id_width}
-% if config.project.build_mode == "macro":
-  ,
-  localparam int unsigned AxiInIdWidth  = ${config.topology.global_bus.mst_id_width},
-  localparam int unsigned AxiOutIdWidth = ${config.topology.global_bus.mst_id_width}
-% endif
-% if config.project.build_mode == "macro":
-  ,
+  // Standard geometry, referenced from the SoC package rather than re-emitted here: two
+  // copies of the same width are what let this header contradict the package it imports.
+  // Nothing inside the module reads them - they are the contract a parent and the
+  // documentation see.
+  localparam int unsigned AxiAddrWidth = ${pkg}::AxiAddrWidth,
+  localparam int unsigned AxiDataWidth = ${pkg}::AxiDataWidth,
+  localparam int unsigned AxiUserWidth = ${pkg}::AxiUserWidth,
+  localparam int unsigned AxiIdWidth   = ${pkg}::AxiIdWidth${"," if is_macro else ""}
+% if is_macro:
+  // Incoming requests carry the interconnect's own ID; outgoing ones leave through the
+  // exported master port, whose width the crossbar widens to address its slaves and
+  // which is published as MacroMstIdWidth. Emitting AxiIdWidth for both, as this header
+  // used to, understated the master port by four bits.
+  localparam int unsigned AxiInIdWidth  = ${pkg}::AxiIdWidth,
+  localparam int unsigned AxiOutIdWidth = ${pkg}::MacroMstIdWidth,
   // Macro Base Address for hardware address translation
   parameter logic [63:0] MACRO_BASE_ADDR = 64'h0,
   // Macro Types
   parameter type axi_req_t  = ${pkg}::soc_axi_req_t,
-  parameter type axi_resp_t = ${pkg}::soc_axi_resp_t
-%   if config.project.macro_settings and config.project.macro_settings.masters:
-  ,
+  parameter type axi_resp_t = ${pkg}::soc_axi_resp_t${"," if has_macro_masters else ""}
+%   if has_macro_masters:
   parameter type axi_master_req_t  = ${pkg}::soc_axi_slv_req_t,
   parameter type axi_master_resp_t = ${pkg}::soc_axi_slv_resp_t
 %   endif
@@ -253,9 +262,8 @@ module ${top_level_module_name}
         if config.project.macro_settings.masters:
             top_ports_list.append("output axi_master_req_t  axi_req_o")
             top_ports_list.append("input  axi_master_resp_t axi_resp_i")
-%>\
+%>${"," if top_ports_list else ""}
 % if top_ports_list:
-,
 
   // ---------------------------------------------------------
   // External Component Ports
@@ -483,8 +491,15 @@ ${clock_and_reset_tree(config, p_name)}
  % endif
  % if config.project.macro_settings.masters:
   // Macro master interface <- Host's sync slave slot
-  assign axi_req_o = xbar_sync_slv_req[${pkg}::NumAxiSlavesSync - 1];
-  assign xbar_sync_slv_rsp[${pkg}::NumAxiSlavesSync - 1] = axi_resp_i;
+  //
+  // Field-wise, because the exported port is typed by the parent from the network it
+  // plugs into and this crossbar's user field is wider: only the bits above the span
+  // that carries semantics (MacroMstUserSpan, see the boundary block of the SoC
+  // package) are dropped, and they carry nothing. A whole-struct assignment would
+  // instead misalign every field, 'id' being the first member and therefore the most
+  // significant bits.
+  `AXI_ASSIGN_REQ_STRUCT(axi_req_o, xbar_sync_slv_req[${pkg}::NumAxiSlavesSync - 1])
+  `AXI_ASSIGN_RESP_STRUCT(xbar_sync_slv_rsp[${pkg}::NumAxiSlavesSync - 1], axi_resp_i)
  % endif
 % endif
 

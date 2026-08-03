@@ -12,12 +12,17 @@
 module security_island_isle
   import axi_pkg::*;
 #(
-  localparam int unsigned AxiAddrWidth       = 48,
-  localparam int unsigned AxiDataWidth       = 64,
-  localparam int unsigned AxiUserWidth       = 10,
-  localparam int unsigned AxiOutIdWidth      = 2,
-  localparam int unsigned LogDepth           = 3,
-  
+  // Geometry of the SoC this isle is attached to, driven by the generator at
+  // instantiation (rtl_ir_builder.py): AxiOutIdWidth receives the crossbar's
+  // manager-side AxiIdWidth. Previously localparams, which froze the values this
+  // shell was extracted with; the wrapped security_island takes them all as
+  // parameters (astral drives them the same way, carfield.sv), so nothing is fixed.
+  parameter int unsigned AxiAddrWidth       = 48,
+  parameter int unsigned AxiDataWidth       = 64,
+  parameter int unsigned AxiUserWidth       = 10,
+  parameter int unsigned AxiOutIdWidth      = 2,
+  parameter int unsigned LogDepth           = 3,
+
   // Async AXI OUT (Master Port)
   localparam int unsigned AsyncAxiOutAwWidth = (2**LogDepth)*axi_pkg::aw_width(AxiAddrWidth, AxiOutIdWidth, AxiUserWidth),
   localparam int unsigned AsyncAxiOutWWidth  = (2**LogDepth)*axi_pkg::w_width(AxiDataWidth, AxiUserWidth),
@@ -89,18 +94,29 @@ module security_island_isle
   output logic             [LogDepth:0] async_axi_out_r_rptr_o
 );
 
-  // =================================================================================
-  // NOTE ON PARAMETERIZATION
-  // =================================================================================
-  // This 'isle' wrapper exposes a set of standard parameters (AxiAddrWidth,
-  // AxiDataWidth, etc.) to provide a uniform interface for the Ollivander generator.
-  // However, the instantiated 'security_island' module is an external and
-  // immutable IP whose configuration is handled internally through its SystemVerilog packages.
-  // Consequently, the parameters of this shell are NOT propagated to the instance.
-  // They exist solely to satisfy the generator's interface contract.
-  // =================================================================================
+  // AXI channel types built from the isle's own parameters, for the same reason as in
+  // safety_island_isle: the wrapped module's type parameters default to synth-package
+  // types frozen at the synth geometry, so the structs would not follow the widths.
+  typedef logic [AxiAddrWidth-1:0]   isle_addr_t;
+  typedef logic [AxiDataWidth-1:0]   isle_data_t;
+  typedef logic [AxiDataWidth/8-1:0] isle_strb_t;
+  typedef logic [AxiUserWidth-1:0]   isle_user_t;
+  typedef logic [AxiOutIdWidth-1:0]  isle_out_id_t;
+  `AXI_TYPEDEF_ALL(isle_axi_out, isle_addr_t, isle_out_id_t, isle_data_t, isle_strb_t, isle_user_t)
 
-  security_island i_security_island (
+  security_island #(
+    .AxiAddrWidth   ( AxiAddrWidth  ),
+    .AxiDataWidth   ( AxiDataWidth  ),
+    .AxiUserWidth   ( AxiUserWidth  ),
+    .AxiExtIdWidth  ( AxiOutIdWidth ),
+    .axi_ext_aw_chan_t ( isle_axi_out_aw_chan_t ),
+    .axi_ext_w_chan_t  ( isle_axi_out_w_chan_t  ),
+    .axi_ext_b_chan_t  ( isle_axi_out_b_chan_t  ),
+    .axi_ext_ar_chan_t ( isle_axi_out_ar_chan_t ),
+    .axi_ext_r_chan_t  ( isle_axi_out_r_chan_t  ),
+    .axi_ext_req_t     ( isle_axi_out_req_t     ),
+    .axi_ext_resp_t    ( isle_axi_out_resp_t    )
+  ) i_security_island (
     .clk_i               ( clk_i               ),
     .clk_ref_i           ( ref_clk_i           ),
     .rst_ni              ( rst_ni              ),

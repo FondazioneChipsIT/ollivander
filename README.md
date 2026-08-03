@@ -42,14 +42,68 @@ Ollivander refuses to generate broken RTL. Before generating the top-level SoC, 
 ## 2. Supported Topologies
 
 Ollivander currently supports two major routing topologies:
-*   **Crossbar (`example_crossbar.yaml`)**: Ideal for traditional embedded SoCs. The Manager (Host) encapsulates the central AXI routing matrix, exposing multidimensional arrays to the top-level where all other components connect.
-*   **Network-on-Chip (`example_noc.yaml`)**: Fully supported for massively parallel, AI/ML accelerator arrays (e.g., FlooNoC). Maps logical coordinates to physical tiles on a 2D mesh, automatically instantiating routers, chimneys, and AXI joins.
+*   **Crossbar**: Ideal for traditional embedded SoCs. The Manager (Host) encapsulates the central AXI routing matrix, exposing multidimensional arrays to the top-level where all other components connect.
+*   **Network-on-Chip**: Fully supported for massively parallel, AI/ML accelerator arrays (e.g., FlooNoC). Maps logical coordinates to physical tiles on a 2D mesh, automatically instantiating routers, chimneys, and AXI joins.
+
+```mermaid
+flowchart LR
+    subgraph XBAR["Crossbar topology"]
+        direction TB
+        HOST["Host Isle<br/>(Cheshire + AXI crossbar)"]
+        HOST <--> ISLE_A["Isle<br/>(L2, cluster, ...)"]
+        HOST <--> ISLE_B["Isle<br/>(safety island, ...)"]
+        HOST <--> APB["APB subsystem Isle<br/>(timers, watchdog, CAN)"]
+    end
+    subgraph NOC["NoC topology (FlooNoC 2D mesh)"]
+        direction TB
+        T00["Tile 0,0<br/>router + chimney + Isle"] --- T10["Tile 1,0"]
+        T00 --- T01["Tile 0,1"]
+        T10 --- T11["Tile 1,1<br/>manager tile"]
+        T01 --- T11
+    end
+    XBAR -.->|"build_mode: macro<br/>(isle or subtile export)"| NOC
+    NOC -.->|"build_mode: macro"| XBAR
+```
+
+Either topology can be exported as a reusable **macro** and nested inside a parent SoC of either topology — the two `super_*` examples below exercise exactly that cross.
+
+### Example Projects (`soc_cfg_examples/`)
+
+Every example runs the hello-world firmware end-to-end in simulation and doubles as the regression suite of the generator itself.
+
+| Directory | Configuration | Topology | What it demonstrates |
+| :--- | :--- | :--- | :--- |
+| [`crossbar`](soc_cfg_examples/crossbar/) | `crux.yml` | Crossbar | Complete standalone SoC: clock tree, padframe, APB subsystem, heterogeneous isles |
+| [`crossbar_isle`](soc_cfg_examples/crossbar_isle/) | `crux_isle.yml` | Crossbar | The same SoC exported as an **isle macro** with a unified AXI boundary |
+| [`noc`](soc_cfg_examples/noc/) | `mesh.yml` | NoC | 2D mesh with multicast, booting on its own from an always-on scratchpad |
+| [`noc_isle`](soc_cfg_examples/noc_isle/) | `mesh_isle.yml` | NoC | Mesh exported as an **isle macro**: both networks joined into one AXI port |
+| [`noc_subtile`](soc_cfg_examples/noc_subtile/) | `mesh_subtile.yml` | NoC | Mesh exported as a **subtile macro**: native dual narrow/wide NoC boundary |
+| [`super_crossbar`](soc_cfg_examples/super_crossbar/) | `super_crux.py` (Python) | Crossbar | Parent SoC nesting the **Mesh** macro — a NoC inside a crossbar |
+| [`super_noc`](soc_cfg_examples/super_noc/) | `super_mesh.py` (Python) | NoC | Parent SoC nesting the **Crux** isle macro and a mesh subtile — a crossbar inside a NoC |
+
+The two `super_*` projects deliberately cross the topologies, so each of them resolves, compiles and simulates the external IPs of **both** families in a single Bender dependency graph.
 
 ---
 
 ## 3. The Generation Flow
 
-The generation engine (`ollivander.py`) combines Python and Mako templates in a rigorous 9-Phase pipeline:
+The generation engine (`ollivander.py`) combines Python and Mako templates in a rigorous 10-Phase pipeline:
+
+```mermaid
+flowchart TB
+    YAML["SoC description<br/>(YAML or Python)"] --> P1
+    ENV["Environment config<br/>(*_env.yml + ollivander_config.yml)"] --> P1
+    P1["1 · Dynamic Isles<br/>(APB subsystem, ...)"] --> P2["2 · Hardware-First Validation<br/>(pyslang vs YAML)"]
+    P2 --> P3["3 · Top-Level Generation<br/>(SV-IR + Mako: top, packages, RDL, Bender.yml)"]
+    P3 --> P4["4 · Fetch External IPs<br/>(Bender + patches/pre-build)"]
+    P4 --> P5["5 · NoC Generation<br/>(FlooGen)"]
+    P5 --> P6["6 · Register RTL<br/>(PeakRDL)"]
+    P6 --> P7["7 · Padframe<br/>(Padrick)"]
+    P7 --> P8["8 · Chip Wrapper<br/>(core + padframe + CDC)"]
+    P8 --> P9["9 · RTL Formatting<br/>(Verible)"]
+    P9 --> P10["10 · IP-XACT Export<br/>(+ schema validation)"]
+    P10 --> OUT["generated/<br/>hw · tb · sw · reg · cfg · doc"]
+```
 
 ### Phase 1: Dynamic Isles Generation
 Ollivander reads the YAML configuration and generates intermediate SystemVerilog wrappers for composite blocks. For example, the `apb_subsystem` is built dynamically: Ollivander injects standard peripheral interrupts, generates the `AXI -> AXI-Lite -> APB` conversion pipeline, and instantiates the requested IP cores (Timers, Watchdogs, CAN, etc.) into a single, cohesive Isle.
@@ -188,3 +242,15 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 *   `components/tiles/`: Specialized wrappers for Network-on-Chip (NoC) topologies, automatically instantiating routers and network adapters.
 *   `components/infrastructure/`: The Hardware Abstraction Layer (HAL) containing simulation-ready physical primitives (glitch-free clock muxes, integer dividers, reset generators, CDCs, and edge-to-level propagators) intended to be mapped to technology-specific standard cells during ASIC/FPGA synthesis.
 *   `docs/`: Official documentation, tutorials, and configuration guides.
+
+---
+
+## 7. Documentation
+
+The [documentation portal](docs/README.md) organizes every guide by reading path. The three entry points:
+
+| If you want to... | Start from |
+| :--- | :--- |
+| **Use** Ollivander to build an SoC | [Getting Started](docs/getting_started.md), then the [SoC](docs/soc_configuration_guide.md), [Environment](docs/env_configuration_guide.md) and [Padframe](docs/padframe_configuration_guide.md) configuration guides |
+| **Wrap an IP** so the generator can instantiate it | The standardization guides: [Isle](docs/hw/isle_standardization.md), [Subtile](docs/hw/subtile_standardization.md), [Tile](docs/hw/tile_standardization.md), plus [Clocking, Reset & CDC](docs/hw/clocking_reset_cdc_requirements.md) |
+| **Develop** Ollivander itself | The [SV-IR architecture](docs/developer/intermediate_representation.md) and the planned work in [`docs/developer/wip/`](docs/developer/wip/future_evolution_tasks.md) |

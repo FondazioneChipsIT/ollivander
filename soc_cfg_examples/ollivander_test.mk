@@ -111,6 +111,7 @@ test-all:
 	done; \
 	echo "======================================================================" > soc_cfg_examples/test_summary.log; \
 	echo "OLLIVANDER TEST SUITE SUMMARY - $$(date)" >> soc_cfg_examples/test_summary.log; \
+	echo "Suite Start Epoch  : $$suite_start" >> soc_cfg_examples/test_summary.log; \
 	echo "======================================================================" >> soc_cfg_examples/test_summary.log; \
 	echo "Project Directories Tested : $(TEST_PROJECTS)" >> soc_cfg_examples/test_summary.log; \
 	echo "Tools Checked   : $(FAST_CHECK_TOOLS)" >> soc_cfg_examples/test_summary.log; \
@@ -242,3 +243,55 @@ test-all:
 		echo "[SUCCESS] All selected projects generated and checked successfully!"; \
 		echo "======================================================================"; \
 	fi
+
+# ------------------------------------------------------------------------------
+# check-tested: pre-commit guard
+# ------------------------------------------------------------------------------
+# Answers one question: is the code about to be committed the code the suite
+# actually validated? It fails when the last suite did not end with SUCCESS, and
+# when any source is newer than the moment that suite started - the case that
+# keeps happening, a file edited while the regression was already running, which
+# silently turns a green summary into a statement about code that no longer
+# exists.
+#
+# Documentation is excluded: a Markdown edit cannot change generated RTL or a
+# simulation outcome, and failing on one would only teach us to skip the check.
+# Untracked-but-not-ignored files are included, since a component added after the
+# suite ran is exactly as unvalidated as one edited after it ran.
+#
+# The scope of the run (projects, simulators, TEST_SIM) is printed rather than
+# enforced: committing after a suite restricted to the affected projects is
+# legitimate per the contribution rules, so the reader decides whether that scope
+# was enough. This target never runs as part of test-all - it only reads the
+# summary the suite writes.
+.PHONY: check-tested
+check-tested:
+	@summary=soc_cfg_examples/test_summary.log; \
+	if [ ! -f "$$summary" ]; then \
+		echo "[CHECK] $$summary is missing: run 'make test-all' before committing."; \
+		exit 1; \
+	fi; \
+	if ! grep -q "^Final Result    : SUCCESS" "$$summary"; then \
+		echo "[CHECK] The last test suite did not end with SUCCESS:"; \
+		grep -E "^Final Result|FAILED" "$$summary" | sed 's/^/    /'; \
+		exit 1; \
+	fi; \
+	start=$$(sed -n 's/^Suite Start Epoch  : //p' "$$summary"); \
+	if [ -z "$$start" ]; then \
+		echo "[CHECK] $$summary predates this check: re-run 'make test-all'."; \
+		exit 1; \
+	fi; \
+	newer=$$(git ls-files -z --cached --others --exclude-standard | tr '\0' '\n' | \
+		grep -vE '^docs/|\.md$$' | \
+		while IFS= read -r f; do \
+			if [ -f "$$f" ] && [ "$$(stat -c %Y "$$f")" -gt "$$start" ]; then echo "    $$f"; fi; \
+		done); \
+	echo "[CHECK] Scope of the last suite:"; \
+	grep -E "^Project Directories Tested|^Tools Checked|^Run Simulation" "$$summary" | sed 's/^/    /'; \
+	if [ -n "$$newer" ]; then \
+		echo "[CHECK] These sources changed after that suite started:"; \
+		echo "$$newer"; \
+		echo "[CHECK] The green summary no longer describes the current code: re-run 'make test-all'."; \
+		exit 1; \
+	fi; \
+	echo "[CHECK] Suite ended with SUCCESS and nothing changed since it started."

@@ -91,11 +91,21 @@ def _infer_interrupts(soc_config, comp_info):
                                     
                                 src_c.interrupts[src_port] = irq_data
 
-def _evaluate_sv_expr(expr, comp_info, comp_name):
+def _evaluate_sv_expr(expr, comp_info, comp_name, driven_params=None, force=False):
     c_info = comp_info.get(comp_name, {})
     params = {}
     params.update(c_info.get("fixed_params", {}))
     params.update(c_info.get("supported_params", {}))
+    # The values the generator drives at instantiation override the header defaults:
+    # a 'parameter' left at its default here would describe the geometry the wrapper
+    # shipped with, not the one this SoC instantiates it with. Only names the component
+    # actually exposes as 'parameter' are overridden - a 'localparam' cannot be driven,
+    # so its declared value is the truth. force=True instead applies them to every
+    # name, which turns the same expression into the width of the bus side: comparing
+    # the two is how a connection that would need slicing is detected.
+    for k, v in (driven_params or {}).items():
+        if force or k in c_info.get("supported_params", {}):
+            params[k] = str(v)
     defaults = {
         "AxiAddrWidth": 48,
         "AxiDataWidth": 64,
@@ -108,7 +118,7 @@ def _evaluate_sv_expr(expr, comp_info, comp_name):
     for k, v in defaults.items():
         if k not in params:
             params[k] = str(v)
-            
+
     clean_expr = expr.strip()
     
     def aw_width(addr_width, id_width, user_width):
@@ -151,7 +161,7 @@ def _evaluate_sv_expr(expr, comp_info, comp_name):
     except Exception as e:
         return None
 
-def _get_resolved_port_width(comp_name, port_name, comp_info):
+def _get_resolved_port_width(comp_name, port_name, comp_info, driven_params=None, force=False):
     c_info = comp_info.get(comp_name, {})
     p_info = c_info.get("ports", {}).get(port_name)
     if not p_info:
@@ -163,11 +173,54 @@ def _get_resolved_port_width(comp_name, port_name, comp_info):
         param_name = m.group(1)
         val = c_info.get("fixed_params", {}).get(param_name) or c_info.get("supported_params", {}).get(param_name)
         if val:
-            return _evaluate_sv_expr(val, comp_info, comp_name)
+            return _evaluate_sv_expr(val, comp_info, comp_name, driven_params, force)
     m_num = re.search(r'\[\s*([0-9]+)\s*:\s*0\s*\]', type_dim or decl)
     if m_num:
         return int(m_num.group(1)) + 1
     return None
+
+
+def _crossbar_driven_params(soc_config, comp):
+    """
+    The numeric values the generator drives on a crossbar component's geometry
+    parameters (mirroring rtl_ir_builder.py), so that a port width computed from those
+    parameters describes the instance and not the header defaults. Before this, a
+    parametric wrapper had its CDC ports sized from the shipped defaults, and the
+    connection was sliced to the wrong width - the exact defect this resolution exists
+    to avoid, one level further down.
+    """
+    gb = soc_config.topology.global_bus
+    if not gb:
+        return {}
+    from core.macro_boundary import crossbar_slv_id_width
+    slv_id_w = crossbar_slv_id_width(soc_config)
+    in_id_w = slv_id_w + 1 if 'llc_port' in (comp.interfaces or {}) else slv_id_w
+    return {
+        "AxiAddrWidth": gb.addr_width,
+        "AxiDataWidth": gb.data_width,
+        "AxiUserWidth": gb.user_width,
+        "AxiInIdWidth": in_id_w,
+        "AxiOutIdWidth": gb.mst_id_width,
+        "AxiIdWidth": gb.mst_id_width,
+    }
+
+def _warn_cdc_width_mismatch(comp, port_name, comp_width, bus_width):
+    """
+    Report a CDC connection whose two sides compute different widths, which the emitted
+    slice makes agree syntactically while misaligning every packet after the first: the
+    flattened array carries 2**LogDepth FIFO slots, so a width difference is not a
+    truncation at the top but a shift running through all of them. Left as a warning
+    rather than a refusal only because pulp_cluster_isle still fixes its geometry to
+    values this SoC has moved away from - the open item of future_evolution_tasks.md
+    section 3.5; it becomes an error when that is resolved.
+    """
+    if comp_width is None or bus_width is None or comp_width == bus_width:
+        return
+    print(f"  [WARNING] [{comp.name}] '{port_name}' is {comp_width} bits against a bus side of "
+          f"{bus_width}: the CDC packets are misaligned across this boundary and any traffic "
+          f"through it is corrupted. Latent as long as nothing addresses the component "
+          f"(future_evolution_tasks.md, section 3.5).")
+
 
 def build_connection_matrix(soc_config, comp_info):
     """
@@ -302,6 +355,7 @@ def build_connection_matrix(soc_config, comp_info):
                             ports.append(f".axi_req_i ( xbar_sync_slv_req[({base_idx} - ollivander_soc_pkg::NumAxiSlavesAsync)] )")
                             ports.append(f".axi_resp_o ( xbar_sync_slv_rsp[({base_idx} - ollivander_soc_pkg::NumAxiSlavesAsync)] )")
                     else:
+                        driven = _crossbar_driven_params(soc_config, comp)
                         for sig, d in slv_ports.items():
                             if num_ports > 1:
                                 # Map multiple asynchronous ports by slicing the crossbar array.
@@ -309,7 +363,9 @@ def build_connection_matrix(soc_config, comp_info):
                                 ports.append(f".async_axi_in_{sig}_{d} ( {{ {concat} }} )")
                             else:
                                 port_name = f"async_axi_in_{sig}_{d}"
-                                width = _get_resolved_port_width(comp.name, port_name, comp_info)
+                                width = _get_resolved_port_width(comp.name, port_name, comp_info, driven)
+                                _warn_cdc_width_mismatch(comp, port_name, width,
+                                    _get_resolved_port_width(comp.name, port_name, comp_info, driven, force=True))
                                 if width is not None:
                                     ports.append(f".{port_name} ( xbar_slv_{sig}[{base_idx}][{width-1}:0] )")
                                 else:
@@ -330,9 +386,12 @@ def build_connection_matrix(soc_config, comp_info):
                         ports.append(f".axi_req_o ( xbar_sync_mst_req[({idx} - ollivander_soc_pkg::NumAxiMastersAsync)] )")
                         ports.append(f".axi_resp_i ( xbar_sync_mst_rsp[({idx} - ollivander_soc_pkg::NumAxiMastersAsync)] )")
                     else:
+                        driven = _crossbar_driven_params(soc_config, comp)
                         for sig, d in mst_ports.items():
                             port_name = f"async_axi_out_{sig}_{d}"
-                            width = _get_resolved_port_width(comp.name, port_name, comp_info)
+                            width = _get_resolved_port_width(comp.name, port_name, comp_info, driven)
+                            _warn_cdc_width_mismatch(comp, port_name, width,
+                                _get_resolved_port_width(comp.name, port_name, comp_info, driven, force=True))
                             if width is not None:
                                 ports.append(f".{port_name} ( xbar_mst_{sig}[{idx}][{width-1}:0] )")
                             else:

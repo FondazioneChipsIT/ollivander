@@ -101,11 +101,15 @@ package ${pkg};
       ## the span up to the highest bit that means something, the AMO reservation id and the ECC
       ## error flag. It used to be a hardcoded 10, which had no relation to that mapping and made
       ## every macro export ports five bits wider than the network they were connected to.
-      um = config.system_settings.user_mapping if config.system_settings else None
-      g_user_w = (max(um.amo_msb, um.ecc_err_bit) + 1) if um else 1
-      g_id_w   = 4
-      
-  wide_net = config.topology.noc_settings.networks.get('wide') if config.topology.noc_settings and config.topology.noc_settings.networks else None
+      g_user_w = noc_user_widths['narrow']
+      ## The narrow network's input ID width, resolved once in Python from what the nested
+      ## macros impose (src/core/macro_boundary.py) and passed in, so that this package and
+      ## the FlooGen configuration cannot disagree. It used to be a hardcoded 4, unrelated
+      ## to anything the SoC declared.
+      g_id_w   = noc_id_widths['narrow']
+
+  ## Both networks are guaranteed by the schema (Topology.check_topology_config).
+  wide_net = config.topology.noc_settings.networks['wide']
 %>
 <%
   # Calculate host's internal AXI masters (from Cheshire's gen_axi_in) to adjust ExtSlvIdWidth and LlcIdWidth
@@ -122,12 +126,45 @@ package ${pkg};
   localparam int unsigned AxiDataWidth     = ${g_data_w};
   localparam int unsigned AxiUserWidth     = ${g_user_w};
   localparam int unsigned AxiIdWidth       = ${g_id_w};
-  % if wide_net:
   localparam int unsigned AxiWideDataWidth = ${wide_net.data_width};
-  % endif
-  
+
   localparam int unsigned ExtSlvIdWidth    = AxiIdWidth + $clog2(${num_internal_masters} > 1 ? ${num_internal_masters} : 2);
   localparam int unsigned LlcIdWidth       = ExtSlvIdWidth + 1; // Margin for LLC bypass bit
+% if config.project.build_mode == "macro" and config.project.macro_settings:
+<%
+  from core.macro_boundary import clog2
+  user_span = noc_user_widths['narrow']
+  is_isle = config.project.macro_settings.export_type == "isle"
+  mst_id_w = g_id_w + clog2(max(num_internal_masters, 2))
+%>
+
+  // =========================================================================
+  // BOUNDARY GEOMETRY PUBLISHED TO A PARENT SoC
+  // =========================================================================
+  // Read by a parent that nests this macro (src/core/macro_boundary.py). Which
+  // numbers appear is itself the signal, so the reader needs no notion of export
+  // type: an isle publishes the ID width it *imposes*, a subtile the widths it
+  // *accepts*.
+% if is_isle:
+  //
+  // An isle joins its two networks into a single exported master port whose ID
+  // comes from the crossbar behind it. That width is not negotiable: retyping the
+  // port narrower would alias its IDs, so a network this macro plugs into must be
+  // at least this wide. The user span is the part of the field carrying semantics.
+  localparam int unsigned MacroMstIdWidth   = ${mst_id_w};
+  localparam int unsigned MacroMstUserWidth = ${g_user_w};
+  localparam int unsigned MacroMstUserSpan  = ${user_span};
+% else:
+  //
+  // A subtile plugs its slave ports straight into the chimneys of its own network,
+  // which accept these widths. A parent network wider than this would be truncated
+  // at the boundary, so they are an upper bound rather than something to adapt: the
+  // parent refuses instead, and this project has to be regenerated wider. The
+  // master side publishes nothing, since it widens to whatever it is handed.
+  localparam int unsigned MacroNarrowInIdWidth = ${g_id_w};
+  localparam int unsigned MacroWideInIdWidth   = ${noc_id_widths['wide']};
+% endif
+% endif
 
 
   localparam int unsigned AxiUserAmoMsb    = ${config.system_settings.user_mapping.amo_msb};

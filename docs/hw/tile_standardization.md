@@ -53,7 +53,7 @@ If the Tile is subject to an `auto_control_group` in the System Controller, it c
 *   **`tile_rst_ni`** (`logic`): Software-controlled reset, **active low** at the pin. It is driven by the *inverse* of bit `i` of the group's `<group>_rst` register, which is active high (`1` = held in reset); the inversion happens in the SoC top-level.
 *   **`clk_rst_bypass_i`** (`logic`): Hardware override to bypass clock gating and software resets during test modes. It is also the escape hatch that allows a Tile to be used before any CSR has been written.
 
-The power-on value of both registers is set by `system_controller.power_on_state`, which defaults to `"gated"`: the Tile comes up with its clock disabled and its reset asserted, and must be brought up explicitly. See the System Controller section of `soc_configuration_guide.md`.
+The power-on value of both registers is set by `system_controller.power_on_state`, which defaults to `"gated"`: the Tile comes up with its clock disabled and its reset asserted, and must be brought up explicitly. See the [System Controller section](../soc_configuration_guide.md#25-system-controller-system_controller) of the SoC configuration guide.
 
 Gating a Tile must never break traffic that merely routes *through* it. Keep the NoC router (and, preferably, the chimney) on the ungated `clk_i` / `rst_ni`, and confine `tile_clk` and `tile_rst_n` to the payload IP.
 
@@ -76,7 +76,7 @@ Any port listed in the `export_interfaces` YAML list (e.g., `uart`, `jtag`, `gpi
 Ollivander dynamically parses the Tile's header to map parameters from the YAML:
 
 *   **`parameter` (Configurable):** Ollivander will override these at instantiation time based on the YAML configuration.
-*   **`localparam` (Fixed Constraint):** Hardcoded IP constraints. Ollivander will strictly validate that the global YAML configuration does not violate them.
+*   **`localparam` (Fixed Constraint):** Hardcoded IP constraints. Ollivander will strictly validate that the global YAML configuration does not violate them: address and data widths must equal the bus exactly, while AXI ID widths are checked along the direction of travel (what the Tile emits may be narrower than the network, what it accepts must cover the network's output side). The full contract is in the [Subtile standardization guide, section 2.1](subtile_standardization.md#21-expected-bus-geometries).
 
 ### 5.1 NoC Struct Parameter Types (Strict Type Equivalence for Portability)
 Because Custom Tiles natively interact with the NoC router, the quickest integration method is to hardcode the import of the local NoC package (e.g., `import floo_gwaihir_noc_pkg::*;`) inside the wrapper to access the `floo_req_t` and `id_t` structs.
@@ -144,11 +144,11 @@ Instead, use the injected Python functions to dynamically register dependencies 
 
 ## 7. Memory Preloading Standardization
 
-For memory Custom Tiles that require simulation-only binary preloading (via `$readmemh`), the wrapper can optionally expose standard `localparam` values in its SystemVerilog module declaration. This follows the exact same specification as defined in `isle_standardization.md`:
+For memory Custom Tiles that require simulation-only binary preloading (via `$readmemh`), the wrapper can optionally expose standard `localparam` values in its SystemVerilog module declaration. This follows the exact same specification as defined in the [Isle standardization guide](isle_standardization.md#8-memory-preloading-standardization):
 
 *   **`PreloadType`** (`string`): Set to `"interleaved"` for interleaved multi-bank preloading.
 *   **`PreloadTemplate`** (`string`): The internal hierarchical path template from the Custom Tile top to the physical SRAM array (supporting `{group}` and `{bank}` variables).
 *   **`PreloadNumGroups`** (`int unsigned`): The number of bank groups.
 *   **`PreloadBankWidth`** (`int unsigned`): The data width of a single physical SRAM bank in bits.
 *   **`PreloadBanksPerGroup`** (`int unsigned`): The number of physical SRAM banks in each group (optional, dynamically calculated as `AxiDataWidth / PreloadBankWidth` if omitted or set to 0).
-*   **`PreloadInterleave`** (`string`): The physical interleaving scheme, `"lane-group"` or `"word-group"` (default). Declaring the wrong value silently places the firmware in the wrong physical locations; see the "Interleaving Schemes" section of `isle_standardization.md` for the exact address mapping of each scheme.
+*   **`PreloadInterleave`** (`string`): The physical interleaving scheme, `"lane-group"` or `"word-group"` (default). Declaring the wrong value silently places the firmware in the wrong physical locations; see the [Interleaving Schemes section](isle_standardization.md#82-interleaving-schemes) of the Isle standardization guide for the exact address mapping of each scheme.

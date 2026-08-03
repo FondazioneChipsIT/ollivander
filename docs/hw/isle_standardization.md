@@ -7,7 +7,7 @@ The purpose of the Isle is to provide a **uniform, generator-friendly interface*
 
 **Cross-Topology Reusability (`_isle` vs `_subtile`)**: To maximize IP reuse, Ollivander establishes a strict hierarchical naming convention:
 *   **`*_isle.sv` (Topology-Agnostic)**: Uses standard single-network AXI/RegBus ports. Can be instantiated safely in both Crossbar and NoC topologies. In a NoC, Ollivander automatically generates a Tile wrapper for it.
-*   **`*_subtile.sv` (NoC-Specific)**: Designed natively for NoC topologies (e.g., uses `noc_mode: "dual"` to expose physically separate narrow and wide AXI networks). **Cannot** be used in a Crossbar topology. (See `subtile_standardization.md` for details).
+*   **`*_subtile.sv` (NoC-Specific)**: Designed natively for NoC topologies (e.g., uses `noc_mode: "dual"` to expose physically separate narrow and wide AXI networks). **Cannot** be used in a Crossbar topology. (See the [Subtile standardization guide](subtile_standardization.md) for details).
 
 This document provides the definitive guide for hardware designers looking to integrate a Topology-Agnostic component or a custom Host into the Ollivander ecosystem.
 
@@ -20,12 +20,12 @@ Every Isle MUST expose a standardized set of parameters to define bus geometries
 *   **`localparam` (Fixed Constraint):** Use this in the module header for values that **cannot** be changed (e.g., a hardware IP that strictly requires a 64-bit data bus). Ollivander will add these to a `fixed_params` list, skip them during parameter assignment in the top-level, and **strictly validate** that the global YAML configuration does not violate them. If a violation occurs, the generator halts with an architectural error.
 
 ### 2.1 Expected Bus Geometries
-These parameters define the physical width of the AXI lines. They are directly driven by the `global_bus` section of the YAML configuration. *(Note: Isles support only a single, unified AXI network. For dual-network NoC IPs, see Subtiles).*
-*   `AxiAddrWidth`
-*   `AxiDataWidth`
-*   `AxiUserWidth`
-*   `AxiInIdWidth`: Width of the AXI ID for incoming requests (required if `axi_slave` is used).
-*   `AxiOutIdWidth`: Width of the AXI ID for outgoing requests (required if `axi_master` is used).
+These parameters define the physical width of the AXI lines, and the generator drives each from the geometry of the interconnect the Isle is attached to. *(Note: Isles support only a single, unified AXI network. For dual-network NoC IPs, see Subtiles).*
+*   `AxiAddrWidth`, `AxiDataWidth`, `AxiUserWidth`: taken from the `global_bus` declaration (crossbar) or from the network (NoC).
+*   `AxiInIdWidth`: Width of the AXI ID for incoming requests (required if `axi_slave` is used). Driven with the interconnect's **slave-side** ID width — in a crossbar that is not a `global_bus` field but a computed value, the manager ID width plus the arbitration bits for the number of managers, so it grows when components are added.
+*   `AxiOutIdWidth`: Width of the AXI ID for outgoing requests (required if `axi_master` is used). Driven with the manager-side ID width (`mst_id_width`, or the network's input width in a NoC).
+
+Declaring one of these as a `localparam` instead states a geometry the Isle cannot depart from, and switches it from *driven* to *verified*: address and data widths must then equal the bus exactly, and the ID widths are checked along the direction of travel — see the same contract in the [Subtile standardization guide, section 2.1](subtile_standardization.md#21-expected-bus-geometries), which applies unchanged.
 
 ### 2.2 Clock Domain Crossing (CDC) Widths
 Since most Isles reside in independent clock domains, they expose pre-calculated widths for the asynchronous AXI channels. This prevents the generator from having to compute complex SystemVerilog `$clog2` macros in the top-level.
@@ -49,6 +49,10 @@ SystemVerilog enforces strict type equivalence for structs. To avoid compilation
 *   `axi_aw_chan_t`, `axi_w_chan_t`, `axi_b_chan_t`, `axi_ar_chan_t`, `axi_r_chan_t`: Asynchronous channel types (optional, if the IP supports CDC internally).
 
 Ollivander will automatically inject the local SoC package types (e.g., `my_soc_pkg::soc_axi_req_t`) when instantiating the Isle.
+
+In a **NoC**, the types injected are those of the network the port rides on, chosen per direction: the master pair takes the network's input types, the slave pair its output types (or the joined type, where a Join adapter merges the two networks). Exposing the pairs as `parameter type` is therefore what lets an Isle carry the ID and user widths of whatever network it is placed in, and `AxiOutIdWidth` is set to the network's input width for the same reason.
+
+An Isle that instead types its AXI ports from its own IP package — legitimate for a hand-written wrapper around an IP whose widths are fixed, as the snitch cluster subtile does — keeps them, and the tile adapts around it: the ID is zero-extended to the network width on the way out and truncated back on the response, field-wise, so that only `id` is touched. Nothing is lost either way, but the two cases must not be mixed by hand: whether the port types were injected is what decides which of the two the generator applies.
 
 The package name follows the **top-level module name**, not the bare project name, so it carries the same suffix that `build_mode: "macro"` adds. A project `crux` built standalone produces `crux_soc_pkg`, while the same project built as a macro with `export_type: "isle"` produces `crux_isle_soc_pkg`. This is what allows both builds of a project — and a parent SoC that instantiates one of them — to be compiled into a single simulation library without the two packages colliding under the same name.
 

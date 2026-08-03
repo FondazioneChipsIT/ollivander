@@ -83,10 +83,11 @@ Each key in the `dependencies` dictionary represents the name of the IP.
 | :-------- | :----- | :--------------------------------------------------------------------------------------- |
 | `git`     | String | **Required**. The Git repository URL of the dependency.                                  |
 | `version` | String | Specifies a semantic version to checkout (e.g., `"1.0.4"`).                              |
-| `rev`     | String | Specifies a specific commit hash, branch, or tag to checkout (e.g., `"main"` or          |
-|           |        | `"0ec0bf8"`).                                                                            |
+| `rev`     | String | Specifies a commit hash or tag to checkout (e.g., `"0ec0bf8"`).                          |
 
 *(Note: You must specify either `version` or `rev`, but not both).*
+
+Do not point `rev` at a branch name. A branch moves, so the build stops being reproducible; and a branch cannot satisfy the semantic-version ranges other IPs may express against the same package, which pushes the project into a forced resolution (section 4) for no reason. The catalogue shipped with Ollivander contains no branch references, deliberately: every entry is a released version where the IP publishes one, an explicit commit otherwise.
 
 ### 3.2 Compilation Targets (`bender_targets`)
 Some IPs contain multiple implementations (e.g., FPGA vs ASIC) or optional sub-modules. Bender uses targets (`-t`) to select the right source files.

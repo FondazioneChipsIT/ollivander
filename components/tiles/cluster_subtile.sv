@@ -22,14 +22,26 @@ module cluster_subtile
   import snitch_cluster_pkg::*;
 #(
   parameter bit UseHWPE = 1'b0,
-  // Fixed architectural constraints from Snitch (Required by Ollivander Validation)
+  // The geometry this subtile cannot depart from, stated as literals so that Ollivander
+  // can read it and validate the connection to the bus this subtile is attached to
+  // (soc_schema.py, HARDWARE CONSTRAINTS CHECK). Literal rather than a reference to
+  // snitch_cluster_pkg because the check reads the value as written and cannot resolve
+  // an expression; the elaboration checks in the body keep the literals honest against
+  // the IP that actually defines them.
+  //
+  // Address and data demand equality: no adaptation exists for them. The ID widths
+  // state a direction instead - what this subtile emits (Out) and what it accepts (In)
+  // - and the generator verifies capacity along the direction of travel: an ID this
+  // subtile emits is zero-extended by the tile if the network is wider, but a network
+  // ID wider than the In width here would be truncated, aliasing transactions. All
+  // four used to be wrong, the two directions swapped, while nothing read them.
   localparam int unsigned AxiAddrWidth        = 48,  // snitch_cluster_pkg::AddrWidth
   localparam int unsigned AxiNarrowDataWidth  = 64,  // snitch_cluster_pkg::NarrowDataWidth
   localparam int unsigned AxiWideDataWidth    = 512, // snitch_cluster_pkg::WideDataWidth
-  localparam int unsigned AxiNarrowOutIdWidth = 2,   // snitch_cluster_pkg::NarrowIdWidthOut
-  localparam int unsigned AxiNarrowInIdWidth  = 5,   // snitch_cluster_pkg::NarrowIdWidthIn
-  localparam int unsigned AxiWideOutIdWidth   = 1,   // snitch_cluster_pkg::WideIdWidthOut
-  localparam int unsigned AxiWideInIdWidth    = 3    // snitch_cluster_pkg::WideIdWidthIn
+  localparam int unsigned AxiNarrowInIdWidth  = 2,   // snitch_cluster_pkg::NarrowIdWidthIn
+  localparam int unsigned AxiNarrowOutIdWidth = 4,   // snitch_cluster_pkg::NarrowIdWidthOut
+  localparam int unsigned AxiWideInIdWidth    = 1,   // snitch_cluster_pkg::WideIdWidthIn
+  localparam int unsigned AxiWideOutIdWidth   = 3    // snitch_cluster_pkg::WideIdWidthOut
 ) (
   input  logic                                    clk_i,
   input  logic                                    rst_ni,
@@ -60,6 +72,34 @@ module cluster_subtile
   input wire floo_ollivander_noc_pkg::red_wide_req_t  offload_wide_req_i,
   output floo_ollivander_noc_pkg::red_wide_rsp_t  offload_wide_rsp_o
 );
+
+  // The address and data widths above are literals because that is what Ollivander can
+  // read and validate against the bus this subtile is attached to; these elaboration
+  // checks are what keeps the literals honest against the IP that actually defines them.
+  // Written as generate-scope $fatal rather than assertions on purpose: the regression
+  // runs with -nosva -noimmedassert, which would silence an immediate assert, while an
+  // elaboration-time error cannot be waived.
+  if (AxiAddrWidth != snitch_cluster_pkg::AddrWidth)
+    $fatal(1, "cluster_subtile: AxiAddrWidth (%0d) contradicts snitch_cluster_pkg::AddrWidth (%0d)",
+           AxiAddrWidth, snitch_cluster_pkg::AddrWidth);
+  if (AxiNarrowDataWidth != snitch_cluster_pkg::NarrowDataWidth)
+    $fatal(1, "cluster_subtile: AxiNarrowDataWidth (%0d) contradicts snitch_cluster_pkg::NarrowDataWidth (%0d)",
+           AxiNarrowDataWidth, snitch_cluster_pkg::NarrowDataWidth);
+  if (AxiWideDataWidth != snitch_cluster_pkg::WideDataWidth)
+    $fatal(1, "cluster_subtile: AxiWideDataWidth (%0d) contradicts snitch_cluster_pkg::WideDataWidth (%0d)",
+           AxiWideDataWidth, snitch_cluster_pkg::WideDataWidth);
+  if (AxiNarrowInIdWidth != snitch_cluster_pkg::NarrowIdWidthIn)
+    $fatal(1, "cluster_subtile: AxiNarrowInIdWidth (%0d) contradicts snitch_cluster_pkg::NarrowIdWidthIn (%0d)",
+           AxiNarrowInIdWidth, snitch_cluster_pkg::NarrowIdWidthIn);
+  if (AxiNarrowOutIdWidth != snitch_cluster_pkg::NarrowIdWidthOut)
+    $fatal(1, "cluster_subtile: AxiNarrowOutIdWidth (%0d) contradicts snitch_cluster_pkg::NarrowIdWidthOut (%0d)",
+           AxiNarrowOutIdWidth, snitch_cluster_pkg::NarrowIdWidthOut);
+  if (AxiWideInIdWidth != snitch_cluster_pkg::WideIdWidthIn)
+    $fatal(1, "cluster_subtile: AxiWideInIdWidth (%0d) contradicts snitch_cluster_pkg::WideIdWidthIn (%0d)",
+           AxiWideInIdWidth, snitch_cluster_pkg::WideIdWidthIn);
+  if (AxiWideOutIdWidth != snitch_cluster_pkg::WideIdWidthOut)
+    $fatal(1, "cluster_subtile: AxiWideOutIdWidth (%0d) contradicts snitch_cluster_pkg::WideIdWidthOut (%0d)",
+           AxiWideOutIdWidth, snitch_cluster_pkg::WideIdWidthOut);
 
   snitch_cluster_pkg::narrow_out_req_t  cluster_narrow_ext_req;
   snitch_cluster_pkg::narrow_out_resp_t cluster_narrow_ext_rsp;

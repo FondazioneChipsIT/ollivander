@@ -114,14 +114,10 @@ Related, and worth raising upstream regardless: with collectives enabled FlooNoC
 *   **Runtime and noise**: assertions slow the run down, and third-party IPs are known to fire benign ones during reset.
     *   *Mitigation*: enable them on one crossbar and one NoC project first, triage what fires, and only then extend. Keeping `ASSERTIONS=0` available per project means a noisy IP never blocks the whole suite.
 
-### 3.4 The NoC/SoC Width Contract at the Isle Border Join
+### 3.4 What Is Left of the NoC Width Contract
 
-A NoC project exported as an isle macro adapts its border to a single joined AXI port through FlooNoC's `floo_nw_join`, which we parametrize twice: numerically, with the `AxiCfg*` structs FlooGen writes into the generated NoC package, and structurally, with the SoC's own channel types. Where the two disagree, the converter inside the join declares its ports from the numeric config, gets connected to the SoC structs, and QuestaSim reports `vsim-3015` (PCDPC) on `axi_id_prepend` and connects by truncation. The residual disagreement is the user field — the narrow network carries the meaningful span of the SoC user mapping, `max(amo_msb, ecc_err_bit) + 1` bits derived in `floogen_cfg.yml.mako`, against the SoC's full `AxiUserWidth` — and the ID component below. The warnings appear only where the join exists (`noc_isle`, and any project embedding its macro, such as `super_crossbar`; the subtile export has native dual NoC ports and no join) and are deliberately left visible: they measure how much of the contract is still partial.
-
-*   **The user component**: closing it entirely means sizing the narrow network at the full SoC user width — one line of the existing derivation, and the collective fields are known not to interfere (FlooGen excludes `collective_mask` and `collective_op` from the AXI user width, `protocol.py::render_cfg`) — but it widens every link for bits that carry no semantics today. Worth doing the day the spare user bits gain a meaning.
-*   **Not the wide network, though**, and the reason was learned by getting it wrong: widening it to match the narrow one looks like the same improvement and is not. Every endpoint that reads user bits sits behind a join, and `floo_pkg::axi_join_cfg` takes `UserWidth` as the **maximum** of the two configurations, so the joined port already carries the narrow width whatever the wide one is — the L2, the only endpoint using those bits (`AxiUserAtop` over `user[1:0]`), gains nothing. What a wider wide network does produce is a fresh mismatch: `snitch_cluster` generates its own wide port as `typedef logic user_dma_t`, one bit, because a DMA transfer carries no atomic reservation. Raising the network moved the truncation from the network to every cluster port rather than removing it, at 4 user bits per channel and 64 `vopt-2241` warnings across the 16 clusters of `super_mesh`.
-*   **Upstream, complementary**: `floo_nw_join` could derive its internal converter types from the port types instead of the numeric config, making a config-versus-struct mismatch structurally impossible. Module hygiene, not a fix for what survives the border. Worth raising regardless.
-*   **The ID component**: the macro port `AxiIdWidth` 4 versus the join's computed width needs its own look at how the macro port ID width is chosen relative to `floo_pkg::axi_join_cfg`. Same thread, same template: the schema gives `NoCNetwork.id_width` a default of 4, so the auto-calculation branch for the narrow-in ID width in `floogen_cfg.yml.mako` is dead code, and the other three protocol ID widths (`narrow_out: 2`, `wide_in: 3`, `wide_out: 1`) are hardcoded with no schema counterpart. Unifying who decides the per-network, per-direction ID widths belongs here.
+*   **Upstream, in `floo_nw_join`**: the module is parametrized twice, numerically with the `AxiCfg*` structs and structurally with the channel types it is handed, and its internal ID converter declares its ports from the numeric config. The two agree in everything Ollivander generates, both coming from the same resolved widths, but nothing inside the module enforces it — deriving the converter types from the port types instead would make the disagreement structurally impossible. Module hygiene rather than a fix for anything we still emit, and worth raising as a pull request alongside the other upstream candidates.
+*   **The output side of each network** (`narrow_out: 2`, `wide_out: 1`) is written as a literal in `floogen_cfg.yml.mako` with no schema counterpart, unlike the input side which is now resolved from what the attached components need. No project has wanted anything else, and the compression ratio is a FlooNoC design choice rather than a property of the components attached; if one ever does, it should follow the same resolution path rather than becoming a second hardcoded number.
 
 ### 3.5 The pulp_cluster Isle: Fixed Parameters and a Misaligned AXI Adaptation
 
@@ -139,7 +135,7 @@ More importantly, **the remapping is not width adaptation but field reinterpreta
 
 The file's justification for this ("functionally correct since the AXI ID field resides in the MSB") is inverted: it is *because* the ID sits in the MSB that dropping the low bits loses it. Nothing detects this today because no example addresses the cluster — hello world never does — so the ID paths are never exercised.
 
-*Decision to take*: whether to instantiate `pulp_cluster` directly instead of `pulp_cluster_wrap`.
+*Planned*: instantiate `pulp_cluster` directly instead of `pulp_cluster_wrap`. What was an open question is settled by the reference design: astral does exactly this (`carfield.sv` instantiates `pulp_cluster #(.Cfg(carfield_pkg::PulpClusterCfg))`, and the config carries the top's own slave-side ID width in `AxiIdInWidth`), so both sides of every CDC derive from one constant and no remapping exists. The isle is the last crossbar component whose geometry is frozen: `safety_island_isle` and `security_island_isle` now expose it as `parameter`s the generator drives, and until this task is done the generator reports the pulp CDC misalignment at every generation of a project containing it (the width check in `wiring.py`, to be upgraded from warning to error here).
 
 #### Advantages
 *   **Removes the adaptation entirely**: with a `pulp_cluster_cfg_t` built from the isle's own parameters, the inner CDC widths equal the outer ones by construction, so the eighty-line remapping block and the ten hardcoded constants disappear — along with the misalignment they encode.
@@ -187,3 +183,39 @@ An independent safety net: it would turn any undeclared signal into an elaborati
 #### Difficulties & Mitigation Strategies
 *   **The consumer surface is large**: 123 dictionary-style accesses of `interfaces` alone, across Python and Mako, plus the equivalent for the other blocks.
     *   *Mitigation*: worth doing only alongside a refactor that already touches those consumers — the SV-IR extension of chapter 1 is the natural occasion.
+
+## 5. A Verilator Simulation Flow
+
+The suite already runs its elaboration gate on two backends: `fast-check` accepts `FAST_CHECK_TOOL=questa|verilator`, and every example passes both. Simulation, however, exists only as a QuestaSim flow — `Makefile.vsim` drives `vlog`/`vsim`, and the run-sim/gui targets are built around `vsim -do` scripts. When the Siemens licenses expired (every feature in the server's file ran out on 31-jul-2026, at a weekend, taking the `saltd` vendor daemon down with it), the project lost its only way to run a testbench while the license-free half of the suite kept working: seven Verilator fast-checks green, zero simulations possible until the renewal. A Verilator simulation flow would close that asymmetry, and its value is independent of the outage that motivated it: it is the missing piece for continuous integration that does not depend on license seats.
+
+#### Advantages
+*   **License-free regression**: `make test-all TEST_SIM=1` becomes runnable on any machine, including CI runners, with the licensed backend reserved for signoff rather than for every iteration.
+*   **A second simulator is a second opinion**: the message-suppression work showed how much a single tool's defaults can hide; two-valued simulation semantics and Verilator's stricter scheduling surface a different class of RTL assumptions (X-propagation being the known trade-off in the other direction).
+*   **The suite plumbing already exists**: per-tool log names (`test_fastcheck_<tool>.log`), the `FAST_CHECK_TOOLS` loop in `ollivander_test.mk` and the tool-conditional blocks in `Makefile.vsim.mako` give the pattern to extend rather than a design to invent.
+
+#### Difficulties & Mitigation Strategies
+*   **The testbench is event-driven**: `tb_soc.sv.mako` uses delays, `fork`/`join`, and time-based UART sampling. Verilator 5's `--timing` supports most of this, but "most" has to be established case by case, and the testbench may need a `` `ifdef VERILATOR `` seam or two rather than a rewrite.
+    *   *Mitigation*: start from the smallest project (`crossbar`) and make the testbench portable incrementally; the generated TB is ours, so nothing upstream blocks it.
+*   **The external IPs are not Verilator-clean beyond lint**: the fast-check runs `--lint-only` on stubs with the external IPs excluded; full simulation compiles all of them, and the PULP-family IPs carry SVA, hierarchical references and vendor-specific constructs that lint never sees. This is where the real cost lives, and it cannot be estimated from the fast-check experience.
+    *   *Mitigation*: scope it per family — the crossbar family (Cheshire-centred) is known Verilator territory upstream, the NoC family with 16-cluster subtiles may stay Questa-only at first, and a flow that covers a subset of projects is already useful for CI.
+*   **A new flow needs a reference to be trusted**: its first green runs prove nothing until they are compared against QuestaSim on the same code.
+    *   *Mitigation*: validate it while both backends work — explicitly not during an outage — by requiring identical UART output and EOT on every project it claims to cover.
+
+
+## 6. A Documentation Site (MkDocs Material)
+
+The documentation is plain GitHub-flavored Markdown, deliberately: it renders in the repository viewer with no build step, and the 2026-08-02 pass gave it a portal (`docs/README.md`), systematic cross-links and Mermaid diagrams. The next step in polish — a navigable site with a sidebar, full-text search and versioned releases — means adopting a site generator, and the natural candidate is **MkDocs with the Material theme**: it is what the surrounding ecosystem publishes with (Cheshire, Snitch and the PULP projects at large), and it consumes the existing Markdown nearly as-is.
+
+#### Advantages
+*   **Navigation and search**: ten guides currently discoverable only through the portal page become a sidebar tree with full-text search, which is what makes documentation feel maintained.
+*   **A single source that renders twice**: the same files keep rendering on GitHub for people browsing the repository, while the site serves people reading the documentation as a product.
+*   **Generated configuration reference**: with `mkdocstrings`, the field tables of `soc_configuration_guide.md` could be generated from the Pydantic models in `soc_schema.py` instead of being maintained by hand — the same one-copy principle the generator itself applies to widths. This is the piece with value beyond aesthetics, and also the most work: the schema's docstrings are not written for publication today.
+
+#### Difficulties & Mitigation Strategies
+*   **Two admonition dialects**: the guides use GitHub alerts (`[!NOTE]`, `[!IMPORTANT]`), MkDocs uses `!!! note` admonitions, and each viewer renders only its own. One syntax has to become canonical, with either a conversion step in the site build or a plugin bridging the other direction; whichever is chosen, the repository must not end up mixing both.
+    *   *Mitigation*: decide when the site is actually adopted, not before, and convert mechanically in one commit — the same reasoning as the LF normalization.
+*   **GitHub Pages on a private repository requires a paid plan tier.** Until Ollivander is public, publishing needs either the right organization plan or an internal host.
+    *   *Mitigation*: this is the reason the task waits. The decision point is the repository going public, when the audience the site serves starts existing; everything the site would add is cosmetic until then.
+*   **A navigation structure is a maintenance surface**: `mkdocs.yml` lists every page, so adding a guide gains a second place to register it.
+    *   *Mitigation*: keep `docs/README.md` as the canonical index and generate the `nav` from it, or accept the duplication consciously — it is one line per document.
+

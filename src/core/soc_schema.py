@@ -151,7 +151,11 @@ class NoCNetwork(StrictModel):
     """Defines the dimensions for a specific NoC physical sub-network."""
     data_width: int
     addr_width: int
-    id_width: Optional[int] = 4
+    # None means "derive it": the width the attached macros impose, with FlooNoC's own
+    # default as the floor (src/core/macro_boundary.py). The default used to be 4, which
+    # made "not declared" indistinguishable from "declared 4" and left the derivation
+    # unreachable - and silently gave the wide network 4 where FlooNoC uses 3.
+    id_width: Optional[int] = None
 
 class NoCSettings(StrictModel):
     """
@@ -893,8 +897,16 @@ def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] =
     all_comps = [config.host]
     if config.components:
         all_comps.extend(config.components)
-        
+
     global_bus = config.topology.global_bus
+
+    # The per-network ID widths a NoC resolves (input side) and fixes (output side),
+    # needed by the capacity check below. Resolved once, quietly: the provenance report
+    # belongs to the generation step, which resolves the same values again.
+    noc_in_id_widths = {}
+    if config.topology.type == "noc" and search_paths:
+        from core.macro_boundary import resolve_noc_id_widths, NOC_OUTPUT_ID_WIDTH
+        noc_in_id_widths = resolve_noc_id_widths(config, search_paths, original_types, report=False)
     
     for comp in all_comps:
         # If the component was wrapped in a NoC Tile during Phase 1, we must validate
@@ -952,29 +964,111 @@ def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] =
                             f"Valid parameters declared as 'parameter' in the SystemVerilog file: {list(info['supported_params'].keys())}"
                         )
         
-        # 2. HARDWARE CONSTRAINTS CHECK: Ensure that component 'localparam's (fixed 
-        #    architectural constraints) do not conflict with the global bus geometry.
+        # 2. HARDWARE CONSTRAINTS CHECK: a component's fixed 'localparam's state a geometry
+        #    it cannot depart from, so where the bus it is attached to disagrees, the
+        #    connection is malformed and nothing downstream can repair it.
+        #
+        #    Only the address and data widths are checked, and the choice is the point of
+        #    this block rather than a simplification: they are the two widths for which no
+        #    adaptation exists. An ID width that differs is zero-extended or truncated at
+        #    the tile boundary (universal_tile.sv.mako), and a user field wider than the
+        #    network loses only the bits above the meaningful span, refused separately in
+        #    macro_boundary.py when that span would not survive. Gating those here would
+        #    reject working components - 'cluster_subtile' declares a narrow ID width of 5
+        #    while snitch_cluster gives it 4, which is precisely why the adaptation exists.
+        #
+        #    It used to run only when 'global_bus' existed, i.e. never for a NoC, which is
+        #    where the geometry comes from the networks rather than one declared bus - so
+        #    the topology that most needs the check was the one skipping it.
+        geometry_checks = {}
         if global_bus:
-            global_checks = {
-                "AxiDataWidth": global_bus.data_width,
-                "AxiAddrWidth": global_bus.addr_width,
-                "AxiUserWidth": global_bus.user_width
-            }
-            
-            for param_name, global_val in global_checks.items():
-                if param_name in info["fixed_params"]:
-                    fixed_val_str = info["fixed_params"][param_name]
-                    try:
-                        fixed_val = int(fixed_val_str)
-                    except ValueError:
-                        continue # Skip validation if parameter is a macro string
-                        
-                    if global_val != fixed_val:
-                        raise ValueError(
-                            f"\n[ARCHITECTURAL ERROR]\n"
-                            f"Component '{comp.name}' ({comp.type}) only accepts the fixed value {fixed_val} for '{param_name}'.\n"
-                            f"The value {global_val}, configured by the user in the global_bus, is not compatible!"
-                        )
+            geometry_checks["AxiAddrWidth"] = (global_bus.addr_width, "the global bus")
+            geometry_checks["AxiDataWidth"] = (global_bus.data_width, "the global bus")
+        elif config.topology.noc_settings and config.topology.noc_settings.networks:
+            nets = config.topology.noc_settings.networks
+            comp_nets = (comp.interfaces or {}).get("noc_networks") or {}
+            attached = set((comp_nets.get("master") or []) + (comp_nets.get("slave") or []))
+            # Both networks share the address space, so the plain name is unambiguous.
+            if "narrow" in nets:
+                geometry_checks["AxiAddrWidth"] = (nets["narrow"].addr_width, "the NoC network geometry")
+            # A component on both networks names its data widths per network, per the
+            # subtile standardization; one on a single network uses the plain name.
+            for net_name, prefix in (("narrow", "Narrow"), ("wide", "Wide")):
+                if net_name in nets and net_name in attached:
+                    geometry_checks[f"Axi{prefix}DataWidth"] = (nets[net_name].data_width,
+                                                                f"the '{net_name}' network")
+                    if len(attached) == 1:
+                        geometry_checks["AxiDataWidth"] = (nets[net_name].data_width,
+                                                           f"the '{net_name}' network")
+
+        for param_name, (bus_val, source) in geometry_checks.items():
+            if param_name in info["fixed_params"]:
+                fixed_val_str = info["fixed_params"][param_name]
+                try:
+                    fixed_val = int(fixed_val_str)
+                except ValueError:
+                    # Reported rather than skipped in silence. The parser keeps the value
+                    # as written, so anything that is not a literal - a package reference,
+                    # an expression - cannot be compared here, and a check that quietly
+                    # stops running is worse than no check: whoever replaces a literal
+                    # with a reference has to know the verification goes with it.
+                    print(f"  [WARNING] [{comp.name}] '{param_name}' is fixed to the expression "
+                          f"'{fixed_val_str}', which cannot be compared against {source}: this "
+                          f"geometry is left unverified. Declare it as a literal to have it checked, "
+                          f"or check it inside the component with an elaboration-time $fatal.")
+                    continue
+
+                if bus_val != fixed_val:
+                    raise ValueError(
+                        f"\n[ARCHITECTURAL ERROR]\n"
+                        f"Component '{comp.name}' ({comp.type}) fixes '{param_name}' to {fixed_val} as a "
+                        f"'localparam', but {source} carries {bus_val}.\n"
+                        f"Address and data widths cannot be adapted between a component and its bus: "
+                        f"connecting them would silently truncate or pad every transfer."
+                    )
+
+        # 2b. ID CAPACITY CHECK (NoC): a fixed ID width states what the component's own
+        #     hardware emits and accepts, so it is verified along the direction of travel
+        #     rather than for equality. What the component *emits* (OutIdWidth) may be
+        #     narrower than the network - the tile zero-extends it - but never wider,
+        #     since the network would truncate and distinct transactions would alias.
+        #     What it *accepts* (InIdWidth) must cover the network's compressed output
+        #     side, or responses would be misrouted inside the component. Only fixed
+        #     'localparam's are checked: a 'parameter' is driven by the generator to the
+        #     network's own width and cannot disagree with it.
+        if noc_in_id_widths and comp.interfaces:
+            comp_nets = comp.interfaces.get("noc_networks") or {}
+            id_prefixes = {"narrow": "AxiNarrow", "wide": "AxiWide"}
+
+            def _fixed_int(names):
+                for n in names:
+                    if n in info["fixed_params"]:
+                        try:
+                            return n, int(info["fixed_params"][n])
+                        except ValueError:
+                            continue
+                return None, None
+
+            for net in (comp_nets.get("master") or []):
+                pname, declared = _fixed_int([f"{id_prefixes.get(net, 'Axi')}OutIdWidth", "AxiOutIdWidth"])
+                if declared is not None and declared > noc_in_id_widths.get(net, declared):
+                    raise ValueError(
+                        f"\n[ARCHITECTURAL ERROR]\n"
+                        f"Component '{comp.name}' ({comp.type}) emits {declared}-bit AXI IDs "
+                        f"('{pname}') on the '{net}' network, which accepts {noc_in_id_widths[net]}.\n"
+                        f"The network would truncate the top bits and distinct transactions would alias. "
+                        f"Raise the network's 'id_width' or use a component matching its geometry."
+                    )
+            for net in (comp_nets.get("slave") or []):
+                pname, declared = _fixed_int([f"{id_prefixes.get(net, 'Axi')}InIdWidth", "AxiInIdWidth"])
+                if declared is not None and declared < NOC_OUTPUT_ID_WIDTH.get(net, declared):
+                    raise ValueError(
+                        f"\n[ARCHITECTURAL ERROR]\n"
+                        f"Component '{comp.name}' ({comp.type}) accepts {declared}-bit AXI IDs "
+                        f"('{pname}'), but the '{net}' network delivers "
+                        f"{NOC_OUTPUT_ID_WIDTH[net]} to its subordinates.\n"
+                        f"The component would truncate the ID and misroute its responses."
+                    )
                         
         # 3. SYNCHRONICITY & NOC MODE CHECK: Verify that the physical ports defined in the wrapper
         #    support the sync/async connection style and NoC mode requested in the YAML.

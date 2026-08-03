@@ -32,8 +32,14 @@ If the Subtile connects to multiple independent NoC networks simultaneously (e.g
 *   **Dual Mode (Dual-Network Subtiles):**
     *   `AxiNarrowDataWidth`, `AxiWideDataWidth`
     *   `AxiNarrowUserWidth`, `AxiWideUserWidth`
-    *   `AxiNarrowInIdWidth`, `AxiWideInIdWidth` (and equivalent `OutIdWidth` for masters)
+    *   `AxiNarrowInIdWidth`, `AxiNarrowOutIdWidth`, `AxiWideInIdWidth`, `AxiWideOutIdWidth`
     *   *(Note: `AxiAddrWidth` is assumed global for the SoC, but `AxiNarrowAddrWidth` is supported).*
+
+How each declaration is treated depends on whether the wrapper declares it `parameter` or `localparam`, and the distinction is the contract. A **`parameter`** is *driven*: the generator sets it to the geometry of the network the port rides on, so a wrapper around a sizeable IP should expose one and propagate it into the IP — every default it would otherwise fall back to describes the context the wrapper was extracted from, not the SoC it lands in. A **`localparam`** is *verified*: it states a geometry the component cannot depart from, and Ollivander checks it against the bus at generation time. Keep those as literals — the check reads the value as written and cannot resolve `some_pkg::SomeWidth` — and, when the IP defines the same number itself, guard the literal with an elaboration-time `$fatal` against the IP's package, as `cluster_subtile` does, so it stays readable to the generator and cannot drift from the IP.
+
+The verification rule is not plain equality. Address and data widths must match exactly, since no adaptation exists for them: a mismatch there is refused. The ID widths are checked **along the direction of travel**: what the component emits (`*OutIdWidth`) may be narrower than the network's input side — the tile zero-extends it — but never wider, or the network would truncate and distinct transactions would alias; what it accepts (`*InIdWidth`) must cover the network's compressed output side, or responses would be misrouted inside the component.
+
+A whole project exported with `export_type: "subtile"` is a distinct case from a hand-written wrapper, and one constraint on it comes from outside the project: it plugs its slave ports into the chimneys of the network FlooGen generated for it, so it *accepts* a fixed ID width. Its SoC package publishes that width, a parent reads it back, and a parent network resolving wider is refused rather than truncated at the boundary. The number may therefore have to be declared on the network of the exporting project — see [Network ID width](../soc_configuration_guide.md#22-topology-topology) in the SoC configuration guide, which covers the whole rule and the diagnostics.
 
 ### 2.2 Clock Domain Crossing (CDC) Widths
 Since most Subtiles reside in independent clock domains, they expose pre-calculated widths for the asynchronous AXI channels to avoid complex `$clog2` macros in the top-level.
@@ -58,6 +64,24 @@ To avoid strict type equivalence errors, Subtiles should expose their AXI struct
 Ollivander will automatically inject the appropriate network types from the local NoC package when instantiating the Subtile.
 
 In dual mode both pairs carry the **input** type of the network — the slave port and the master port alike. FlooNoC compresses IDs across a network (`InIdWidth` > `OutIdWidth`), so the output of one chimney can never be handed straight to the input of the next one: each side widens its own chimney output back to the input width before exporting it, which keeps the adaptation next to the chimney that narrowed the ID and lets the two boundaries connect directly. The widening is field-wise, so that it applies to `id` alone.
+
+```mermaid
+flowchart LR
+    subgraph PARENT["Parent SoC (per network)"]
+        PCH["Border chimney"]
+        PW["widen id<br/>out → in"]
+        PCH -- "out type (compressed)" --> PW
+    end
+    subgraph MACRO["Subtile macro"]
+        MW["widen id<br/>out → in"]
+        MCH["Internal chimney"]
+        MCH -- "out type (compressed)" --> MW
+    end
+    PW -- "boundary: network IN type" --> MCH
+    MW -- "boundary: network IN type" --> PCH
+```
+
+Both arrows crossing the boundary carry the same input-typed struct, which is why the two sides connect directly: every compressed-to-input adaptation stays on the side whose chimney produced the compressed ID.
 
 Typing these ports from the Subtile's own SoC package instead exports a single ID and user width for both networks and both directions, which matches neither of them: since `id` is the first member of the struct, and therefore occupies its most significant bits, the resulting connection does not merely truncate the ID but misaligns every field of the channel.
 
@@ -231,11 +255,11 @@ Instead, use the injected Python functions to dynamically register dependencies 
 
 ## 7. Memory Preloading Standardization
 
-For memory Subtiles that require simulation-only binary preloading (via `$readmemh`), the wrapper can optionally expose standard `localparam` values in its SystemVerilog module declaration. This follows the exact same specification as defined in `isle_standardization.md`:
+For memory Subtiles that require simulation-only binary preloading (via `$readmemh`), the wrapper can optionally expose standard `localparam` values in its SystemVerilog module declaration. This follows the exact same specification as defined in the [Isle standardization guide](isle_standardization.md#8-memory-preloading-standardization):
 
 *   **`PreloadType`** (`string`): Set to `"interleaved"` for interleaved multi-bank preloading.
 *   **`PreloadTemplate`** (`string`): The internal hierarchical path template from the Subtile top to the physical SRAM array (supporting `{group}` and `{bank}` variables).
 *   **`PreloadNumGroups`** (`int unsigned`): The number of bank groups.
 *   **`PreloadBankWidth`** (`int unsigned`): The data width of a single physical SRAM bank in bits.
 *   **`PreloadBanksPerGroup`** (`int unsigned`): The number of physical SRAM banks in each group (optional, dynamically calculated as `AxiDataWidth / PreloadBankWidth` if omitted or set to 0).
-*   **`PreloadInterleave`** (`string`): The physical interleaving scheme, `"lane-group"` or `"word-group"` (default). Declaring the wrong value silently places the firmware in the wrong physical locations; see the "Interleaving Schemes" section of `isle_standardization.md` for the exact address mapping of each scheme.
+*   **`PreloadInterleave`** (`string`): The physical interleaving scheme, `"lane-group"` or `"word-group"` (default). Declaring the wrong value silently places the firmware in the wrong physical locations; see the [Interleaving Schemes section](isle_standardization.md#82-interleaving-schemes) of the Isle standardization guide for the exact address mapping of each scheme.

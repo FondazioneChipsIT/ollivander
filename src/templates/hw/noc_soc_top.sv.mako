@@ -110,31 +110,30 @@ module ${top_level_module_name}
   import ${imp}::*;
 % endfor
 <%
-  if config.topology.global_bus:
-      g_addr_w = config.topology.global_bus.addr_width
-      g_data_w = config.topology.global_bus.data_width
-      g_user_w = config.topology.global_bus.user_width
-      g_id_w   = config.topology.global_bus.mst_id_width
-  else:
-      narrow_net = config.topology.noc_settings.networks.get('narrow') if config.topology.noc_settings and config.topology.noc_settings.networks else None
-      g_addr_w = narrow_net.addr_width
-      g_data_w = narrow_net.data_width
-      g_user_w = 10
-      g_id_w   = 4
+  is_macro = config.project.build_mode == "macro"
+  has_macro_types = is_macro and config.project.macro_settings
+  ## The exported master of an isle macro is the joined port, whose ID comes from the
+  ## interconnect behind it and is published as MacroMstIdWidth. A subtile exports the
+  ## network's input type on both directions, so both widths are the same one.
+  is_isle_macro = has_macro_types and config.project.macro_settings.export_type == "isle"
+  out_id_w = f"{pkg}::MacroMstIdWidth" if is_isle_macro else f"{pkg}::AxiIdWidth"
 %>
 #(
-  // Standard System Parameters extracted from Configuration
-  localparam int unsigned AxiAddrWidth = ${g_addr_w},
-  localparam int unsigned AxiDataWidth = ${g_data_w},
-  localparam int unsigned AxiUserWidth = ${g_user_w},
-  localparam int unsigned AxiIdWidth   = ${g_id_w}
-% if config.project.build_mode == "macro":
-  ,
-  localparam int unsigned AxiInIdWidth  = ${g_id_w},
-  localparam int unsigned AxiOutIdWidth = ${g_id_w}
+  // Standard geometry, referenced from the SoC package rather than re-emitted here.
+  // These localparams are the module's advertised contract, read by a parent that
+  // instantiates it and by the documentation; nothing inside the module uses them. Two
+  // copies of the same width is exactly how they came to contradict the package - the
+  // widths were computed a second time in this template, and stayed at a hardcoded 10
+  // and 4 while the package moved to the resolved values.
+  localparam int unsigned AxiAddrWidth = ${pkg}::AxiAddrWidth,
+  localparam int unsigned AxiDataWidth = ${pkg}::AxiDataWidth,
+  localparam int unsigned AxiUserWidth = ${pkg}::AxiUserWidth,
+  localparam int unsigned AxiIdWidth   = ${pkg}::AxiIdWidth${"," if is_macro else ""}
+% if is_macro:
+  localparam int unsigned AxiInIdWidth  = ${pkg}::AxiIdWidth,
+  localparam int unsigned AxiOutIdWidth = ${out_id_w}${"," if has_macro_types else ""}
 % endif
-% if config.project.build_mode == "macro" and config.project.macro_settings:
-  ,
+% if has_macro_types:
   // Macro Base Address for hardware address translation
   parameter logic [63:0] MACRO_BASE_ADDR = 64'h0,
   // Macro Types for Parent SoC Integration

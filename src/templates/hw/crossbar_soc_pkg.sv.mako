@@ -139,19 +139,38 @@ package ${pkg};
   localparam int unsigned AxiIdWidth       = ${config.topology.global_bus.mst_id_width};
   
 <%
-  # Calculate host's internal AXI masters to adjust ExtSlvIdWidth
-  host_params = config.host.parameters or {}
-  num_cores = host_params.get('NumCores', 1)
-  has_dbg = 1 # Always present
-  has_dma = 1 if host_params.get('Dma', True) else 0
-  has_slink = 1 if host_params.get('SerialLink', True) else 0
-  has_vga = 1 if host_params.get('Vga', True) else 0
-  has_usb = 1 if host_params.get('Usb', True) else 0
-  num_internal_masters = num_cores + has_dbg + has_dma + has_slink + has_vga + has_usb
-  total_masters = len(axi_masters) + num_internal_masters
+  ## The count behind the slave-side ID width, shared with the boundary geometry this
+  ## package publishes and with the connection checks in wiring.py: one formula, one
+  ## place (src/core/macro_boundary.py).
+  from core.macro_boundary import crossbar_master_count
+  total_masters = crossbar_master_count(config)
 %>
   localparam int unsigned ExtSlvIdWidth    = AxiIdWidth + $clog2(${total_masters} > 1 ? ${total_masters} : 2);
   localparam int unsigned LlcIdWidth       = ExtSlvIdWidth + 1; // Margin for LLC bypass bit
+% if config.project.build_mode == "macro":
+<%
+  from core.macro_boundary import crossbar_slv_id_width, user_span as meaningful_user_span
+  mst_id_w = crossbar_slv_id_width(config)
+  user_span = meaningful_user_span(config)
+%>
+
+  // =========================================================================
+  // BOUNDARY GEOMETRY PUBLISHED TO A PARENT SoC
+  // =========================================================================
+  // A parent that nests this macro cannot recompute these: ExtSlvIdWidth is an
+  // expression over a master count known only inside this project. They are
+  // emitted as literals so the parent reads a number, not an expression to
+  // re-evaluate (src/core/macro_boundary.py).
+  //
+  // The ID width is *imposed*: it comes from the crossbar behind the exported
+  // master port, and retyping that port narrower would alias its IDs. A network
+  // this macro plugs into must be at least this wide. The user span is the part
+  // of the field that carries semantics (the AMO reservation and the ECC flag);
+  // the bits above it can be truncated at the boundary without losing anything.
+  localparam int unsigned MacroMstIdWidth   = ${mst_id_w};
+  localparam int unsigned MacroMstUserWidth = ${config.topology.global_bus.user_width};
+  localparam int unsigned MacroMstUserSpan  = ${user_span};
+% endif
 
 
   localparam int unsigned AxiUserAmoMsb    = ${config.system_settings.user_mapping.amo_msb};

@@ -127,7 +127,7 @@ paths:
 Ollivander uses **Bender** to manage external SystemVerilog dependencies. The `dependencies` registry defines where to fetch repositories, which targets to use, and how to compile or patch the source code.
 
 #### 4.2.1 Git Repository Resolution
-Specify either a semantic `version` or a specific commit/branch/tag using `rev`.
+Specify either a semantic `version` or a specific commit hash or tag using `rev`.
 ```yaml
 dependencies:
   # Using a pinned semantic version
@@ -135,11 +135,14 @@ dependencies:
     git: "https://github.com/pulp-platform/floo_noc.git"
     version: "0.2.1"
 
-  # Using a specific commit hash, branch, or tag
+  # Using a specific commit hash or tag
   cva6:
     git: "https://github.com/openhwgroup/cva6.git"
-    rev: "8fa2b1d" # Or a branch name like "dev"
+    rev: "8fa2b1d"
 ```
+
+> [!IMPORTANT]
+> Point `rev` at a commit hash or a tag, never at a branch name. A branch moves, so the build stops being reproducible; and a branch cannot satisfy the semantic-version ranges other IPs may express against the same package, which pushes the project into a forced resolution for no reason. The catalogue shipped with Ollivander contains no branch references, deliberately.
 
 #### 4.2.2 Specifying Compilation Targets (`bender_targets`)
 Bender handles ASIC/FPGA variants via targets. You can replace the default targets of a dependency:
@@ -283,12 +286,12 @@ make fast-check FAST_CHECK_TOOL=verilator
 make fast-check FAST_CHECK_TOOL=questa
 ```
 
-See the [Environment Configuration Guide](file:///s:/ollivander/docs/env_configuration_guide.md) for more details.
+See the [Environment Configuration Guide](env_configuration_guide.md) for more details.
 
 > [!WARNING]
-> The `fast-check` mode is intended primarily for the development of Ollivander itself. It performs "dirty" in-place operations on the source files of external libraries to resolve dependencies.
-> * It requires that the RTL code has already been generated at least once.
-> * If you change the pointers to external libraries or add new components, this mode might fail or produce incorrect results.
+> `fast-check` validates against a snapshot: it reads the previously generated RTL and the previously fetched external IPs, and writes nothing outside `generated/`.
+> * It requires that `make generate` has completed at least once.
+> * It does not re-resolve dependencies: after changing an external library pointer, an `*_env.yml`, or the component set, run `make generate` again first, or the stubs will describe the old state.
 > For a clean and definitive build, always rely on the full `make generate` command.
 
 ### 7.3 IP-XACT Component Export & Validation

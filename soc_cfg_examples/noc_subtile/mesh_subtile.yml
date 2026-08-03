@@ -41,7 +41,16 @@ topology:
     routing_algorithm: "XY"     # Deterministic XY routing algorithm
     networks:
       # FlooNoC supports multiple parallel physical networks to separate traffic classes.
-      narrow: { data_width: 64, addr_width: 48 }
+      #
+      # 'id_width' on the narrow network is declared rather than left to be derived, and
+      # the reason is outside this project: exported as a subtile macro, this SoC plugs its
+      # slave ports straight into the chimneys of the network below, which accept exactly
+      # this width. In super_noc it sits on the same network as the Crux macro, whose
+      # exported master imposes 6 bits, so a narrower value here would be truncated at the
+      # boundary and super_noc refuses to generate. The width of a network is a property
+      # shared by every macro attached to it, and none of the projects involved can see the
+      # others, so it is declared on both sides and checked (src/core/macro_boundary.py).
+      narrow: { data_width: 64, addr_width: 48, id_width: 6 }
       wide:   { data_width: 512, addr_width: 48 }
     default_tile: "dummy_tile"  # Used to fill empty coordinates in the 2D mesh
 
