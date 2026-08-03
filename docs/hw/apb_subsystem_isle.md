@@ -46,7 +46,7 @@ The template currently knows how to instantiate the following peripheral IPs. Ea
 | **`aon_timer`** | Always-On (AON) Timer used for Watchdog and Wakeup | OpenTitan (`tlul` based) |
 | **`can_top_apb`** | Controller Area Network (CAN) bus controller | Third-Party / OpenCores |
 
-*Note on `aon_timer`: Because it is an OpenTitan IP, Ollivander automatically generates an `apb_to_reg` $\rightarrow$ `reg_to_tlul` conversion chain specifically for this module.*
+*Note on `aon_timer`: Because it is an OpenTitan IP, Ollivander automatically generates an `apb_to_reg` $\rightarrow$ `reg_to_tlul` conversion chain specifically for this module. The `reg_to_tlul` adapter is `register_interface`'s own, instantiated with the opcodes and the `a_user` default from the TL-UL package.*
 
 ---
 

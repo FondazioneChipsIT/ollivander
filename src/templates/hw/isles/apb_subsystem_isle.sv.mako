@@ -619,7 +619,6 @@ module ${p_name}_${c_type}
 
  % elif p['type'] == 'aon_timer':
 
-  ${require_file("olli_reg_to_tlul.sv")}
   // ${p['name']} 
   // This is an OpenTitan IP which natively speaks TileLink-UL (TL-UL).
   // We bridge it seamlessly into the APB subsystem using a double conversion:
@@ -672,14 +671,21 @@ module ${p_name}_${c_type}
   tlul_ot_pkg::tl_h2d_t tl_wdt_req;
   tlul_ot_pkg::tl_d2h_t tl_wdt_rsp;
 
-  olli_reg_to_tlul #(
-    .reg_req_t         ( aon_reg_req_t                   ),
-    .reg_rsp_t         ( aon_reg_rsp_t                   ),
-    .tl_h2d_t          ( tlul_ot_pkg::tl_h2d_t           ),
-    .tl_d2h_t          ( tlul_ot_pkg::tl_d2h_t           )
-  ) i_olli_reg_to_tlul_${p['name']} (
-    .clk_i     ( clk_i       ),
-    .rst_ni    ( pwr_on_rst_ni ),
+  // register_interface's own RegBus-to-TL-UL adapter, fully parametric: opcodes and the
+  // a_user default come from the TL-UL package, so the OpenTitan-prescribed user bits are
+  // driven instead of zeros. Combinational, unlike the clocked FSM adapter Ollivander used
+  // to ship (whose module name also collided with this one).
+  reg_to_tlul #(
+    .req_t             ( aon_reg_req_t                     ),
+    .rsp_t             ( aon_reg_rsp_t                     ),
+    .tl_h2d_t          ( tlul_ot_pkg::tl_h2d_t             ),
+    .tl_d2h_t          ( tlul_ot_pkg::tl_d2h_t             ),
+    .tl_a_user_t       ( tlul_ot_pkg::tl_a_user_t          ),
+    .tl_a_op_e         ( tlul_ot_pkg::tl_a_op_e            ),
+    .TL_A_USER_DEFAULT ( tlul_ot_pkg::TL_A_USER_DEFAULT    ),
+    .PutFullData       ( tlul_ot_pkg::PutFullData          ),
+    .Get               ( tlul_ot_pkg::Get                  )
+  ) i_reg_to_tlul_${p['name']} (
     .tl_o      ( tl_wdt_req  ),
     .tl_i      ( tl_wdt_rsp  ),
     .reg_req_i ( reg_wdt_req ),
