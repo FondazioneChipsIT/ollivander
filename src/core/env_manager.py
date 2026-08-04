@@ -106,13 +106,29 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     # comments only - parses as None, and every consumer that calls .get() on it fails with an
     # opaque "'NoneType' object has no attribute 'get'" raised from inside a Mako template. Normalise
     # it to an empty mapping so that such an entry is simply inert.
-    env.registry_dependencies = {k: (v or {}) for k, v in (env_cfg.get('dependencies') or {}).items()}
+    #
+    # "inherit_default_dependencies: false" declines the base registry as a whole, the twin of
+    # "inherit_default_overrides" for projects that want a fully self-contained, auditable
+    # dependency description: with it, a package required by pragma but absent from the project's
+    # own registry becomes a hard error instead of silently resolving to the catalogue's source.
+    # An unused base entry is inert for *resolution* either way (the registry is pragma-gated);
+    # this flag exists for *control*. Note what is declined along with the sources: the base
+    # entries also carry the patches and pre-build repairs, which the project then owns.
+    inherit_deps = True
+    if append_env_cfg and 'inherit_default_dependencies' in append_env_cfg:
+        inherit_deps = bool(append_env_cfg['inherit_default_dependencies'])
+    base_deps = {k: (v or {}) for k, v in (env_cfg.get('dependencies') or {}).items()}
+    if not inherit_deps:
+        print(f"  [INFO] inherit_default_dependencies is false: dropping the {len(base_deps)} "
+              f"dependencies of {env_config_path.name}; only the project's own remain.")
+        base_deps = {}
+    env.registry_dependencies = base_deps
     if append_env_cfg:
         for dep_name, dep_info in append_env_cfg.get('dependencies', {}).items():
             if dep_name in env.registry_dependencies:
                 env.registry_dependencies[dep_name].update(dep_info)
             else:
-                env.registry_dependencies[dep_name] = dep_info
+                env.registry_dependencies[dep_name] = dep_info or {}
 
     # 4. Determine the final output directory path with the following precedence:
     #    1. Command Line (`-o`)

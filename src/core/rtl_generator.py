@@ -1084,8 +1084,20 @@ class RTLGenerator:
                     rev = rev or self.env.registry_dependencies[dep_name].get('rev')
                     version = version or self.env.registry_dependencies[dep_name].get('version')
                 else:
-                    print(f"[WARNING] Dependency '{dep_name}' is missing git/rev/version information and is not found in the environment registry.")
-            
+                    # A pragma names a package no registry can source: the manifest this loop
+                    # is building would carry an entry with no git and no revision, and Bender
+                    # would fail on it later, far from the file that asked. Refusing here names
+                    # the wrapper's pragma instead - and is what makes
+                    # 'inherit_default_dependencies: false' an audit rather than a trap: with
+                    # the base registry declined, every requirement the project forgot to
+                    # declare stops the generation at this line. This used to be a warning,
+                    # and generation continued into the Bender failure.
+                    print(f"\n[ERROR] Dependency '{dep_name}' is required by a '// BENDER:' pragma "
+                          f"but no 'dependencies' block provides its source (git and rev/version).\n"
+                          f"        Declare it in the project's *_env.yml under 'dependencies' - or, "
+                          f"if inherit_default_dependencies is false, reconsider that choice.")
+                    sys.exit(1)
+
             resolved_dependencies[dep_name] = {'git': git, 'rev': rev, 'version': version}
                 
         # Collect padframe files if padframe is enabled

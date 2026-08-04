@@ -169,6 +169,20 @@ dependencies:
         replace: "prim_flop_macros.sv"
 ```
 
+### 3.5 Taking over the whole dependencies set (`inherit_default_dependencies`)
+
+A project that wants a fully self-contained, auditable dependency description can decline the entire `dependencies` set shipped with Ollivander:
+
+```yaml
+inherit_default_dependencies: false
+dependencies:
+  # the project's own entries, and nothing else
+```
+
+The flag defaults to `true` and governs only what the base configuration contributes: the project's own `dependencies` block is kept either way. With it set to `false`, a package required by a `// BENDER:` pragma but absent from the project's own `dependencies` **stops the generation with an error naming the package**, instead of silently resolving to the catalogue's source. That is the point: an unused base entry never reaches Bender anyway (the registry is gated by the pragmas), so the flag buys no resolution change — it buys *control*, the guarantee that no source enters the build that the project did not write. Ollivander prints how many entries it dropped, and from which file.
+
+Be aware of what is given up. The base entries carry more than sources: the patches and the pre-build repairs documented through this section live in them, so declining the catalogue means owning every one of those repairs. Like its twin `inherit_default_overrides` (section 4.3), the flag suits a project bringing its own complete IP catalogue rather than one starting from the examples.
+
 ---
 
 ## 4. Forced Resolutions (`overrides`)
@@ -241,7 +255,7 @@ The flag defaults to `true`, and governs only what the base configuration contri
 
 Be aware of what is given up. The forcings shipped with Ollivander are what makes its example topologies resolvable at all: most of them exist because external IPs contradict *each other*, in ways no choice of revisions can repair. Declining them means taking that whole conflict set upon yourself, so the flag suits a project bringing its own IP catalogue rather than one starting from the examples.
 
-There is deliberately no equivalent flag for the `dependencies` registry of section 3, and the reason is the asymmetry this section opened with: a registry entry only reaches Bender when a component or a template requires it by pragma, so an entry no project uses is already inert and there is nothing to decline. Forcings are the opposite - they apply to the whole graph unconditionally - which is why they alone need a way out.
+The `dependencies` registry has its own version of this flag, `inherit_default_dependencies` (section 3.5), but the two exist for different reasons, and the asymmetry this section opened with explains why. A forcing applies to the whole graph unconditionally, so declining it changes what Bender *resolves*; a registry entry only reaches Bender when a pragma requires it, so an unused one is already inert and declining it changes nothing about resolution — what that flag buys is *control*, the guarantee that a required package cannot silently source from a catalogue the project never wrote.
 
 ---
 

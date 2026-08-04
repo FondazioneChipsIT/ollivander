@@ -228,16 +228,3 @@ The documentation is plain GitHub-flavored Markdown, deliberately: it renders in
     *   *Mitigation*: this is the reason the task waits. The decision point is the repository going public, when the audience the site serves starts existing; everything the site would add is cosmetic until then.
 *   **A navigation structure is a maintenance surface**: `mkdocs.yml` lists every page, so adding a guide gains a second place to register it.
     *   *Mitigation*: keep `docs/README.md` as the canonical index and generate the `nav` from it, or accept the duplication consciously — it is one line per document.
-
-
-## 7. Full Dependency Autonomy (`inherit_default_dependencies`)
-
-`inherit_default_overrides: false` lets a project decline every forced resolution the catalogue ships; there is no counterpart for the `dependencies` registry, and section 4.3 of the environment guide currently argues there should not be one, because an entry no pragma requires is already inert. That argument covers *resolution* but not *control*: a project whose components legitimately require a package by pragma receives Ollivander's default source for it — the colluca `axi` fork, say — unless it overrides that specific key, and it has no way to declare "no dependency I did not write myself". A user wanting a fully self-contained, auditable dependency description needs the same escape hatch the overrides have.
-
-`inherit_default_dependencies: false` would drop every registry entry contributed by the base configuration, keeping only the project's own; a pragma-required package then missing from the registry becomes the existing hard error instead of a silent fallback to the catalogue, which is exactly the point.
-
-#### Difficulties & Mitigation Strategies
-*   **The registry carries more than sources**: patches and `pre_build_cmds` live in dependency entries, so declining the catalogue also declines the cva6 repair script, the ibex and spatz renames, and every documented patch. A project taking this flag takes that whole burden on itself.
-    *   *Mitigation*: the same stance section 4.3 already takes for the overrides flag — document it as suiting a project that brings its own IP catalogue, and report at generation how many entries were dropped and from which file, symmetrically with the overrides report.
-*   **Section 4.3 of the environment guide must be superseded**, since it currently explains why the flag does not exist; leaving both texts standing would have the documentation argue against the feature it describes.
-    *   *Mitigation*: rewrite the paragraph as the distinction above — inertness holds for resolution, the flag exists for control.
