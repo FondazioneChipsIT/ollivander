@@ -13,6 +13,7 @@ and width of an interrupt output on a source component simply because a target
 component declared it as an input source.
 """
 import re
+import sys
 
 from core.interfaces import get_interface_ports
 from core.utils import camel_case, is_external
@@ -204,22 +205,25 @@ def _crossbar_driven_params(soc_config, comp):
         "AxiIdWidth": gb.mst_id_width,
     }
 
-def _warn_cdc_width_mismatch(comp, port_name, comp_width, bus_width):
+def _check_cdc_width_mismatch(comp, port_name, comp_width, bus_width):
     """
-    Report a CDC connection whose two sides compute different widths, which the emitted
-    slice makes agree syntactically while misaligning every packet after the first: the
-    flattened array carries 2**LogDepth FIFO slots, so a width difference is not a
-    truncation at the top but a shift running through all of them. Left as a warning
-    rather than a refusal only because pulp_cluster_isle still fixes its geometry to
-    values this SoC has moved away from - the open item of future_evolution_tasks.md
-    section 3.5; it becomes an error when that is resolved.
+    Refuse a CDC connection whose two sides compute different widths, which the emitted
+    slice would make agree syntactically while misaligning every packet after the first:
+    the flattened array carries 2**LogDepth FIFO slots, so a width difference is not a
+    truncation at the top but a shift running through all of them. This was a warning
+    while pulp_cluster_isle still froze its geometry to values the SoC had moved away
+    from; since that isle drives the IP configuration from its own parameters, every
+    shipped component agrees with the bus by construction, and a mismatch can only mean
+    a component whose header computes these widths from something the generator does
+    not drive - a contract violation, never a working design.
     """
     if comp_width is None or bus_width is None or comp_width == bus_width:
         return
-    print(f"  [WARNING] [{comp.name}] '{port_name}' is {comp_width} bits against a bus side of "
-          f"{bus_width}: the CDC packets are misaligned across this boundary and any traffic "
-          f"through it is corrupted. Latent as long as nothing addresses the component "
-          f"(future_evolution_tasks.md, section 3.5).")
+    print(f"  [ERROR] [{comp.name}] '{port_name}' is {comp_width} bits against a bus side of "
+          f"{bus_width}: the CDC packets would be misaligned across this boundary and any "
+          f"traffic through it corrupted. The component must derive its async port widths "
+          f"from the generator-driven parameters (see components/isles/ for the pattern).")
+    sys.exit(1)
 
 
 def build_connection_matrix(soc_config, comp_info):
@@ -364,7 +368,7 @@ def build_connection_matrix(soc_config, comp_info):
                             else:
                                 port_name = f"async_axi_in_{sig}_{d}"
                                 width = _get_resolved_port_width(comp.name, port_name, comp_info, driven)
-                                _warn_cdc_width_mismatch(comp, port_name, width,
+                                _check_cdc_width_mismatch(comp, port_name, width,
                                     _get_resolved_port_width(comp.name, port_name, comp_info, driven, force=True))
                                 if width is not None:
                                     ports.append(f".{port_name} ( xbar_slv_{sig}[{base_idx}][{width-1}:0] )")
@@ -390,7 +394,7 @@ def build_connection_matrix(soc_config, comp_info):
                         for sig, d in mst_ports.items():
                             port_name = f"async_axi_out_{sig}_{d}"
                             width = _get_resolved_port_width(comp.name, port_name, comp_info, driven)
-                            _warn_cdc_width_mismatch(comp, port_name, width,
+                            _check_cdc_width_mismatch(comp, port_name, width,
                                 _get_resolved_port_width(comp.name, port_name, comp_info, driven, force=True))
                             if width is not None:
                                 ports.append(f".{port_name} ( xbar_mst_{sig}[{idx}][{width-1}:0] )")

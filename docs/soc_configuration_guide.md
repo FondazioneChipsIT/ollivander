@@ -519,6 +519,7 @@ The geometry checks are the other members of this class, since each of them read
 
 *   a component whose fixed `localparam` address or data width differs from its bus is refused — no adaptation exists for those two, so the connection would silently truncate or pad every transfer;
 *   a component's fixed AXI ID widths are checked **along the direction of travel**: what it emits may be narrower than the network (the tile zero-extends it) but never wider, and what it accepts must cover the network's output side — either violation would alias transactions, and is refused;
+*   on a crossbar, a component whose asynchronous CDC port widths resolve differently from the bus side is refused: the flattened payload carries `2**LogDepth` FIFO slots, so a width difference is not a truncation at the top but a shift running through every packet after the first, corrupting all traffic across that boundary;
 *   the ID and user widths a nested macro publishes are checked against the network it plugs into, with the three refusals described in "Network ID width" (section 2.2) and under `user_mapping` (section 2.3).
 
 This class deserves its own attention because the checks of the previous sections cannot reach it: unknown keys, wrong shapes and dangling names are each detectable by looking at one place at a time, whereas a pair of coherent-looking declarations that disagree only shows up when the two are read together. The consequence, when it slips through, is a connection that elaborates and is wrong — a 64-bit master port injected on a 512-bit network, for instance.

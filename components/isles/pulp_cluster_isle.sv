@@ -18,12 +18,31 @@
 module pulp_cluster_isle
   import axi_pkg::*;
 #(
-  localparam int unsigned AxiAddrWidth       = 48,
-  localparam int unsigned AxiDataWidth       = 64,
-  localparam int unsigned AxiUserWidth       = 10,
-  localparam int unsigned AxiInIdWidth       = 5,
-  localparam int unsigned AxiOutIdWidth      = 2,
-  localparam int unsigned LogDepth           = 3,
+  // Geometry of the SoC this isle is attached to, driven by the generator at
+  // instantiation (rtl_ir_builder.py): AxiInIdWidth receives the crossbar's slave-side
+  // ID width (AxiSlvIdWidth), AxiOutIdWidth its manager-side AxiIdWidth. These were
+  // localparams frozen at astral's values while the wrapped IP was reached through
+  // pulp_cluster_wrap, a convenience shell that fixes the whole configuration to
+  // PulpClusterDefaultCfg; the isle then had to reinterpret every CDC payload against
+  // the frozen inner geometry, which truncated the AXI IDs (future_evolution_tasks.md
+  // used to track this as section 3.5). pulp_cluster itself takes the full
+  // configuration as a parameter and contains real axi_id_remap stages for both
+  // directions, so instantiating it directly makes both sides of every CDC derive
+  // from the same constants and no adaptation logic is needed here.
+  parameter int unsigned AxiAddrWidth       = 48,
+  parameter int unsigned AxiDataWidth       = 64,
+  parameter int unsigned AxiUserWidth       = 10,
+  parameter int unsigned AxiInIdWidth       = 5,
+  parameter int unsigned AxiOutIdWidth      = 2,
+  parameter int unsigned LogDepth           = 3,
+  // Base of the SoC address region mapped to this cluster, driven by the generator
+  // from the component's axi_slave 'base_addr'. The cluster decodes its own slave
+  // traffic against ClusterBaseAddr + (cluster_id_i << 22) (cluster_bus_wrap), so
+  // leaving the IP default here would send every external access to the wrong rule.
+  parameter logic [63:0] ClusterBaseAddr    = 64'h1000_0000,
+  // Not configurable: the cluster sources shipped by Bender hardwire the core count
+  // in the `NB_CORES define (pulp_soc_defines.sv), which feeds PulpClusterDefaultCfg
+  // and several sub-IP headers. Overriding only the Cfg field would desynchronize them.
   localparam int unsigned NumCores           = 8,
   // Async AXI IN (Slave Port)
   localparam int unsigned AsyncAxiInAwWidth  = (2**LogDepth)*axi_pkg::aw_width(AxiAddrWidth, AxiInIdWidth, AxiUserWidth),
@@ -43,7 +62,7 @@ module pulp_cluster_isle
   input  logic ref_clk_i,
   input  logic pwr_on_rst_ni,
   input  logic test_mode_i,
-  
+
   // Control and Status
   input  logic        en_sa_boot_i,
   input  logic [5:0]  cluster_id_i,
@@ -52,11 +71,11 @@ module pulp_cluster_isle
   output logic        busy_o,
   input  logic        axi_isolate_i,
   output logic        axi_isolated_o,
-  
+
   // Interrupts
   input  logic                mbox_irq_i,
   input  logic [NumCores-1:0] dbg_irq_valid_i,
-  
+
   // Standard AXI IN (Slave)
   input  logic [AsyncAxiInAwWidth-1:0] async_axi_in_aw_data_i,
   input  logic            [LogDepth:0] async_axi_in_aw_wptr_i,
@@ -92,162 +111,41 @@ module pulp_cluster_isle
   output logic             [LogDepth:0] async_axi_out_r_rptr_o
 );
 
-  // =================================================================================
-  // NOTE ON PARAMETERIZATION
-  // =================================================================================
-  // This 'isle' wrapper exposes a set of standard parameters (AxiAddrWidth,
-  // AxiDataWidth, etc.) to provide a uniform interface for the Ollivander generator.
-  // However, the instantiated 'pulp_cluster_wrap' module is an external and immutable IP
-  // whose configuration is handled internally through its SystemVerilog packages.
-  // Consequently, the parameters of this shell are NOT propagated to the instance.
-  // They exist solely to satisfy the generator's interface contract.
-  // =================================================================================
+  // ===============================================================================
+  // CLUSTER CONFIGURATION
+  // ===============================================================================
+  // The shipped default configuration with the AXI boundary geometry and the address
+  // decode replaced by this isle's parameters. Everything else (core count, TCDM,
+  // caches, HMR, HWPEs, boot addresses) deliberately stays at PulpClusterDefaultCfg:
+  // those fields are entangled with compile-time defines of the cluster sources, and
+  // no example exercises them yet - the residual items of future_evolution_tasks.md
+  // section 3.5. Copy-then-override is used instead of a full '{...} literal so that
+  // an upstream change to the default cannot silently diverge from this file.
+  function automatic pulp_cluster_package::pulp_cluster_cfg_t cluster_cfg();
+    pulp_cluster_package::pulp_cluster_cfg_t cfg;
+    cfg                 = pulp_cluster_package::PulpClusterDefaultCfg;
+    cfg.AxiAddrWidth    = AxiAddrWidth;
+    cfg.AxiDataInWidth  = AxiDataWidth;
+    cfg.AxiDataOutWidth = AxiDataWidth;
+    cfg.AxiUserWidth    = AxiUserWidth;
+    cfg.AxiIdInWidth    = AxiInIdWidth;
+    cfg.AxiIdOutWidth   = AxiOutIdWidth;
+    cfg.AxiCdcLogDepth  = LogDepth;
+    cfg.ClusterBaseAddr = ClusterBaseAddr;
+    return cfg;
+  endfunction
 
-  // =================================================================================
-  // AXI DATA ALIGNMENT & CDC FIFO MAPPING (FUNCTIONAL MISMATCH RESOLUTION)
-  // =================================================================================
-  // The external, immutable 'pulp_cluster_wrap' module is compiled with a fixed
-  // AXI master ID width of 6 and slave ID width of 5.
-  // However, the parent SoC configures the master ID width dynamically (typically 2),
-  // causing the outer CDC FIFO data signals (like 'async_axi_out_r_data_i') to be
-  // narrower than what the inner IP expects.
-  //
-  // An asynchronous CDC FIFO payload consists of multiple entries concatenated:
-  //   {entry_7, entry_6, ..., entry_0}
-  // If we perform a bit-slice of the entire concatenated vector (e.g. vector[663:0]),
-  // the boundary offsets for every entry except entry_0 will shift and corrupt
-  // the data read by the CDC read pointer.
-  //
-  // To resolve this mismatch functionally:
-  // 1. We declare intermediate signals of fixed sizes matching the inner IP ports.
-  // 2. We map the AXI data entry-by-entry for all 8 entries in the CDC queue.
-  // 3. For inputs to the inner IP, we copy the dynamic payload to the lower bits of
-  //    each entry, leaving the upper bits (ID fields) zero-extended.
-  //    (This is functionally correct since the AXI ID field resides in the MSB).
-  // 4. For outputs from the inner IP, we copy the lower bits of each entry to the
-  //    wrapper ports, truncating the unused upper ID bits.
+  localparam pulp_cluster_package::pulp_cluster_cfg_t ClusterCfg = cluster_cfg();
 
-  // Fixed internal channel widths for the 'pulp_cluster_wrap' ports
-  localparam int unsigned InnerSlvAwWidth = 81;
-  localparam int unsigned InnerSlvArWidth = 75;
-  localparam int unsigned InnerSlvRWidth  = 81;
-  localparam int unsigned InnerSlvBWidth  = 16;
-  localparam int unsigned InnerSlvWWidth  = 83;
-
-  localparam int unsigned InnerMstAwWidth = 83;
-  localparam int unsigned InnerMstArWidth = 77;
-  localparam int unsigned InnerMstRWidth  = 83;
-  localparam int unsigned InnerMstBWidth  = 18;
-  localparam int unsigned InnerMstWWidth  = 83;
-
-  // Dynamic entry widths calculated from the outer wrapper's parameters
-  localparam int unsigned OuterSlvAwWidth = AsyncAxiInAwWidth / 8;
-  localparam int unsigned OuterSlvArWidth = AsyncAxiInArWidth / 8;
-  localparam int unsigned OuterSlvRWidth  = AsyncAxiInRWidth / 8;
-  localparam int unsigned OuterSlvBWidth  = AsyncAxiInBWidth / 8;
-  localparam int unsigned OuterSlvWWidth  = AsyncAxiInWWidth / 8;
-
-  localparam int unsigned OuterMstAwWidth = AsyncAxiOutAwWidth / 8;
-  localparam int unsigned OuterMstArWidth = AsyncAxiOutArWidth / 8;
-  localparam int unsigned OuterMstRWidth  = AsyncAxiOutRWidth / 8;
-  localparam int unsigned OuterMstBWidth  = AsyncAxiOutBWidth / 8;
-  localparam int unsigned OuterMstWWidth  = AsyncAxiOutWWidth / 8;
-
-  // Intermediate wires matching the fixed internal IP port sizes
-  logic [647:0] inner_slv_aw_data;
-  logic [599:0] inner_slv_ar_data;
-  logic [647:0] inner_slv_r_data;
-  logic [127:0] inner_slv_b_data;
-
-  logic [663:0] inner_mst_aw_data;
-  logic [615:0] inner_mst_ar_data;
-  logic [663:0] inner_mst_r_data;
-  logic [143:0] inner_mst_b_data;
-
-  always_comb begin
-    // 1. Slave AW (Input to inner): zero-pad/slice entry-by-entry
-    inner_slv_aw_data = '0;
-    for (int i = 0; i < 8; i++) begin
-      if (OuterSlvAwWidth < InnerSlvAwWidth) begin
-        inner_slv_aw_data[i * InnerSlvAwWidth +: OuterSlvAwWidth] = async_axi_in_aw_data_i[i * OuterSlvAwWidth +: OuterSlvAwWidth];
-      end else begin
-        inner_slv_aw_data[i * InnerSlvAwWidth +: InnerSlvAwWidth] = async_axi_in_aw_data_i[i * OuterSlvAwWidth +: InnerSlvAwWidth];
-      end
-    end
-
-    // 2. Slave AR (Input to inner): zero-pad/slice entry-by-entry
-    inner_slv_ar_data = '0;
-    for (int i = 0; i < 8; i++) begin
-      if (OuterSlvArWidth < InnerSlvArWidth) begin
-        inner_slv_ar_data[i * InnerSlvArWidth +: OuterSlvArWidth] = async_axi_in_ar_data_i[i * OuterSlvArWidth +: OuterSlvArWidth];
-      end else begin
-        inner_slv_ar_data[i * InnerSlvArWidth +: InnerSlvArWidth] = async_axi_in_ar_data_i[i * OuterSlvArWidth +: InnerSlvArWidth];
-      end
-    end
-
-    // 3. Slave R (Output from inner): slice entry-by-entry and drive wrapper output
-    async_axi_in_r_data_o = '0;
-    for (int i = 0; i < 8; i++) begin
-      if (OuterSlvRWidth < InnerSlvRWidth) begin
-        async_axi_in_r_data_o[i * OuterSlvRWidth +: OuterSlvRWidth] = inner_slv_r_data[i * InnerSlvRWidth +: OuterSlvRWidth];
-      end else begin
-        async_axi_in_r_data_o[i * OuterSlvRWidth +: InnerSlvRWidth] = inner_slv_r_data[i * InnerSlvRWidth +: InnerSlvRWidth];
-      end
-    end
-
-    // 4. Slave B (Output from inner): slice entry-by-entry and drive wrapper output
-    async_axi_in_b_data_o = '0;
-    for (int i = 0; i < 8; i++) begin
-      if (OuterSlvBWidth < InnerSlvBWidth) begin
-        async_axi_in_b_data_o[i * OuterSlvBWidth +: OuterSlvBWidth] = inner_slv_b_data[i * InnerSlvBWidth +: OuterSlvBWidth];
-      end else begin
-        async_axi_in_b_data_o[i * OuterSlvBWidth +: InnerSlvBWidth] = inner_slv_b_data[i * InnerSlvBWidth +: InnerSlvBWidth];
-      end
-    end
-
-    // 5. Master AW (Output from inner): slice entry-by-entry and drive wrapper output
-    async_axi_out_aw_data_o = '0;
-    for (int i = 0; i < 8; i++) begin
-      if (OuterMstAwWidth < InnerMstAwWidth) begin
-        async_axi_out_aw_data_o[i * OuterMstAwWidth +: OuterMstAwWidth] = inner_mst_aw_data[i * InnerMstAwWidth +: OuterMstAwWidth];
-      end else begin
-        async_axi_out_aw_data_o[i * OuterMstAwWidth +: InnerMstAwWidth] = inner_mst_aw_data[i * InnerMstAwWidth +: InnerMstAwWidth];
-      end
-    end
-
-    // 6. Master AR (Output from inner): slice entry-by-entry and drive wrapper output
-    async_axi_out_ar_data_o = '0;
-    for (int i = 0; i < 8; i++) begin
-      if (OuterMstArWidth < InnerMstArWidth) begin
-        async_axi_out_ar_data_o[i * OuterMstArWidth +: OuterMstArWidth] = inner_mst_ar_data[i * InnerMstArWidth +: OuterMstArWidth];
-      end else begin
-        async_axi_out_ar_data_o[i * OuterMstArWidth +: InnerMstArWidth] = inner_mst_ar_data[i * InnerMstArWidth +: InnerMstArWidth];
-      end
-    end
-
-    // 7. Master R (Input to inner): zero-pad/slice entry-by-entry
-    inner_mst_r_data = '0;
-    for (int i = 0; i < 8; i++) begin
-      if (OuterMstRWidth < InnerMstRWidth) begin
-        inner_mst_r_data[i * InnerMstRWidth +: OuterMstRWidth] = async_axi_out_r_data_i[i * OuterMstRWidth +: OuterMstRWidth];
-      end else begin
-        inner_mst_r_data[i * InnerMstRWidth +: InnerMstRWidth] = async_axi_out_r_data_i[i * OuterMstRWidth +: InnerMstRWidth];
-      end
-    end
-
-    // 8. Master B (Input to inner): zero-pad/slice entry-by-entry
-    inner_mst_b_data = '0;
-    for (int i = 0; i < 8; i++) begin
-      if (OuterMstBWidth < InnerMstBWidth) begin
-        inner_mst_b_data[i * InnerMstBWidth +: OuterMstBWidth] = async_axi_out_b_data_i[i * OuterMstBWidth +: OuterMstBWidth];
-      end else begin
-        inner_mst_b_data[i * InnerMstBWidth +: InnerMstBWidth] = async_axi_out_b_data_i[i * OuterMstBWidth +: InnerMstBWidth];
-      end
-    end
-  end
-
-  // Instantiate the immutable external wrapper
-  pulp_cluster_wrap i_pulp_cluster_wrap (
+  // Direct instantiation of the IP: with the CDC geometry on both sides derived from
+  // the same parameters, every async port width matches by construction and the ID
+  // adaptation happens inside pulp_cluster through its axi_id_remap stages. The old
+  // pulp_cluster_wrap shell, besides freezing the geometry, silently tied off
+  // axi_isolate_i, dbg_irq_valid_i and mbox_irq_i; connected directly, those inputs
+  // now actually reach the cluster.
+  pulp_cluster #(
+    .Cfg ( ClusterCfg )
+  ) i_pulp_cluster (
     .clk_i                       ( clk_i           ),
     .rst_ni                      ( rst_ni          ),
     .ref_clk_i                   ( ref_clk_i       ),
@@ -281,39 +179,39 @@ module pulp_cluster_isle
     .async_cluster_events_wptr_i ( '0              ),
     .async_cluster_events_rptr_o (                 ), // Unused at SoC level
     .async_cluster_events_data_i ( '0              ),
-    
+
     // Map to Ollivander standard AXI IN ports
-    .async_data_slave_aw_wptr_i  ( async_axi_in_aw_wptr_i ),
-    .async_data_slave_aw_data_i  ( inner_slv_aw_data ),
-    .async_data_slave_aw_rptr_o  ( async_axi_in_aw_rptr_o ),
-    .async_data_slave_ar_wptr_i  ( async_axi_in_ar_wptr_i ),
-    .async_data_slave_ar_data_i  ( inner_slv_ar_data ),
-    .async_data_slave_ar_rptr_o  ( async_axi_in_ar_rptr_o ),
-    .async_data_slave_w_wptr_i   ( async_axi_in_w_wptr_i  ),
-    .async_data_slave_w_data_i   ( async_axi_in_w_data_i  ),
-    .async_data_slave_w_rptr_o   ( async_axi_in_w_rptr_o  ),
-    .async_data_slave_r_wptr_o   ( async_axi_in_r_wptr_o  ),
-    .async_data_slave_r_data_o   ( inner_slv_r_data ),
-    .async_data_slave_r_rptr_i   ( async_axi_in_r_rptr_i ),
-    .async_data_slave_b_wptr_o   ( async_axi_in_b_wptr_o ),
-    .async_data_slave_b_data_o   ( inner_slv_b_data ),
-    .async_data_slave_b_rptr_i   ( async_axi_in_b_rptr_i  ),
+    .async_data_slave_aw_wptr_i  ( async_axi_in_aw_wptr_i  ),
+    .async_data_slave_aw_data_i  ( async_axi_in_aw_data_i  ),
+    .async_data_slave_aw_rptr_o  ( async_axi_in_aw_rptr_o  ),
+    .async_data_slave_ar_wptr_i  ( async_axi_in_ar_wptr_i  ),
+    .async_data_slave_ar_data_i  ( async_axi_in_ar_data_i  ),
+    .async_data_slave_ar_rptr_o  ( async_axi_in_ar_rptr_o  ),
+    .async_data_slave_w_wptr_i   ( async_axi_in_w_wptr_i   ),
+    .async_data_slave_w_data_i   ( async_axi_in_w_data_i   ),
+    .async_data_slave_w_rptr_o   ( async_axi_in_w_rptr_o   ),
+    .async_data_slave_r_wptr_o   ( async_axi_in_r_wptr_o   ),
+    .async_data_slave_r_data_o   ( async_axi_in_r_data_o   ),
+    .async_data_slave_r_rptr_i   ( async_axi_in_r_rptr_i   ),
+    .async_data_slave_b_wptr_o   ( async_axi_in_b_wptr_o   ),
+    .async_data_slave_b_data_o   ( async_axi_in_b_data_o   ),
+    .async_data_slave_b_rptr_i   ( async_axi_in_b_rptr_i   ),
 
     // Map to Ollivander standard AXI OUT ports
     .async_data_master_aw_wptr_o ( async_axi_out_aw_wptr_o ),
-    .async_data_master_aw_data_o ( inner_mst_aw_data ),
+    .async_data_master_aw_data_o ( async_axi_out_aw_data_o ),
     .async_data_master_aw_rptr_i ( async_axi_out_aw_rptr_i ),
     .async_data_master_ar_wptr_o ( async_axi_out_ar_wptr_o ),
-    .async_data_master_ar_data_o ( inner_mst_ar_data ),
+    .async_data_master_ar_data_o ( async_axi_out_ar_data_o ),
     .async_data_master_ar_rptr_i ( async_axi_out_ar_rptr_i ),
     .async_data_master_w_wptr_o  ( async_axi_out_w_wptr_o  ),
     .async_data_master_w_data_o  ( async_axi_out_w_data_o  ),
     .async_data_master_w_rptr_i  ( async_axi_out_w_rptr_i  ),
     .async_data_master_r_wptr_i  ( async_axi_out_r_wptr_i  ),
-    .async_data_master_r_data_i  ( inner_mst_r_data ),
+    .async_data_master_r_data_i  ( async_axi_out_r_data_i  ),
     .async_data_master_r_rptr_o  ( async_axi_out_r_rptr_o  ),
     .async_data_master_b_wptr_i  ( async_axi_out_b_wptr_i  ),
-    .async_data_master_b_data_i  ( inner_mst_b_data ),
+    .async_data_master_b_data_i  ( async_axi_out_b_data_i  ),
     .async_data_master_b_rptr_o  ( async_axi_out_b_rptr_o  )
   );
 

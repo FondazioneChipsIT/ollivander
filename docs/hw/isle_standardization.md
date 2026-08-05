@@ -63,6 +63,12 @@ For topology-agnostic memory wrappers (e.g., L2 memory wrapper `l2_isle.sv`), th
 
 These parameters are dynamically overridden at instantiation time by the generator based on the YAML configuration interfaces mapping, ensuring that the local address decoding and interleaving rules computed within the Isle scale correctly.
 
+The same mechanism serves compute components that decode part of their own slave region internally:
+
+*   `ClusterBaseAddr` (`parameter logic [63:0]`): base of the SoC region mapped to the component, driven from the `base_addr` of the first `axi_slave` entry. `pulp_cluster_isle` exposes it to align the cluster's internal decode (TCDM, peripherals, external escape) with the region the SoC description maps it at — an internal decode left at the IP default would silently route every external access to the wrong rule.
+
+Like every entry of the standard parameter vocabulary, these are matched **by parameter name, per instance**: each component that exposes the parameter receives the base of its own `axi_slave` mapping, so a design may instantiate any number of such components, each decoding its own region. When the SoC is built as a macro (`build_mode: "macro"`), both `L2BaseAddr` and `ClusterBaseAddr` are emitted as `MACRO_BASE_ADDR + <base>`, so the decode relocates with the macro wherever the parent maps it.
+
 ---
 
 ## 3. Supported Interfaces & Port Naming

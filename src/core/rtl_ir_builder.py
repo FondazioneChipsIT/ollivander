@@ -148,6 +148,16 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                     inst.parameters[p] = f"MACRO_BASE_ADDR + {b_val}"
                 else:
                     inst.parameters[p] = b_val
+            elif p == 'ClusterBaseAddr':
+                # The pulp cluster decodes its own slave region internally against this
+                # base (cluster_bus_wrap), so it must match the axi_slave 'base_addr'
+                # the SoC description maps the component at; the same macro relocation
+                # rule as L2BaseAddr applies when the SoC is built as a macro.
+                b_val, _ = get_l2_instance_params(comp)
+                if soc_config.project.build_mode == "macro":
+                    inst.parameters[p] = f"MACRO_BASE_ADDR + {b_val}"
+                else:
+                    inst.parameters[p] = b_val
             elif p == 'L2MemSize':
                 _, size_val = get_l2_instance_params(comp)
                 inst.parameters[p] = size_val
