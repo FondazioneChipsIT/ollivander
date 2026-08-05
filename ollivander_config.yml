@@ -125,6 +125,15 @@ dependencies:
       - file: "{bender_work}/cheshire/hw/cheshire_pkg.sv"
         search: "    ret.apb_mask[ret.slink] = 1'b1;"
         replace: "    if (cfg.SerialLink) begin\\n      ret.apb_mask[ret.slink] = 1'b1;\\n    end"
+      # The PeakRDL-generated register storage is an unpacked struct holding an unpacked array,
+      # and Verilator's V3Force cannot build force infrastructure through unpacked composites
+      # ("opaque force path selector ARRAYSEL", internal error): the testbench force on the boot
+      # scratch registers stops the whole verilator flow. The packed layout is bit-identical,
+      # internal to the regblock (the hwif contract is untouched) and validated on both
+      # simulators. Our own PeakRDL outputs get the same treatment in tool_runners.py.
+      - file: "{bender_work}/cheshire/hw/regs/cheshire_soc_regs.sv"
+        search: "    typedef struct {\n        struct {\n            struct {\n                logic [31:0] value;\n            } scratch;\n        } scratch[16];\n    } field_storage_t;"
+        replace: "    typedef struct packed {\\n        struct packed {\\n            struct packed {\\n                logic [31:0] value;\\n            } scratch;\\n        } [15:0] scratch;\\n    } field_storage_t;"
   common_cells:
     git: "https://github.com/pulp-platform/common_cells.git"
     version: "1.40.0"
@@ -142,6 +151,19 @@ dependencies:
   datamover:
     git: "https://github.com/pulp-platform/datamover.git"
     rev: "f14d4db2a72c08b43b3511013e821a4600f6ef56"
+    # datamover targets a newer hci whose hci_core_source/sink declare ELEMENT_WIDTH and
+    # ELEMENTS_PER_BANK; the hci revision forced above does not, so these four overrides are
+    # dead. QuestaSim drops them with a vopt-2732 warning, Verilator's single compilation unit
+    # makes them a PINNOTFOUND error. An alignment to our hci forcing, like pulp_cluster's -
+    # NOT an upstream defect; it lives or dies with the forcing. Each pair covers both the
+    # source and the sink instance (the lines are identical and str.replace hits every one).
+    patches:
+      - file: "{bender_work}/datamover/rtl/datamover_streamer.sv"
+        search: "    .ELEMENT_WIDTH         ( ELEM_WIDTH            ), // e.g., 8 bits per element"
+        replace: ""
+      - file: "{bender_work}/datamover/rtl/datamover_streamer.sv"
+        search: "    .ELEMENTS_PER_BANK     ( NUM_ELEM_WORD         ), // number of elements in one memory bank word"
+        replace: ""
   dyn_mem:
     git: "https://github.com/pulp-platform/dyn_spm.git"
     rev: "78d4b4248b3c7b02a0e61d683f658e5094ac8c44"
@@ -209,6 +231,76 @@ dependencies:
       - file: "{bender_work}/hier-icache/RTL/L1.5_CACHE/share_icache.sv"
         search: "       $display(\"@%0dns shared icache ready_2_valid assertion Failed\", $time);"
         replace: "       $display(\"@%0dns shared icache ready_2_valid assertion Failed\", $time);\n`endif"
+  # hwpe-ctrl: hwpe_ctrl_slave drives its packed flags_o struct with mixed styles - start,
+  # evt, is_working and sw_evt non-blocking in always_ff processes, done and enable
+  # combinationally - which is legal SV that QuestaSim accepts but Verilator rejects as
+  # unsupported (BLKANDNBLK) at the redmule and datamover instantiations. The repair moves
+  # the sequential fields to intermediate registers exposed through continuous assigns,
+  # semantics identical. Order matters: the four renames run on the pristine file first,
+  # then the declaration block (already using the final names) is anchored on the untouched
+  # 'flags_o.done' assign. Possible Verilator-compatibility PR upstream, to verify at HEAD.
+  hwpe-ctrl:
+    patches:
+      - file: "{bender_work}/hwpe-ctrl/rtl/hwpe_ctrl_slave.sv"
+        search: "flags_o.start"
+        replace: "flags_start_q"
+      - file: "{bender_work}/hwpe-ctrl/rtl/hwpe_ctrl_slave.sv"
+        search: "flags_o.evt"
+        replace: "flags_evt_q"
+      - file: "{bender_work}/hwpe-ctrl/rtl/hwpe_ctrl_slave.sv"
+        search: "flags_o.is_working"
+        replace: "flags_is_working_q"
+      - file: "{bender_work}/hwpe-ctrl/rtl/hwpe_ctrl_slave.sv"
+        search: "flags_o.sw_evt"
+        replace: "flags_sw_evt_q"
+      - file: "{bender_work}/hwpe-ctrl/rtl/hwpe_ctrl_slave.sv"
+        search: "  assign flags_o.done = regfile_flags.true_done;"
+        replace: "  // Registered flags, driven in the sequential processes below and exposed through\n  // continuous assignments so that every field of flags_o is driven in one style:\n  // mixed blocking/non-blocking drives to a single packed struct are refused\n  // by Verilator (BLKANDNBLK); QuestaSim semantics are unchanged.\n  logic                                              flags_start_q;\n  logic [REGFILE_N_MAX_CORES-1:0][REGFILE_N_EVT-1:0] flags_evt_q;\n  logic                                              flags_is_working_q;\n  logic [7:0]                                        flags_sw_evt_q;\n  assign flags_o.start      = flags_start_q;\n  assign flags_o.evt        = flags_evt_q;\n  assign flags_o.is_working = flags_is_working_q;\n  assign flags_o.sw_evt     = flags_sw_evt_q;\n\n  assign flags_o.done = regfile_flags.true_done;"
+  # ibex: its vendored lowrisc_ip prim_assert.sv redefines the whole ASSERT macro family
+  # (guard PRIM_ASSERT_SV) after common_cells' modern assertions.svh has parsed, inside
+  # Verilator's single compilation unit; later callers then get the 4-argument lowRISC
+  # signatures - FlooNoC's five-argument ASSERT calls and snitch's six-argument ASSERT_IF
+  # stop parsing, and ASSERT_STABLE vanishes. These patches give the lowRISC macros the
+  # same trailing optional __desc argument (swallowed, bodies untouched) so both calling
+  # conventions parse regardless of include order; the dummy variant is the one Verilator
+  # selects (it predefines VERILATOR), and QuestaSim compiles per file and never sees the
+  # clash. Note for the super examples: opentitan vendors the same lowRISC file under the
+  # same guard, so this pattern must be replicated there when both families share a unit.
+  ibex:
+    patches:
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
+        search: "`define ASSERT_I(__name, __prop)"
+        replace: "`define ASSERT_I(__name, __prop, __desc = \"\")"
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
+        search: "`define ASSERT_INIT(__name, __prop)"
+        replace: "`define ASSERT_INIT(__name, __prop, __desc = \"\")"
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
+        search: "`define ASSERT_FINAL(__name, __prop)"
+        replace: "`define ASSERT_FINAL(__name, __prop, __desc = \"\")"
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
+        search: "`define ASSERT(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST)"
+        replace: "`define ASSERT(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\")"
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
+        search: "`define ASSERT_NEVER(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST)"
+        replace: "`define ASSERT_NEVER(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\")"
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
+        search: "`define ASSERT_KNOWN(__name, __sig, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST)"
+        replace: "`define ASSERT_KNOWN(__name, __sig, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\")"
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
+        search: "`define ASSUME(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST)"
+        replace: "`define ASSUME(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\")"
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
+        search: "`define ASSUME_I(__name, __prop)"
+        replace: "`define ASSUME_I(__name, __prop, __desc = \"\")\n`define ASSERT_STABLE(__name, __valid, __ready, __data, __mask = '0, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\")"
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert.sv"
+        search: "`define ASSERT_PULSE(__name, __sig, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST) \\"
+        replace: "`define ASSERT_PULSE(__name, __sig, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\") \\"
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert.sv"
+        search: "`define ASSERT_IF(__name, __prop, __enable, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST) \\"
+        replace: "`define ASSERT_IF(__name, __prop, __enable, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\") \\"
+      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert.sv"
+        search: "`define ASSERT_KNOWN_IF(__name, __sig, __enable, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST) \\"
+        replace: "`define ASSERT_KNOWN_IF(__name, __sig, __enable, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\") \\"
   # neureka: a 36-bit literal in a 9-bit case item; QuestaSim truncates it to the same
   # 9'h1ff Verilator refuses to guess (upstream PR candidate: fix the literal).
   neureka:

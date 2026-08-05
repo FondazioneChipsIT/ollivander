@@ -157,6 +157,47 @@ def run_floogen(soc_config, cfg_dir: Path, hw_dir: Path):
         print("[HINT] Please install dependencies using: pip install -r requirements.txt")
         sys.exit(1)
 
+def _pack_regblock_storage(regs_sv: Path):
+    """Turn the PeakRDL 'field_storage_t' typedef into a packed struct, in place.
+
+    peakrdl-regblock deliberately emits its internal register storage as an unpacked struct
+    (unpacked members prevent accidental whole-struct assignments), and version 1.3.1 offers
+    no option to change that. Verilator's V3Force, however, cannot build force infrastructure
+    through unpacked composites ("Unsupported: opaque force path selector ARRAYSEL", an
+    internal error): the generated testbench forces the bring-up and boot-scratch registers
+    through exactly this struct, so an unpacked storage stops the whole verilator simulation
+    flow. The packed layout is bit-identical, the struct is internal to the regblock (the
+    hwif contract is untouched), and both simulators accept it - validated with identical
+    UART/EOT runs on QuestaSim and Verilator. The transform rewrites 'typedef struct' into
+    'typedef struct packed' inside the field_storage_t block only, and moves the unpacked
+    array dimension of each member ('} name[N];') to a packed one ('} [N-1:0] name;').
+    The same repair is applied to cheshire's checked-in copy by a catalogue patch.
+    """
+    import re
+    if not regs_sv.is_file():
+        return
+    text = regs_sv.read_text(encoding="utf-8")
+    # Isolate the field_storage_t typedef alone: the negative lookahead pins the match to
+    # the 'typedef struct {' nearest to the closing '} field_storage_t;', so the other
+    # regblock typedefs (decoded_reg_strb_t, field_combo_t) are left untouched - the strobe
+    # struct in particular holds unpacked scalar arrays that must not become packed members.
+    m = re.search(r"(  typedef struct \{(?:(?!typedef struct \{).)*?\} field_storage_t;)",
+                  text, flags=re.DOTALL)
+    if not m:
+        return
+    block = m.group(1)
+    packed = block.replace("typedef struct {", "typedef struct packed {")
+    packed = packed.replace("struct {", "struct packed {")
+    # '} name[N];' -> '} [N-1:0] name;' (unpacked member array becomes packed).
+    packed = re.sub(r"\} (\w+)\[(\d+)\];",
+                    lambda mm: "} [%d:0] %s;" % (int(mm.group(2)) - 1, mm.group(1)),
+                    packed)
+    if packed != block:
+        text = text.replace(block, packed)
+        regs_sv.write_text(text, encoding="utf-8")
+        print("  -> Packed the field_storage_t struct (verilator force compatibility).")
+
+
 def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_dependencies: dict = None, bender_dir: Path = None, custom_rdl_paths: list = None):
     """
     Invokes PeakRDL to generate RTL and C headers from SystemRDL specifications.
@@ -232,6 +273,10 @@ def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_
             # Generate the SystemVerilog RTL implementation of the registers
             cmd_sv = [peakrdl_exe, "regblock", str(rdl_file), "--cpuif", "apb4-flat", "--default-reset", "arst_n", "-o", str(hw_dir)]
             subprocess.run(cmd_sv, check=True, capture_output=True, text=True)
+            # The regblock file is named after the RDL addrmap (e.g. <name>_sys_regs.sv),
+            # so pick up whatever *_regs.sv the export just produced.
+            for regblock_sv in hw_dir.glob("*_regs.sv"):
+                _pack_regblock_storage(regblock_sv)
             print("  [SUCCESS] System Controller register RTL generated.")
 
             memory_map_file = reg_dir / f"{top_level_module_name}_memory_map.rdl"

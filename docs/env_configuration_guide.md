@@ -272,7 +272,7 @@ fast_check_tool: "verilator"  # Options: "questa" (default) or "verilator"
 ```
 
 ### 5.2 Configuration Precedence & Command-Line Override
-1. **YAML Files**: Ollivander evaluates the base `ollivander_config.yml` first, and overrides it with your custom appended environment file (passed via `-a`). The resulting simulator is used when you run `make generate` to write the compilation script targets inside the output `Makefile.vsim`.
+1. **YAML Files**: Ollivander evaluates the base `ollivander_config.yml` first, and overrides it with your custom appended environment file (passed via `-a`). The resulting simulator is used when you run `make generate` to write the compilation script targets inside the output `Makefile.sim`.
 2. **Command Line**: You can override the tool selection at run-time without re-generating the codebase by passing `FAST_CHECK_TOOL` directly to the `make` command:
    ```bash
    make fast-check FAST_CHECK_TOOL=verilator

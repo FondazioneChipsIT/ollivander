@@ -929,7 +929,7 @@ class RTLGenerator:
                 "hw/crossbar_soc_top.sv.mako": hw_dir / top_level_filename,
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
                 "doc/crossbar_map.csv.mako": doc_dir / f"{self.soc_config.project.name}_map.csv",
-                "Makefile.vsim.mako": self.env.outdir_path / "Makefile.vsim",
+                "Makefile.sim.mako": self.env.outdir_path / "Makefile.sim",
                 "tb/tb_soc.sv.mako": tb_dir / f"tb_{self.soc_config.project.name}.sv"
             }
         else:
@@ -942,7 +942,7 @@ class RTLGenerator:
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
                 "cfg/floogen_cfg.yml.mako": cfg_dir / f"{self.soc_config.project.name}_floogen.yml",
                 "doc/noc_map.csv.mako": doc_dir / f"{self.soc_config.project.name}_noc_map.csv",
-                "Makefile.vsim.mako": self.env.outdir_path / "Makefile.vsim",
+                "Makefile.sim.mako": self.env.outdir_path / "Makefile.sim",
                 "tb/tb_soc.sv.mako": tb_dir / f"tb_{self.soc_config.project.name}.sv"
             }
 
@@ -1014,6 +1014,10 @@ class RTLGenerator:
             except Exception as e:
                 print(f"\n[ERROR] Failed to render {tpl_name}:\n{e}")
                 sys.exit(1)
+
+        # Emit the Verilator hierarchical configuration next to the other cfg/ artifacts:
+        # the Makefile.sim verilator targets reference it unconditionally.
+        self.generate_verilator_config(cfg_dir, hw_dir, top_level_module_name)
 
         # Explicitly require the Clock Generator for the Phase 8 Chip Wrapper
         if getattr(self.soc_config.clock_tree, 'generators', 0) > 0:
@@ -1221,6 +1225,106 @@ class RTLGenerator:
                 content = content.replace("// OLLIVANDER_MACRO_PRAGMAS_PLACEHOLDER\n", "").replace("// OLLIVANDER_MACRO_PRAGMAS_PLACEHOLDER", "")
                 
             write_if_changed(top_file_path, content)
+
+    def generate_verilator_config(self, cfg_dir, hw_dir, top_level_module_name):
+        """Emit cfg/<top>.vlt: the hier_block declarations for the Verilator flow.
+
+        Hierarchical verilation is the only build mode the emitted verilator targets use:
+        every module marked 'hier_block' is verilated once into a child library, so a tile
+        repeated N times costs one build instead of N inlined copies (measured on the mesh:
+        hours and tens of GB monolithic against minutes and ~3 GB per unit). The generator
+        is the right author for this file because the selection rules are mechanical over
+        information only it has:
+
+        - a tile module is a candidate when it is instantiated more than once (every
+          instance shares one parameterization by construction of the templates);
+        - a module is EXCLUDED when the generated testbench reaches into it hierarchically
+          (Verilator cannot cross a hier-block boundary with a dotted path): the host tile
+          carries the bring-up forces and the Cheshire boot scratch, and every tile named
+          in testbench.preload_memories is a $readmemh target;
+        - a module is EXCLUDED when its wrapper declares struct-typed or type parameters:
+          Verilator 5.050's hier-parameters wrapper cannot rebuild those (internal error,
+          reported upstream). Detected by scanning the generated wrapper header.
+
+        The file is emitted for every topology: a config with no hier_block entries is
+        valid input and simply degenerates to a flat build (the crossbar case today).
+        """
+        vlt_path = cfg_dir / f"{top_level_module_name}.vlt"
+        lines = ["`verilator_config"]
+
+        if self.soc_config.topology.type == "noc":
+            # Instance count per component, replicating the grid mapping of
+            # noc_soc_top.sv.mako (box placements expand to their full area).
+            comps = [self.soc_config.host] + (self.soc_config.components or [])
+            counts = {}
+            grid_owner = {}
+            max_x = max_y = 0
+            for c in comps:
+                p = getattr(c, 'placement', None)
+                if not p or 'logical' not in p:
+                    continue
+                log = p['logical']
+                items = log if isinstance(log, list) else [log]
+                for item in items:
+                    if 'box' in item:
+                        b = item['box']
+                        for x in range(b['x_start'], b['x_end'] + 1):
+                            for y in range(b['y_start'], b['y_end'] + 1):
+                                counts[c.name] = counts.get(c.name, 0) + 1
+                                grid_owner[(x, y)] = c.name
+                                max_x, max_y = max(max_x, x), max(max_y, y)
+                    else:
+                        x, y = item['x'], item['y']
+                        counts[c.name] = counts.get(c.name, 0) + 1
+                        grid_owner[(x, y)] = c.name
+                        max_x, max_y = max(max_x, x), max(max_y, y)
+            dummy_count = sum(1 for x in range(max_x + 1) for y in range(max_y + 1)
+                              if (x, y) not in grid_owner)
+
+            # Exclusion 1: tiles the testbench references hierarchically.
+            excluded = {self.soc_config.host.name}
+            tb_cfg = self.soc_config.testbench or {}
+            for mem in tb_cfg.get("preload_memories", []):
+                name = mem.get("name", "")
+                for part in name.split('.'):
+                    if part.startswith("i_tile_"):
+                        coords = part.replace("i_tile_", "").split('_')
+                        if len(coords) >= 2:
+                            try:
+                                owner = grid_owner.get((int(coords[0]), int(coords[1])))
+                                if owner:
+                                    excluded.add(owner)
+                            except ValueError:
+                                pass
+
+            prefix = self.soc_config.project.module_prefix
+            for comp_name, count in sorted(counts.items()):
+                if count <= 1 or comp_name in excluded:
+                    continue
+                module = f"{prefix}_{comp_name}_tile"
+                # Exclusion 2: parameters Verilator's hier wrapper cannot rebuild. The
+                # observed 5.050 failure ("Module/etc never assigned a symbol" on the
+                # generated __hierParameters.v) is triggered by parameter DEFAULTS that
+                # read members of package struct constants (e.g. AxiCfgJoin.AddrWidth):
+                # the wrapper then has to serialize the struct type and dies. Literal
+                # defaults are safe (validated: the compute and dummy tiles). Type and
+                # struct-typed parameters are excluded for the same reason.
+                wrapper = hw_dir / f"{module}.sv"
+                if wrapper.is_file():
+                    header = wrapper.read_text(encoding="utf-8", errors="ignore")
+                    header = header.split(") (", 1)[0]
+                    if re.search(r"parameter\s+type\s|parameter\s+\w+_pkg::", header) \
+                       or re.search(r"parameter[^;)\n]*=\s*\w+\.\w+", header):
+                        print(f"  -> vlt: skipping {module} (parameters the hierarchical "
+                              f"verilation wrapper cannot rebuild)")
+                        continue
+                lines.append(f'hier_block -module "{module}"')
+            if dummy_count > 1:
+                lines.append(f'hier_block -module "{prefix}_dummy_tile"')
+
+        write_if_changed(vlt_path, "\n".join(lines) + "\n")
+        print(f"  -> Rendering verilator hierarchical config into {vlt_path.name} "
+              f"({len(lines) - 1} hier blocks)")
 
     def generate_chip_wrapper(self, comp_info, wiring_matrix, global_defines):
         """

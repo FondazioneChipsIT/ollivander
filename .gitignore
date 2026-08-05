@@ -19,12 +19,17 @@ commit_message.txt
 # Simulation Artifacts
 obj_dir/
 work/
+verilator_work/
 *.vcd
 *.fst
 *.wlf
 *.vstf
 transcript
 modelsim.ini
+# Core/DMA tracers write into the CWD: the emitted flows run from logs/ (ignored),
+# but a manual run from a project root must not become a commit.
+*.dasm
+dma_trace_*.log
 
 # Python Virtual Environments & Caches
 __pycache__/

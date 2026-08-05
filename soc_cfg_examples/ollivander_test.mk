@@ -12,7 +12,8 @@
 #   TEST_CLEAN        : Clean project output directories first (1/0, default 0)
 #   TEST_CLEAN_SETUP  : Recreate Python virtual environment first (1/0, default 0)
 #   FAST_CHECK_TOOLS  : Tools to use for the fast-check (e.g. questa, verilator)
-#   TEST_SIM          : Build and run simulation tests (1/0, default 0); requires QuestaSim module
+#   TEST_SIM          : Build and run simulation tests (1/0, default 0)
+#   TEST_SIM_TOOL     : Simulator for the TEST_SIM leg: questa (default) or verilator
 #
 # Usage:
 #   make test-all TEST_CLEAN=1 FAST_CHECK_TOOLS="questa" TEST_SIM=1
@@ -27,16 +28,34 @@ TEST_CLEAN_SETUP ?= 0
 TEST_SIM         ?= 0
 FAST_CHECK_TOOLS ?= questa
 
+# Simulator backend for the TEST_SIM leg: 'questa' (default) drives build-sim/run-sim,
+# 'verilator' drives the license-free *-verilator twins. The pass criterion is the same
+# ('[UART]:' output in the captured run log). The Verilator backend is validated end-to-end
+# on the noc example only so far; the other projects are covered by fast-check.
+TEST_SIM_TOOL ?= questa
+ifeq ($(TEST_SIM_TOOL),verilator)
+  SIM_BUILD_TARGET := build-sim-verilator
+  SIM_RUN_TARGET   := run-sim-verilator
+  SIM_RUN_ARGS     :=
+else
+  SIM_BUILD_TARGET := build-sim
+  SIM_RUN_TARGET   := run-sim
+  SIM_RUN_ARGS     := ASSERTIONS=0
+endif
+
 # "tool:module" pairs for ensure-tools (defined in ollivander.mk): a tool already
 # on PATH is never displaced, a missing one is loaded from Environment Modules
-# where available. QuestaSim is needed by the simulation run as well as by its
-# fast-check, so TEST_SIM=1 requires it regardless of FAST_CHECK_TOOLS.
+# where available. The simulator required by the TEST_SIM leg follows TEST_SIM_TOOL.
 TOOL_PAIRS := bender:bender riscv64-unknown-elf-gcc:riscv-gcc
 ifneq ($(filter questa,$(FAST_CHECK_TOOLS)),)
   TOOL_PAIRS += vsim:questa
 endif
 ifneq ($(filter 1,$(TEST_SIM)),)
-  TOOL_PAIRS += vsim:questa
+  ifeq ($(TEST_SIM_TOOL),verilator)
+    TOOL_PAIRS += verilator:verilator
+  else
+    TOOL_PAIRS += vsim:questa
+  endif
 endif
 ifneq ($(filter verilator,$(FAST_CHECK_TOOLS)),)
   TOOL_PAIRS += verilator:verilator
@@ -190,11 +209,11 @@ test-all:
 			fi; \
 		done; \
 		if [ "$(TEST_SIM)" = "1" ]; then \
-			if [ -f "soc_cfg_examples/$$p/generated/Makefile.vsim" ]; then \
+			if [ -f "soc_cfg_examples/$$p/generated/Makefile.sim" ]; then \
 				echo "  -> Compiling simulation for project $$proj_name..."; \
 				mkdir -p soc_cfg_examples/$$p/logs; \
 				step_start=$$(date +%s); \
-				$(MAKE) -C soc_cfg_examples/$$p build-sim > soc_cfg_examples/$$p/logs/test_build_sim.log 2>&1; \
+				$(MAKE) -C soc_cfg_examples/$$p $(SIM_BUILD_TARGET) > soc_cfg_examples/$$p/logs/test_build_sim.log 2>&1; \
 				step_rc=$$?; \
 				step_dur=$$(fmt_dur $$(( $$(date +%s) - step_start ))); \
 				if [ $$step_rc -ne 0 ]; then \
@@ -206,7 +225,7 @@ test-all:
 					echo "  -> Running simulation for project $$proj_name..."; \
 					mkdir -p soc_cfg_examples/$$p/logs; \
 					step_start=$$(date +%s); \
-					$(MAKE) -C soc_cfg_examples/$$p run-sim ASSERTIONS=0 > soc_cfg_examples/$$p/logs/test_run_sim.log 2>&1; \
+					$(MAKE) -C soc_cfg_examples/$$p $(SIM_RUN_TARGET) $(SIM_RUN_ARGS) > soc_cfg_examples/$$p/logs/test_run_sim.log 2>&1; \
 					step_rc=$$?; \
 					step_dur=$$(fmt_dur $$(( $$(date +%s) - step_start ))); \
 					if [ $$step_rc -ne 0 ]; then \
@@ -223,7 +242,7 @@ test-all:
 				fi; \
 			else \
 				echo "  [INFO] No simulation Makefile found for project $$p. Skipping simulation."; \
-				log_step "Simulation" "SKIPPED (no generated/Makefile.vsim)"; \
+				log_step "Simulation" "SKIPPED (no generated/Makefile.sim)"; \
 			fi; \
 		fi; \
 		close_project $$proj_start; \

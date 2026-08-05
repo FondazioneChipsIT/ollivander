@@ -1,15 +1,16 @@
 <%
   # ============================================================================
-  # MAKO TEMPLATE FOR THE QUESTASIM MAKEFILE
+  # MAKO TEMPLATE FOR THE SIMULATION MAKEFILE (QuestaSim + Verilator backends)
   # ============================================================================
-  # This template generates the main simulation Makefile for QuestaSim.
+  # This template generates the main simulation Makefile: the QuestaSim flow
+  # (build-sim/run-sim/gui) and the license-free Verilator flow (*-verilator).
   # It dynamically aggregates compilation targets from the central environment
   # registry (BENDER_TARGETS), automates the extraction of the SystemVerilog 
   # compilation script via Bender, handles C firmware compilation, and provides
   # advanced features like macro injection and rapid RTL stubbing (fast-check).
 %>
 # ==============================================================================
-# Auto-generated QuestaSim Makefile for ${config.project.name}
+# Auto-generated simulation Makefile for ${config.project.name}
 # ==============================================================================
 
 OUT_DIR  ?= ${rel_outdir_path}
@@ -34,6 +35,44 @@ ASSERTIONS ?= 1
 ifeq ($(ASSERTIONS),0)
   VSIM_OPT_FLAGS += -nosva -noimmedassert -nopsl
 endif
+
+# ==============================================================================
+# Verilator simulation flow - the license-free twin of build-sim / run-sim.
+# Validated end-to-end on the noc example (identical UART output and EOT against
+# a QuestaSim run of the same tree); the other example projects are covered by
+# fast-check only so far.
+# ==============================================================================
+VERILATOR_JOBS ?= 48
+# bender's 'script verilator' format implicitly defines TARGET_SYNTHESIS, which turns the
+# olli_* simulation placeholders (the reset generator above all) into empty shells and
+# silently holds the whole SoC in reset under two-state semantics: prep-sim-verilator
+# strips that define from the file list. The exclusions below are simulation collateral
+# Verilator cannot digest, none of it instantiated by the generated testbench.
+VERILATOR_FLIST_EXCLUDE ?= pad_alsaqr\.sv|behavioral/tc_pad\.sv|pulp_cluster/tb/|snitch_ssr/test/|mem_interface/src/mem_test\.sv
+VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer
+# Flag rationale, all measured on the mesh example:
+# - hierarchical verilation is the only build mode: repeated tiles verilate once as child
+#   libraries (declared in the generated cfg/$(TOP_MOD).vlt) and the monolithic build costs
+#   hours and tens of GB instead of minutes and ~3 GB per unit;
+# - --threads is deliberately absent: it inflated verilation from minutes to hours per unit;
+# - OPT_FAST=-O2 (vs the verilated.mk default -Os) is a run-time win whose compile cost
+#   ccache absorbs; the explicit -std is needed because the installed Verilator module was
+#   configured against the system g++ 8.5 and records no standard at all, while --timing
+#   generates C++20 coroutine code;
+# - -Wno-ENUMVALUE is the twin of run-sim's '-suppress 8386' (FlooNoC assigns the collective
+#   opcode from raw flit bits; upstream PR candidate);
+# - assertions are structurally off: no --assert, plus ASSERTS_OFF for the common_cells
+#   macros - the superset of the ASSERTIONS=0 vsim knob, matching the test suite's default.
+VERILATOR_SIM_FLAGS ?= --cc --main --build --hierarchical -j $(VERILATOR_JOBS) \
+	--MAKEFLAGS "CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2" \
+	--timing --timescale 1ns/1ps -Wno-fatal -Wno-TIMESCALEMOD -Wno-ASCRANGE \
+	-Wno-SYMRSVDWORD -Wno-ENUMVALUE --error-limit 200 +define+ASSERTS_OFF
+VERILATOR_RUN_FLAGS ?= +fast_boot
+VERILATOR_WORK ?= verilator_work
+# The C++20 coroutines require a modern compiler; RHEL hosts ship them as gcc-toolset SCLs.
+# The newest installed toolset is sourced in the build recipe when the default g++ cannot
+# compile <coroutine> on its own.
+GCC_TOOLSET := $(lastword $(sort $(wildcard /opt/rh/gcc-toolset-*)))
 <%
 import os
 os.makedirs("logs/debug", exist_ok=True)
@@ -83,7 +122,7 @@ $(abspath ./bender):
 	@printf "\n[MAKE] Downloading Bender...\n"
 	@curl --proto '=https' --tlsv1.2 -sSf https://fabianschuiki.github.io/bender/init | bash -s -- 0.31.0
 
-.PHONY: prep-sim build-sim run-sim fast-check build-sw
+.PHONY: prep-sim build-sim run-sim fast-check build-sw prep-sim-verilator build-sim-verilator run-sim-verilator
 
 # Force Bender to be downloaded before updating hardware dependencies
 Bender.lock: $(BENDER_PREREQ)
@@ -348,3 +387,38 @@ gui:
 	@ln -snf ../generated logs/generated
 	@$(call ensure-tools,vsim:questa); \
 	cd logs && $(VSIM) -gui -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -voptargs=+acc -suppress 13314,3009,8386 -warning 2732
+
+prep-sim-verilator: update-hw
+	@printf "\n[MAKE] Extracting Verilator file list via Bender...\n"
+	@# TARGET_SYNTHESIS is stripped (see VERILATOR_FLIST_EXCLUDE comment above), and the
+	@# +incdir entries are separated out: bender interleaves them per package, but the
+	@# hierarchical child invocations only inherit include paths passed on the command line.
+	$(BENDER) script verilator $(VERILATOR_TARGETS) | grep -vE "$(VERILATOR_FLIST_EXCLUDE)" | grep -v '^+define+TARGET_SYNTHESIS' > $(OUT_DIR)/compile_verilator.f
+	@grep '^+incdir+' $(OUT_DIR)/compile_verilator.f | sort -u > $(OUT_DIR)/verilator_incdirs.f
+	@grep -v '^+incdir+' $(OUT_DIR)/compile_verilator.f > $(OUT_DIR)/compile_verilator_src.f
+
+build-sim-verilator: prep-sim-verilator build-sw
+	@printf "\n[MAKE] Building Verilator model (hierarchical)...\n"
+	@# Three steps, because in hierarchical mode verilator's own --build stops at the child
+	@# libraries and the model archive: the top makefile's default target is the library, so
+	@# the executable link is issued explicitly. The link avoids -latomic (absent from the
+	@# gcc-toolset SCLs, unnecessary on x86_64).
+	@$(call ensure-tools,verilator:verilator); \
+	if [ -n "$(GCC_TOOLSET)" ] && ! echo '#include <coroutine>' | g++ -std=gnu++20 -x c++ -fsyntax-only - >/dev/null 2>&1; then . $(GCC_TOOLSET)/enable; fi; \
+	$(VERILATOR) $(VERILATOR_SIM_FLAGS) --top-module tb_$(TOP_MOD) --Mdir $(VERILATOR_WORK) \
+		$(OUT_DIR)/cfg/$(TOP_MOD).vlt $$(cat $(OUT_DIR)/verilator_incdirs.f) +incdir+$(abspath $(OUT_DIR)/hw) \
+		-f $(OUT_DIR)/compile_verilator_src.f && \
+	$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD).mk CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2 -j $(VERILATOR_JOBS) && \
+	cd $(VERILATOR_WORK) && g++ -o Vtb_$(TOP_MOD) Vtb_$(TOP_MOD)__main.o \
+		-Wl,--start-group libVtb_$(TOP_MOD).a Vtb_$(TOP_MOD)__ALL.a libverilated.a $$(ls V*/lib*.a 2>/dev/null) -Wl,--end-group \
+		-lpthread -lm
+	@printf "\n[SUCCESS] Verilator model built: $(VERILATOR_WORK)/Vtb_$(TOP_MOD)\n"
+
+run-sim-verilator:
+	@printf "\n[MAKE] Running Verilator simulation...\n"
+	@# Runs from logs/ through the same 'generated' symlink as run-sim, so the testbench's
+	@# relative $$readmemh paths resolve identically on both backends. The pass criterion is
+	@# unchanged: '[UART]:' output plus '[TB] EOT received.' in the transcript.
+	@mkdir -p logs/stdout
+	@ln -snf ../generated logs/generated
+	@cd logs && set -o pipefail && ../$(VERILATOR_WORK)/Vtb_$(TOP_MOD) $(VERILATOR_RUN_FLAGS) 2>&1 | tee verilator_transcript

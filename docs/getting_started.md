@@ -340,3 +340,26 @@ Once your `main.c` is ready, the Makefile handles the compilation of the `.elf` 
 make build-sim
 make run-sim
 ```
+
+### 8.3 Running the Simulation with Verilator (license-free)
+The same testbench can be built and run with Verilator, with no simulator license involved:
+```bash
+make build-sim-verilator
+make run-sim-verilator
+```
+The pass criterion is identical on both backends: the run prints the firmware's `[UART]:` output and ends with `[TB] EOT received. Simulation finished.` (the transcript is written to `logs/verilator_transcript`).
+
+A few practical differences with respect to the QuestaSim flow are worth knowing:
+
+* **The build is front-loaded**: Verilator compiles the whole SoC into a native executable (`verilator_work/Vtb_<name>`), which takes far longer than `vlog` (on the `noc` example: roughly 1.5 hours against minutes, with `ccache` absorbing most of a rebuild), while the run itself is a plain process with a tiny memory footprint (~300 MB where QuestaSim needs gigabytes). It suits regressions and CI machines rather than fast RTL iteration.
+* **Repeated tiles are built once**: the flow uses hierarchical verilation, driven by the generated `generated/cfg/<name>.vlt`, so a tile instantiated N times is verilated a single time.
+* **Toolchain requirements**: Verilator ≥ 5.044 and a C++20-capable compiler (`<coroutine>` support, g++ ≥ 11). On RHEL-family hosts the build recipe automatically enables the newest installed `gcc-toolset` when the default compiler is too old.
+* **Assertions are structurally disabled** in the Verilator build (the equivalent of the suite's `ASSERTIONS=0`), and two-valued simulation semantics apply.
+
+> [!NOTE]
+> The Verilator simulation flow is validated end-to-end (identical UART output and EOT against QuestaSim) on the `noc` example. The crossbar-family examples currently stop in mid-elaboration inside two legacy IPs and remain QuestaSim-only for simulation; every example passes the Verilator `fast-check`. See `docs/developer/wip/future_evolution_tasks.md`, chapter 5, for the plan.
+
+The test suite can drive the Verilator backend for its simulation leg with:
+```bash
+make test-all TEST_PROJECTS="noc" TEST_SIM=1 TEST_SIM_TOOL=verilator
+```

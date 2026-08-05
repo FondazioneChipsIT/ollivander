@@ -228,7 +228,7 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     
     # Load fast_check_tool from config files. We only respect the environment variable 
     # FAST_CHECK_TOOL during stub generation (--generate-stubs) to prevent circular 
-    # lock-in issues from pre-existing Makefile.vsim.
+    # lock-in issues from pre-existing Makefile.sim.
     import os
     env.fast_check_tool = ""
     if getattr(args, "generate_stubs", False):

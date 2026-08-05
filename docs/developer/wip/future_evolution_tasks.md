@@ -68,7 +68,7 @@ Note that gwaihir never solved either problem: a whole-repository search finds n
 
 ## 3. Open Decisions from the Simulation-Log Reviews
 
-Everything here is visible in the logs by design: the reviews narrowed the message-suppression list in `src/templates/Makefile.vsim.mako` (`2732` downgraded instead of suppressed, `3999` and `8602` gone, `2912` and `2241` no longer suppressed by the fast-check `vopt`), so every open item below has its warning signature. One recurring family is deliberately *not* listed: the `vopt-2685`/`vopt-2718` (TFMPC) dangling-port warnings were audited across all seven projects and are upstream instantiations leaving optional ports unconnected — unread outputs, or inputs consumed only under configuration bits the instantiating clusters set to zero — with nothing to fix on our side. None of the items below is a mechanical fix: each changes design behaviour, or asks what to do about a defect in an IP we do not own.
+Everything here is visible in the logs by design: the reviews narrowed the message-suppression list in `src/templates/Makefile.sim.mako` (`2732` downgraded instead of suppressed, `3999` and `8602` gone, `2912` and `2241` no longer suppressed by the fast-check `vopt`), so every open item below has its warning signature. One recurring family is deliberately *not* listed: the `vopt-2685`/`vopt-2718` (TFMPC) dangling-port warnings were audited across all seven projects and are upstream instantiations leaving optional ports unconnected — unread outputs, or inputs consumed only under configuration bits the instantiating clusters set to zero — with nothing to fix on our side. None of the items below is a mechanical fix: each changes design behaviour, or asks what to do about a defect in an IP we do not own.
 
 ### 3.1 The HWPE Path: hci Remapping and redmule Widths
 
@@ -140,6 +140,7 @@ The file's justification for this ("functionally correct since the AXI ID field 
 #### Advantages
 *   **Removes the adaptation entirely**: with a `pulp_cluster_cfg_t` built from the isle's own parameters, the inner CDC widths equal the outer ones by construction, so the eighty-line remapping block and the ten hardcoded constants disappear — along with the misalignment they encode.
 *   **Makes the parameters real**: the isle's standard parameters could become genuine `parameter`s, honouring the SoC geometry instead of documenting a contract it does not keep.
+*   **Dissolves the pulp_cluster half of the Verilator wall** (chapter 5): the packed-union constants and the configuration plumbing that stop Verilator's crossbar elaboration live in the `pulp_cluster_wrap` shell this task removes, so doing this task first avoids patching code that is about to leave the build.
 
 #### Difficulties & Mitigation Strategies
 *   **Not every field of the config struct is free.** `NumCores` comes from the `` `NB_CORES `` define (8, in `pulp_soc_defines.sv`), `AxiIdOutWidth` is derived from `NumAxiSubordinatePorts`, and fields such as `HMRSeparateAxiBus` are inherited from the default today. Which are safe to drive from the SoC description and which must stay fixed needs establishing before the switch.
@@ -184,33 +185,30 @@ An independent safety net: it would turn any undeclared signal into an elaborati
 *   **The consumer surface is large**: 123 dictionary-style accesses of `interfaces` alone, across Python and Mako, plus the equivalent for the other blocks.
     *   *Mitigation*: worth doing only alongside a refactor that already touches those consumers — the SV-IR extension of chapter 1 is the natural occasion.
 
-## 5. A Verilator Simulation Flow
+## 5. Verilator Simulation Flow: Remaining Work
 
-The suite already runs its elaboration gate on two backends: `fast-check` accepts `FAST_CHECK_TOOL=questa|verilator`, and every example passes both. Simulation, however, exists only as a QuestaSim flow — `Makefile.vsim` drives `vlog`/`vsim`, and the run-sim/gui targets are built around `vsim -do` scripts. When the Siemens licenses expired (every feature in the server's file ran out on 31-jul-2026, at a weekend, taking the `saltd` vendor daemon down with it), the project lost its only way to run a testbench while the license-free half of the suite kept working: seven Verilator fast-checks green, zero simulations possible until the renewal. A Verilator simulation flow would close that asymmetry, and its value is independent of the outage that motivated it: it is the missing piece for continuous integration that does not depend on license seats.
+The flow itself landed on 2026-08-05: `make build-sim-verilator` / `run-sim-verilator` build and run the generated testbench with no simulator license, validated end-to-end on the `noc` example with UART output and EOT byte-identical to a QuestaSim run of the same tree. Usage, costs and toolchain requirements are user documentation now (`docs/getting_started.md`, section 8.3); the defects found in external IPs along the way are in [`upstream_pr_candidates.md`](upstream_pr_candidates.md). This chapter tracks only what remains open.
 
-#### Advantages
-*   **License-free regression**: `make test-all TEST_SIM=1` becomes runnable on any machine, including CI runners, with the licensed backend reserved for signoff rather than for every iteration.
-*   **A second simulator is a second opinion**: the message-suppression work showed how much a single tool's defaults can hide; two-valued simulation semantics and Verilator's stricter scheduling surface a different class of RTL assumptions (X-propagation being the known trade-off in the other direction).
-*   **The suite plumbing already exists**: per-tool log names (`test_fastcheck_<tool>.log`), the `FAST_CHECK_TOOLS` loop in `ollivander_test.mk` and the tool-conditional blocks in `Makefile.vsim.mako` give the pattern to extend rather than a design to invent.
+### 5.1 Extending Coverage to the Crossbar Family
 
-### 5.1 What the 2026-08-03 scouting established
+`crossbar` and `crossbar_isle` stop in mid-elaboration inside two legacy IPs; the 2026-08-04 analysis localized the walls far more narrowly than first assumed.
 
-Twelve Verilator iterations over `crossbar` (full design plus testbench, `--binary --timing`, Verilator 5.041) and a probe over `noc`, about three hours in licence-free time. The findings replace the speculation this chapter previously carried.
+*   **OpenTitan's wall is one file**, `secure_subsystem_asynch_synth_wrap_astral.sv`: an incomplete assignment pattern, two expressions Verilator cannot fold, and a non-convertible `defparam`. Three or four targeted catalogue patches, not diffuse surgery.
+*   **pulp_cluster's wall lives in code section 3.5 already plans to remove**: the packed-union constants and configuration plumbing belong to the `pulp_cluster_wrap` shell that the direct-Cfg instantiation drops. Sequence 3.5 first, then measure what is left.
+*   **The measurements above predate the 5.050 module**: both walls were mapped on Verilator 5.041, and the version bump dissolved an entire class of workarounds on the NoC side. A half-hour probe of `crossbar` on 5.050 is the mandatory first step — it may shrink or erase the list.
+*   **Fallback if the walls resist**: stub the two IPs in the Verilator flow only, with the exact-signature stub generator fast-check already uses; hello world never exercises them, so the run still boots and prints UART. The coverage loss would have to be stated in the user documentation.
+*   **The super examples stay out of scope regardless**: their unified Bender graphs carry the crossbar IPs (and their size compounds it) — though the measured hierarchical footprint (~3 GB per child against ~45 GB monolithic) may eventually relax the memory ceiling that limits `super_noc` today.
 
-**Parsing and linking the crossbar family is a solved problem**, and the remedies are one line each: `-t verilator` and `-t cv32e40p_exclude_tracer` at flist generation (upstream manifests already gate their simulation-only files), `+define+ASSERTS_OFF` and `+define+OBI_ASSERTS_OFF` (the IPs' own switches, consistent with a regression that runs `-nosva` anyway), four `+incdir` entries (Verilator does not resolve includes relative to the including file the way `vlog` does), and the exclusion of analog pad primitives (`pmos`, strength specifiers) — the Verilator target simulates the digital top, never the chip wrapper. The banked repairs with value beyond Verilator: five registry patches (obi's unguarded twin, hier-icache's SYNTHESIS-only SVA, neureka's 36-bit literal in a 9-bit case, pulp_cluster's seven dead geometry overrides and four dead interface ties). The first three are genuine upstream defects, verified still present at each repository's HEAD, and are PR candidates; the pulp_cluster pair is not — pulp-platform's master still carries those lines, consistently with the older hci it requires, so they are an alignment to our own hci forcing and live or die with it, `scripts/patch_ibex_ot.py` (opentitan's vendored ibex collides with the standalone ibex on 27 global names), and the rename of our own `reg_to_tlul` to `olli_reg_to_tlul` (it collided with `register_interface`'s module of the same name).
+### 5.2 Performance Levers Not Yet Adopted
 
-**The structural theme is the single compilation unit.** QuestaSim compiles per file and overwrites same-name design units in the library (message 13233, suppressed as routine); Verilator preprocesses and elaborates everything as one unit, so every same-name package, module, interface and macro in the graph collides visibly. Six distinct manifestations in one day, several of which are latent in the QuestaSim flow too — which side of a collision wins there depends on compile order and is not the side the RTL was written against.
+All deferred pending the flow's first real use; each needs its own measurement before entering the recipe.
 
-**Where each family stands.** `crossbar` stops in mid-elaboration on LRM-strictness and constant-folding limits inside the two heaviest legacy IPs: incomplete struct assignment patterns in the secure subsystem wrap, packed-union constants and a non-constant `defparam` in `pulp_cluster`'s configuration plumbing. That is per-IP surgery of unknown depth, not flags. `noc` stops earlier but on a single, fully-diagnosed cause: cva6 vendors two old copies of `common_cells/assertions.svh` under the guard name `PRIM_ASSERT_SV` — different from the modern copy's guard, so both macro sets parse and the last include wins, handing FlooNoC's five-argument `ASSERT` calls a four-argument macro. No include-path ordering fixes that; harmonizing the two vendored copies (one small patch, cva6 entry) is the single known blocker to `noc` clearing parse.
-
-#### Difficulties & Mitigation Strategies
-*   **The rollout order is the opposite of what this chapter first assumed**: the crossbar examples carry the least Verilator-clean IPs (pulp_cluster, the OpenTitan secure subsystem), while the NoC family builds on Snitch and FlooNoC, both Verilator-tested upstream, and is one patch away from clearing parse.
-    *   *Mitigation*: phase 2 starts from `noc` — cva6 assertions harmonization, then onward through elaboration, testbench (`--timing`, hierarchical `force` and `$readmemh` still unmeasured) and build; the crossbar family stays QuestaSim-only until someone funds the OT/pulp_cluster surgery.
-*   **A new flow needs a reference to be trusted**: its first green runs prove nothing until they are compared against QuestaSim on the same code.
-    *   *Mitigation*: validate it while both backends work — explicitly not during an outage — by requiring identical UART output and EOT on every project it claims to cover.
-*   **The scouting artifacts are session-local** (filelists, define sets, incdir lists under a scratch directory); the flow does not exist until `Makefile.vsim.mako` emits a `run-sim-verilator` target that reproduces them from the project configuration.
-    *   *Mitigation*: that template work is the deliverable of phase 2, and the catalogue above is its specification.
-
+*   **`--threads`**: multithreaded simulation runtime is the largest untapped wall-clock lever, but on the mesh it inflated *verilation* from minutes to hours per unit. Unusable in the edit-build-run loop; potentially right for production builds where one build serves many regression runs. Re-characterize on 5.050+ in isolation.
+*   **Simulation-fast UART**: at 115200 baud a character costs ~87 µs of simulated time and Verilator pays every idle bit-cycle (the event-driven QuestaSim does not), so the UART dominates the run. Divisor 1 proved indigestible to the 16550 (firmware spins on a THR that never empties, on both backends); the pista is divisor 2–4, or an auto-baud testbench monitor that measures the start bit and decouples the monitor from the firmware divisor for good.
+*   **Leave unused clusters gated**: the hello-world bring-up enables all compute tiles, which then trap-loop at PC 0 burning simulation events for nothing. A test-level knob to bring up only what the firmware uses would cut most of the evaluated activity — on both backends, so the equivalence comparison stays fair.
+*   **Re-admit the L2 tile into the `.vlt`**: the generated wrapper's parameter defaults read package struct constants (`AxiCfgJoin.*`), which the 5.050 hierarchical wrapper cannot rebuild (see the registry), so the emission mechanically excludes it and the top unit keeps the eight heaviest memory tiles. Replacing those defaults with plain elaboration-time expressions in the tile template would shrink the dominant build lane.
+*   **Cross-project hierarchical-library reuse**: today every project re-verilates everything (own Mdir, own flist). Donor-derived module names are stable across projects by the naming rule, so ccache already absorbs identical C++; a deliberate shared block-library cache (keyed on module, sources, flags and Verilator version) could remove re-verilation too. Second-generation work, worth designing when the supers enter the flow's scope.
+*   **Rebuild of the `verilator/5.050` module by IT with a modern gcc-toolset enabled**: removes the `CFG_CXXFLAGS_STD` override the flow must carry (the module was configured against the system g++ 8.5 and records no C++ standard) and buys a small single-thread verilation speedup. Low priority while the override works.
 
 ## 6. A Documentation Site (MkDocs Material)
 
@@ -228,3 +226,27 @@ The documentation is plain GitHub-flavored Markdown, deliberately: it renders in
     *   *Mitigation*: this is the reason the task waits. The decision point is the repository going public, when the audience the site serves starts existing; everything the site would add is cosmetic until then.
 *   **A navigation structure is a maintenance surface**: `mkdocs.yml` lists every page, so adding a guide gains a second place to register it.
     *   *Mitigation*: keep `docs/README.md` as the canonical index and generate the `nav` from it, or accept the duplication consciously — it is one line per document.
+
+---
+
+## 7. A Linting Flow (Verilator and/or SpyGlass)
+
+The `fast-check` gate verifies the **structural contract**: the generated wrappers elaborate against exact-signature stubs of the external IPs, so connectivity and type mismatches in what Ollivander emits are already caught, license-free, on every project. What no gate covers today is **code quality**: the fast-check runs with Verilator's default warning surface (plus three suppressions), and the hand-written SystemVerilog in `components/` is only ever exercised through whichever generate branches the seven example configurations happen to elaborate. The class of defect this leaves invisible is exactly what the Verilator simulation campaign kept tripping on in third-party code — mixed blocking/non-blocking drives to one struct, latches, incomplete cases, width mismatches — and there is no reason to believe our own components are immune; a lint gate would report those at negligible cost instead of at simulation-build time.
+
+Two tiers are worth evaluating, not mutually exclusive:
+
+*   **Verilator lint** (license-free): a `lint` target reusing the fast-check infrastructure with a curated warning set (`WIDTH`, `LATCH`, `UNUSED`, `UNDRIVEN`, `CASEINCOMPLETE`, `BLKANDNBLK`, ...), scoped to `components/` and to the generated output, with per-component tops so that generate branches not elaborated by any example still get checked. Seconds of runtime, CI-friendly, and aligned in spirit with the lowRISC style guide the components already follow.
+*   **SpyGlass** (licensed, deeper): the astral precedent — note that astral's lint is a **SpyGlass** flow, not a Verilator one; `bender script verilator` appears there only as the flist *format* fed to SpyGlass. A structural lint of that depth (CDC/RDC candidates, richer rule decks) would be a second-stage gate; Synopsys tooling exists under `/tools/synopsys`, license availability to be assessed.
+
+#### Advantages
+*   **Catches the simulation campaign's defect classes in our own code before they bite**: every issue found in third-party IPs during the Verilator bring-up (mixed-style struct drives above all) is a defect a lint would have flagged for free had it lived in `components/`.
+*   **Coverage beyond the example configurations**: per-component linting elaborates branches no example instantiates, which is the standing blind spot of both `fast-check` and the simulation suite.
+*   **Nearly free on the Verilator tier**: the flist generation, stubs and tool invocation all exist; what is new is a warning-set policy and a make target.
+
+#### Difficulties & Mitigation Strategies
+*   **Warning-set policy is the real work**: too strict and the gate cries wolf on inherited idioms; too lax and it catches nothing. The suppression comments in `Makefile.sim.mako` show every choice must be argued.
+    *   *Mitigation*: start from the messages the simulation campaign actually hit (they have proven cost), enable incrementally, and document each suppression inline as the vsim flow already does.
+*   **Third-party noise**: linting anything that pulls in external IPs drowns the signal.
+    *   *Mitigation*: scope to `components/` and generated output only; the IPs have their own upstreams (and our patch/PR pipeline for what we find).
+*   **SpyGlass adds license coupling to a flow whose sibling exists precisely to avoid it.**
+    *   *Mitigation*: keep the tiers independent — Verilator lint as the always-on CI gate, SpyGlass as an on-demand deep pass, mirroring the QuestaSim/Verilator split of the simulation flow.
