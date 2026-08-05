@@ -45,27 +45,38 @@ Ollivander currently supports two major routing topologies:
 *   **Crossbar**: Ideal for traditional embedded SoCs. The Manager (Host) encapsulates the central AXI routing matrix, exposing multidimensional arrays to the top-level where all other components connect.
 *   **Network-on-Chip**: Fully supported for massively parallel, AI/ML accelerator arrays (e.g., FlooNoC). Maps logical coordinates to physical tiles on a 2D mesh, automatically instantiating routers, chimneys, and AXI joins.
 
+**Crossbar topology** — the host isle owns the AXI crossbar, and every other isle attaches to it:
+
+<img src="docs/assets/crossbar_topology.svg" alt="Crossbar topology: the Host Isle spans the full row and contains the Cheshire host with the AXI crossbar as its lower band; every other isle attaches to the crossbar through a vertical AXI link" width="660"/>
+
+**NoC topology** — a FlooNoC 2D mesh; every tile holds a router, a chimney and its isle:
+
 ```mermaid
-flowchart LR
-    subgraph XBAR["Crossbar topology"]
-        direction TB
-        HOST["Host Isle<br/>(Cheshire + AXI crossbar)"]
-        HOST <--> ISLE_A["Isle<br/>(L2, cluster, ...)"]
-        HOST <--> ISLE_B["Isle<br/>(safety island, ...)"]
-        HOST <--> APB["APB subsystem Isle<br/>(timers, watchdog, CAN)"]
-    end
-    subgraph NOC["NoC topology (FlooNoC 2D mesh)"]
-        direction TB
-        T00["Tile 0,0<br/>router + chimney + Isle"] --- T10["Tile 1,0"]
-        T00 --- T01["Tile 0,1"]
-        T10 --- T11["Tile 1,1<br/>manager tile"]
-        T01 --- T11
-    end
-    XBAR -.->|"build_mode: macro<br/>(isle or subtile export)"| NOC
-    NOC -.->|"build_mode: macro"| XBAR
+block-beta
+    columns 3
+    T02["Tile 0,2"] T12["Tile 1,2"] T22["Tile 2,2"]
+    T01["Tile 0,1"] T11["Tile 1,1"] T21["Tile 2,1"]
+    T00["Tile 0,0"] T10["Tile 1,0"] T20["Tile 2,0 (manager)"]
+    T02 --- T12
+    T12 --- T22
+    T01 --- T11
+    T11 --- T21
+    T00 --- T10
+    T10 --- T20
+    T02 --- T01
+    T01 --- T00
+    T12 --- T11
+    T11 --- T10
+    T22 --- T21
+    T21 --- T20
 ```
 
-Either topology can be exported as a reusable **macro** and nested inside a parent SoC of either topology — the two `super_*` examples below exercise exactly that cross.
+Either topology can also be exported as a reusable **macro** and instantiated as a component inside a parent SoC — of either topology, as the two `super_*` examples below exercise:
+
+```mermaid
+flowchart LR
+    ANY["Any SoC project<br/>(crossbar or NoC)"] -- "build_mode: macro" --> M(["Macro<br/>isle or subtile export,<br/>published AXI boundary"]) -- "instantiated as a component" --> PARENT["Any parent SoC<br/>(crossbar or NoC)"]
+```
 
 ### Example Projects (`soc_cfg_examples/`)
 
@@ -90,19 +101,20 @@ The two `super_*` projects deliberately cross the topologies, so each of them re
 The generation engine (`ollivander.py`) combines Python and Mako templates in a rigorous 10-Phase pipeline:
 
 ```mermaid
+%%{init: {"flowchart": {"rankSpacing": 18, "nodeSpacing": 30}}}%%
 flowchart TB
-    YAML["SoC description<br/>(YAML or Python)"] --> P1
-    ENV["Environment config<br/>(*_env.yml + ollivander_config.yml)"] --> P1
-    P1["1 · Dynamic Isles<br/>(APB subsystem, ...)"] --> P2["2 · Hardware-First Validation<br/>(pyslang vs YAML)"]
-    P2 --> P3["3 · Top-Level Generation<br/>(SV-IR + Mako: top, packages, RDL, Bender.yml)"]
-    P3 --> P4["4 · Fetch External IPs<br/>(Bender + patches/pre-build)"]
-    P4 --> P5["5 · NoC Generation<br/>(FlooGen)"]
-    P5 --> P6["6 · Register RTL<br/>(PeakRDL)"]
-    P6 --> P7["7 · Padframe<br/>(Padrick)"]
-    P7 --> P8["8 · Chip Wrapper<br/>(core + padframe + CDC)"]
-    P8 --> P9["9 · RTL Formatting<br/>(Verible)"]
-    P9 --> P10["10 · IP-XACT Export<br/>(+ schema validation)"]
-    P10 --> OUT["generated/<br/>hw · tb · sw · reg · cfg · doc"]
+    YAML["SoC description (YAML or Python)"] --> P1
+    ENV["Environment config (*_env.yml + ollivander_config.yml)"] --> P1
+    P1["1 · Dynamic Isles (APB subsystem, ...)"] --> P2["2 · Hardware-First Validation (pyslang vs YAML)"]
+    P2 --> P3["3 · Top-Level Generation (SV-IR + Mako)"]
+    P3 --> P4["4 · Fetch External IPs (Bender + patches)"]
+    P4 --> P5["5 · NoC Generation (FlooGen)"]
+    P5 --> P6["6 · Register RTL (PeakRDL)"]
+    P6 --> P7["7 · Padframe (Padrick)"]
+    P7 --> P8["8 · Chip Wrapper (core + padframe + CDC)"]
+    P8 --> P9["9 · RTL Formatting (Verible)"]
+    P9 --> P10["10 · IP-XACT Export (+ schema validation)"]
+    P10 --> OUT["generated/ (hw · tb · sw · reg · cfg · doc)"]
 ```
 
 ### Phase 1: Dynamic Isles Generation
