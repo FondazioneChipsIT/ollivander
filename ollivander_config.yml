@@ -41,6 +41,10 @@ paths:
 #   depend on what ran before: editing a patch replaces the old text rather than layering over it,
 #   and editing a target file by hand is pointless because the next generation reverts it. To work
 #   on a dependency, use `bender clone` instead.
+#   AT MOST THREE patches per dependency live inline here: a larger set moves verbatim to a
+#   script under scripts/ invoked from pre_build_cmds (patch_pulp_cluster.py is the template),
+#   which records its edits in the same .ollivander_patched ledger and is therefore restored,
+#   reapplied and removable exactly like inline patches.
 # - pre_build_cmds: Shell commands executed after fetching, once the IP is on disk. Use these for
 #   anything a text substitution cannot express - generating RTL, or injecting a source file an
 #   IP expects but does not carry. Substituted in each command:
@@ -175,6 +179,22 @@ dependencies:
     rev: "3e63936991569d0b1e315d6914478937b37bb338"
     # git: "https://github.com/pulp-platform/hci.git"
     # rev: "master"
+    patches:
+      # Three copy-paste typos in the ECC-handshake generate branches: r_evalid is
+      # derived from itself where the twin line above derives egnt from gnt, so the
+      # signal is a combinational self-loop. QuestaSim elaborates it silently (the
+      # wire just sticks - latent while nothing exercises the cluster), Verilator
+      # refuses it as circular logic. Real functional defect, upstream candidate
+      # toward pulp-platform/hci and a direct fix for the CHIPS-IT fork.
+      - file: "{bender_work}/hci/rtl/core/hci_core_mux_static.sv"
+        search: "      assign in_r_evalid[ii] = '{default: {in_r_evalid[ii]}};"
+        replace: "      assign in_r_evalid[ii] = '{default: {in_r_valid[ii]}};"
+      - file: "{bender_work}/hci/rtl/interco/hci_router.sv"
+        search: "    assign postfifo.r_evalid = '{default: {postfifo.r_evalid}};"
+        replace: "    assign postfifo.r_evalid = '{default: {postfifo.r_valid}};"
+      - file: "{bender_work}/hci/rtl/core/hci_core_split.sv"
+        search: "    assign tcdm_target.r_evalid = '{default: {tcdm_target.r_evalid}};"
+        replace: "    assign tcdm_target.r_evalid = '{default: {tcdm_target.r_valid}};"
   hyperbus:
     git: "https://github.com/pulp-platform/hyperbus.git"
     rev: "6cbbff063ee2f36408106cca84d7ec668d7c8577"
@@ -239,68 +259,19 @@ dependencies:
   # semantics identical. Order matters: the four renames run on the pristine file first,
   # then the declaration block (already using the final names) is anchored on the untouched
   # 'flags_o.done' assign. Possible Verilator-compatibility PR upstream, to verify at HEAD.
+  # hwpe-ctrl: hwpe_ctrl_slave drives its packed flags_o with mixed styles, which
+  # Verilator refuses (BLKANDNBLK); the five ORDERED replacements moved to the script
+  # per the three-patch rule above. Full rationale in the script header.
   hwpe-ctrl:
-    patches:
-      - file: "{bender_work}/hwpe-ctrl/rtl/hwpe_ctrl_slave.sv"
-        search: "flags_o.start"
-        replace: "flags_start_q"
-      - file: "{bender_work}/hwpe-ctrl/rtl/hwpe_ctrl_slave.sv"
-        search: "flags_o.evt"
-        replace: "flags_evt_q"
-      - file: "{bender_work}/hwpe-ctrl/rtl/hwpe_ctrl_slave.sv"
-        search: "flags_o.is_working"
-        replace: "flags_is_working_q"
-      - file: "{bender_work}/hwpe-ctrl/rtl/hwpe_ctrl_slave.sv"
-        search: "flags_o.sw_evt"
-        replace: "flags_sw_evt_q"
-      - file: "{bender_work}/hwpe-ctrl/rtl/hwpe_ctrl_slave.sv"
-        search: "  assign flags_o.done = regfile_flags.true_done;"
-        replace: "  // Registered flags, driven in the sequential processes below and exposed through\n  // continuous assignments so that every field of flags_o is driven in one style:\n  // mixed blocking/non-blocking drives to a single packed struct are refused\n  // by Verilator (BLKANDNBLK); QuestaSim semantics are unchanged.\n  logic                                              flags_start_q;\n  logic [REGFILE_N_MAX_CORES-1:0][REGFILE_N_EVT-1:0] flags_evt_q;\n  logic                                              flags_is_working_q;\n  logic [7:0]                                        flags_sw_evt_q;\n  assign flags_o.start      = flags_start_q;\n  assign flags_o.evt        = flags_evt_q;\n  assign flags_o.is_working = flags_is_working_q;\n  assign flags_o.sw_evt     = flags_sw_evt_q;\n\n  assign flags_o.done = regfile_flags.true_done;"
-  # ibex: its vendored lowrisc_ip prim_assert.sv redefines the whole ASSERT macro family
-  # (guard PRIM_ASSERT_SV) after common_cells' modern assertions.svh has parsed, inside
-  # Verilator's single compilation unit; later callers then get the 4-argument lowRISC
-  # signatures - FlooNoC's five-argument ASSERT calls and snitch's six-argument ASSERT_IF
-  # stop parsing, and ASSERT_STABLE vanishes. These patches give the lowRISC macros the
-  # same trailing optional __desc argument (swallowed, bodies untouched) so both calling
-  # conventions parse regardless of include order; the dummy variant is the one Verilator
-  # selects (it predefines VERILATOR), and QuestaSim compiles per file and never sees the
-  # clash. Note for the super examples: opentitan vendors the same lowRISC file under the
-  # same guard, so this pattern must be replicated there when both families share a unit.
+    pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/patch_hwpe_ctrl.py {bender_work}"
+  # ibex: its vendored lowrisc_ip prim_assert macros clash with common_cells' modern
+  # assertion signatures inside Verilator's single compilation unit; the eleven
+  # signature-alignment replacements moved to the script per the three-patch rule
+  # above. Full rationale in the script header.
   ibex:
-    patches:
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
-        search: "`define ASSERT_I(__name, __prop)"
-        replace: "`define ASSERT_I(__name, __prop, __desc = \"\")"
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
-        search: "`define ASSERT_INIT(__name, __prop)"
-        replace: "`define ASSERT_INIT(__name, __prop, __desc = \"\")"
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
-        search: "`define ASSERT_FINAL(__name, __prop)"
-        replace: "`define ASSERT_FINAL(__name, __prop, __desc = \"\")"
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
-        search: "`define ASSERT(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST)"
-        replace: "`define ASSERT(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\")"
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
-        search: "`define ASSERT_NEVER(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST)"
-        replace: "`define ASSERT_NEVER(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\")"
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
-        search: "`define ASSERT_KNOWN(__name, __sig, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST)"
-        replace: "`define ASSERT_KNOWN(__name, __sig, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\")"
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
-        search: "`define ASSUME(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST)"
-        replace: "`define ASSUME(__name, __prop, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\")"
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert_dummy_macros.svh"
-        search: "`define ASSUME_I(__name, __prop)"
-        replace: "`define ASSUME_I(__name, __prop, __desc = \"\")\n`define ASSERT_STABLE(__name, __valid, __ready, __data, __mask = '0, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\")"
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert.sv"
-        search: "`define ASSERT_PULSE(__name, __sig, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST) \\"
-        replace: "`define ASSERT_PULSE(__name, __sig, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\") \\"
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert.sv"
-        search: "`define ASSERT_IF(__name, __prop, __enable, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST) \\"
-        replace: "`define ASSERT_IF(__name, __prop, __enable, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\") \\"
-      - file: "{bender_work}/ibex/vendor/lowrisc_ip/ip/prim/rtl/prim_assert.sv"
-        search: "`define ASSERT_KNOWN_IF(__name, __sig, __enable, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST) \\"
-        replace: "`define ASSERT_KNOWN_IF(__name, __sig, __enable, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\") \\"
+    pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/patch_ibex_prim_asserts.py {bender_work}"
   # neureka: a 36-bit literal in a 9-bit case item; QuestaSim truncates it to the same
   # 9'h1ff Verilator refuses to guess (upstream PR candidate: fix the literal).
   neureka:
@@ -319,6 +290,9 @@ dependencies:
     # absent. Same repair family as cva6's aes and spatz/snitch.
     pre_build_cmds:
       - "$(PYTHON) {ollivander_dir}/scripts/patch_ibex_ot.py {bender_work}"
+      # Two axi-fork literal completions and the removal of a dead verification
+      # cluster from the manifest; see the script header.
+      - "$(PYTHON) {ollivander_dir}/scripts/patch_opentitan.py {bender_work}"
   pulp-ethernet:
     git: "https://github.com/pulp-platform/pulp-ethernet.git"
     rev: "db9a90dd27fa85ddbe9b7cd22e03bf43b2c14838"
@@ -327,53 +301,12 @@ dependencies:
     rev: "e8c34e7199cb44417215fa51ccf5b6983599e985"
     bender_targets:
       - "cv32e40p_use_ff_regfile"
-      # cluster_interconnect_wrap still passes hci_interconnect the seven
-    # geometry overrides of an older hci, which current hci derives internally from the
-    # HCI_SIZE macros - four are localparams now and three are not declared at all. Dead
-    # under QuestaSim (discarded with the 2732 warning this suite deliberately keeps
-    # visible, section 3.1 of future_evolution_tasks.md), refused outright by Verilator.
-    # Removing them changes nothing Questa elaborates. NOT an upstream defect: pulp-platform's
-    # master still carries these lines, consistently with the older hci *it* requires - the
-    # incongruence is our own hci forcing (see the hci entry in overrides). This patch aligns
-    # the wrap to that forcing and belongs, at most, in the CHIPS-IT fork alongside it.
-    patches:
-      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
-        search: "        .AWC    ( ADDR_WIDTH             ),"
-        replace: ""
-      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
-        search: "        .DW_LIC ( DATA_WIDTH             ),"
-        replace: ""
-      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
-        search: "        .DW_SIC ( NB_HWPE_PORTS*32       ),"
-        replace: ""
-      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
-        search: "        .AWH    ( 32                     ),"
-        replace: ""
-      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
-        search: "        .DWH    ( 288                    ),"
-        replace: ""
-      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
-        search: "        .OWH    ( 1                      ),"
-        replace: ""
-      - file: "{bender_work}/pulp_cluster/rtl/cluster_interconnect_wrap.sv"
-        search: "        .AWM    ( ADDR_MEM_WIDTH+2       ),"
-        replace: ""
-      # idma_wrap ties boffs/lrdy on hci_core_intf, members the pinned hci dropped: the
-      # generate branch is dead under our configuration, so QuestaSim never elaborates
-      # it, but Verilator links dotted names in every branch and refuses. Same upstream
-      # thread as the overrides above.
-      - file: "{bender_work}/pulp_cluster/rtl/idma_wrap.sv"
-        search: "        assign tcdm_master[NB_TCDM_PORTS_PER_STRM*s+4].boffs = '0;"
-        replace: ""
-      - file: "{bender_work}/pulp_cluster/rtl/idma_wrap.sv"
-        search: "        assign tcdm_master[NB_TCDM_PORTS_PER_STRM*s+4].lrdy  = '0;"
-        replace: ""
-      - file: "{bender_work}/pulp_cluster/rtl/idma_wrap.sv"
-        search: "        assign tcdm_master[NB_TCDM_PORTS_PER_STRM*s+5].boffs = '0;"
-        replace: ""
-      - file: "{bender_work}/pulp_cluster/rtl/idma_wrap.sv"
-        search: "        assign tcdm_master[NB_TCDM_PORTS_PER_STRM*s+5].lrdy  = '0;"
-        replace: ""
+    # Three repair families (dead hci geometry overrides, packed-ification of the
+    # configuration structs for Verilator, the xbar_cfg_t literal against the axi
+    # fork's multicast fields) moved to the script per the three-patch rule above.
+    # Full rationale in the script header.
+    pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/patch_pulp_cluster.py {bender_work}"
   redmule:
     git: "https://github.com/pulp-platform/redmule.git"
     rev: "dbcba6b1efda24dc909ebdd4ace132f798c8c12b"
@@ -393,21 +326,17 @@ dependencies:
       - "$(PYTHON) -m pip install -q json5 jsonref jsonschema"
       - "mkdir -p .tmp_llvm_bin && ln -sfn /opt/riscv/snitch-llvm-15.0.0-snitch-0.2.0/bin/* .tmp_llvm_bin/ && ln -sfn /opt/riscv/snitch-llvm-15.0.0-snitch-0.2.0/bin/clang .tmp_llvm_bin/riscv32-unknown-elf-clang"
       - "PATH=$(pwd)/.tmp_llvm_bin:$PATH $(MAKE) -C {bender_work}/snitch_cluster rtl"
-    patches:
-      # The 'snitch_cluster_wrapper' target that Ollivander enables also pulls in the IP's own
-      # testbench, target/sim/tb/vip_snitch_cluster.sv and testharness.sv, which expect register
-      # headers only its standalone flow generates: compiling them fails with "Macro
-      # `SNITCH_CLUSTER_PERIPHERAL_REG_SCRATCH_1_REG_OFFSET is undefined". Emptying that file list
-      # keeps the wrapper sources and drops the testbench, since the SoC brings its own. Verified by
-      # removing this patch, which fails the NoC simulation build.
-      - file: "{bender_work}/snitch_cluster/Bender.yml"
-        search: "  - target: all(snitch_cluster_wrapper, any(simulation, verilator))\n    include_dirs:\n      - hw/generated\n    files:\n      - target/sim/tb/vip_snitch_cluster.sv\n      - target/sim/tb/testharness.sv"
-        replace: "  - target: all(snitch_cluster_wrapper, any(simulation, verilator))\n    include_dirs:\n      - hw/generated\n    files: []"
+      # Removal of the IP's testharness and of four dead verification clusters from
+      # the manifest; see the script header.
+      - "$(PYTHON) {ollivander_dir}/scripts/patch_snitch_cluster.py {bender_work}"
   spatz:
     git: "https://github.com/pulp-platform/spatz.git"
     rev: "a779a93426abe80e6c82418e678cec9b70af56ed"
     bender_targets:
       - "spatz"
+    # Removal of the dead tcdm_interface verification cluster; see the script header.
+    pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/patch_spatz.py {bender_work}"
     # spatz vendors its own copies of the snitch core and of its companion interface IPs, which
     # collide with snitch_cluster on dozens of package, module and interface names once both
     # families share one library: the last declaration compiled wins, and elaboration stops on

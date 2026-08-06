@@ -1236,8 +1236,10 @@ class RTLGenerator:
         is the right author for this file because the selection rules are mechanical over
         information only it has:
 
-        - a tile module is a candidate when it is instantiated more than once (every
-          instance shares one parameterization by construction of the templates);
+        - every tile module is a candidate, single-instance ones included: each child
+          verilates in its own bounded lane and is cached across rebuilds, so the win
+          is not only the N-instances-one-build sharing (every instance shares one
+          parameterization by construction of the templates) but the lane itself;
         - a module is EXCLUDED when the generated testbench reaches into it hierarchically
           (Verilator cannot cross a hier-block boundary with a dotted path): the host tile
           carries the bring-up forces and the Cheshire boot scratch, and every tile named
@@ -1246,11 +1248,37 @@ class RTLGenerator:
           Verilator 5.050's hier-parameters wrapper cannot rebuild those (internal error,
           reported upstream). Detected by scanning the generated wrapper header.
 
-        The file is emitted for every topology: a config with no hier_block entries is
-        valid input and simply degenerates to a flat build (the crossbar case today).
+        On a crossbar the same architecture applies with isles in place of tiles: the
+        host isle stays in the top unit (the testbench's bring-up forces and the boot
+        scratch reach into it hierarchically, exactly like the manager tile on the
+        mesh), preload targets stay for their $readmemh paths, and every other
+        non-external component whose wrapper survives the parameter rules becomes its
+        own child library — valuable even at one instance apiece, because each child
+        verilates in its own bounded lane and is cached across rebuilds.
+
+        A config with no hier_block entries remains valid input and simply degenerates
+        to a flat build.
         """
         vlt_path = cfg_dir / f"{top_level_module_name}.vlt"
         lines = ["`verilator_config"]
+
+        def _wrapper_params_ok(module):
+            """Parameter rule shared by both topologies: a wrapper whose header
+            declares type or struct-typed parameters, or parameter defaults that
+            read members of struct constants (e.g. AxiCfgJoin.AddrWidth), cannot
+            be rebuilt by Verilator 5.050's hier-parameters wrapper (internal
+            error, reported upstream) and must stay in the top unit."""
+            wrapper = hw_dir / f"{module}.sv"
+            if not wrapper.is_file():
+                return True
+            header = wrapper.read_text(encoding="utf-8", errors="ignore")
+            header = header.split(") (", 1)[0]
+            if re.search(r"parameter\s+type\s|parameter\s+\w+_pkg::", header) \
+               or re.search(r"parameter[^;)\n]*=\s*\w+\.\w+", header):
+                print(f"  -> vlt: skipping {module} (parameters the hierarchical "
+                      f"verilation wrapper cannot rebuild)")
+                return False
+            return True
 
         if self.soc_config.topology.type == "noc":
             # Instance count per component, replicating the grid mapping of
@@ -1285,7 +1313,13 @@ class RTLGenerator:
             excluded = {self.soc_config.host.name}
             tb_cfg = self.soc_config.testbench or {}
             for mem in tb_cfg.get("preload_memories", []):
-                name = mem.get("name", "")
+                # 'instance' is the documented key; 'name' survives as its historical
+                # alias. Until the single-instance rule was dropped this lookup never
+                # decided anything on the shipped examples - their preload tiles were
+                # all single-instance and skipped by count - so the wrong key here
+                # was latent: with every tile now a hier_block candidate, missing the
+                # exclusion would put the $readmemh target behind a hier boundary.
+                name = mem.get("instance", mem.get("name", ""))
                 for part in name.split('.'):
                     if part.startswith("i_tile_"):
                         coords = part.replace("i_tile_", "").split('_')
@@ -1299,28 +1333,37 @@ class RTLGenerator:
 
             prefix = self.soc_config.project.module_prefix
             for comp_name, count in sorted(counts.items()):
-                if count <= 1 or comp_name in excluded:
+                if comp_name in excluded:
                     continue
                 module = f"{prefix}_{comp_name}_tile"
-                # Exclusion 2: parameters Verilator's hier wrapper cannot rebuild. The
-                # observed 5.050 failure ("Module/etc never assigned a symbol" on the
-                # generated __hierParameters.v) is triggered by parameter DEFAULTS that
-                # read members of package struct constants (e.g. AxiCfgJoin.AddrWidth):
-                # the wrapper then has to serialize the struct type and dies. Literal
-                # defaults are safe (validated: the compute and dummy tiles). Type and
-                # struct-typed parameters are excluded for the same reason.
-                wrapper = hw_dir / f"{module}.sv"
-                if wrapper.is_file():
-                    header = wrapper.read_text(encoding="utf-8", errors="ignore")
-                    header = header.split(") (", 1)[0]
-                    if re.search(r"parameter\s+type\s|parameter\s+\w+_pkg::", header) \
-                       or re.search(r"parameter[^;)\n]*=\s*\w+\.\w+", header):
-                        print(f"  -> vlt: skipping {module} (parameters the hierarchical "
-                              f"verilation wrapper cannot rebuild)")
-                        continue
+                if not _wrapper_params_ok(module):
+                    continue
                 lines.append(f'hier_block -module "{module}"')
-            if dummy_count > 1:
+            if dummy_count >= 1:
                 lines.append(f'hier_block -module "{prefix}_dummy_tile"')
+        else:
+            # Crossbar: the host isle stays in the top unit (the testbench's bring-up
+            # forces and the Cheshire boot scratch reach into it hierarchically, the
+            # same role the manager tile plays on the mesh), preload targets stay for
+            # their $readmemh paths, and every other non-external component whose
+            # wrapper survives the parameter rule becomes its own child library.
+            excluded = set()
+            tb_cfg = self.soc_config.testbench or {}
+            for mem in tb_cfg.get("preload_memories", []):
+                inst = mem.get("instance", mem.get("name", ""))
+                for part in inst.split('.'):
+                    if part.startswith("i_"):
+                        excluded.add(part[2:])
+            prefix = self.soc_config.project.module_prefix
+            by_module = {}
+            for c in (self.soc_config.components or []):
+                if is_external(c) or c.name in excluded:
+                    continue
+                by_module.setdefault(f"{prefix}_{c.type}", []).append(c.name)
+            for module in sorted(by_module):
+                if not _wrapper_params_ok(module):
+                    continue
+                lines.append(f'hier_block -module "{module}"')
 
         write_if_changed(vlt_path, "\n".join(lines) + "\n")
         print(f"  -> Rendering verilator hierarchical config into {vlt_path.name} "

@@ -352,12 +352,13 @@ The pass criterion is identical on both backends: the run prints the firmware's 
 A few practical differences with respect to the QuestaSim flow are worth knowing:
 
 * **The build is front-loaded**: Verilator compiles the whole SoC into a native executable (`verilator_work/Vtb_<name>`), which takes far longer than `vlog` (on the `noc` example: roughly 1.5 hours against minutes, with `ccache` absorbing most of a rebuild), while the run itself is a plain process with a tiny memory footprint (~300 MB where QuestaSim needs gigabytes). It suits regressions and CI machines rather than fast RTL iteration.
-* **Repeated tiles are built once**: the flow uses hierarchical verilation, driven by the generated `generated/cfg/<name>.vlt`, so a tile instantiated N times is verilated a single time.
+* **Repeated components are built once, and heavy ones separately**: the flow uses hierarchical verilation, driven by the generated `generated/cfg/<name>.vlt`. On a NoC every tile module becomes its own child library (a tile instantiated N times is verilated a single time); on a crossbar the same applies to every isle whose wrapper the hierarchical mechanism can rebuild. The host stays in the top unit (the testbench's bring-up forces reach into it), together with the preload targets and the type-parameterized isles.
 * **Toolchain requirements**: Verilator ≥ 5.044 and a C++20-capable compiler (`<coroutine>` support, g++ ≥ 11). On RHEL-family hosts the build recipe automatically enables the newest installed `gcc-toolset` when the default compiler is too old.
 * **Assertions are structurally disabled** in the Verilator build (the equivalent of the suite's `ASSERTIONS=0`), and two-valued simulation semantics apply.
+* **VHDL blocks are stubbed**: Verilator has no VHDL front-end, so the flow replaces the root entity of every VHDL subtree in the graph with an auto-generated SystemVerilog stub whose outputs are tied low (`generated/vhdl_stubs/`). In the shipped examples this affects only the CTU CAN FD controller of the APB subsystem, which no example firmware drives — this is the flow's one deliberate coverage loss, and a test that exercises a VHDL block must run under QuestaSim, which simulates the true mixed-language sources.
 
 > [!NOTE]
-> The Verilator simulation flow is validated end-to-end (identical UART output and EOT against QuestaSim) on the `noc` example. The crossbar-family examples currently stop in mid-elaboration inside two legacy IPs and remain QuestaSim-only for simulation; every example passes the Verilator `fast-check`. See `docs/developer/wip/future_evolution_tasks.md`, chapter 5, for the plan.
+> The Verilator simulation flow is validated end-to-end (identical UART output and EOT against QuestaSim) on the `noc` and `crossbar` examples — one SoC per topology family. Every example passes the Verilator `fast-check`. See `docs/developer/wip/future_evolution_tasks.md`, chapter 5, for the remaining work.
 
 The test suite can drive the Verilator backend for its simulation leg with:
 ```bash

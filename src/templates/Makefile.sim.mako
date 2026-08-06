@@ -46,10 +46,26 @@ VERILATOR_JOBS ?= 48
 # bender's 'script verilator' format implicitly defines TARGET_SYNTHESIS, which turns the
 # olli_* simulation placeholders (the reset generator above all) into empty shells and
 # silently holds the whole SoC in reset under two-state semantics: prep-sim-verilator
-# strips that define from the file list. The exclusions below are simulation collateral
-# Verilator cannot digest, none of it instantiated by the generated testbench.
-VERILATOR_FLIST_EXCLUDE ?= pad_alsaqr\.sv|behavioral/tc_pad\.sv|pulp_cluster/tb/|snitch_ssr/test/|mem_interface/src/mem_test\.sv
-VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer
+# strips that define from the file list.
+#
+# One single exclusion remains, and it is structural rather than a workaround: the
+# behavioral pad cells model tristate with drive strengths (bufif1 (weak1, weak0)),
+# which Verilator does not support - and does not need to, because the generated
+# testbench elaborates the SoC top, not the chip top that carries the padframe. The
+# cells are NOT dead code: the Padrick-generated padframe instantiates them and both
+# are shipped, so they stay in the QuestaSim flow.
+# Everything that used to be listed here instead - IP testbenches, class-based
+# verification drivers, the astral pads - was dead in a generated SoC for BOTH
+# simulators, and is now removed at the source, in each IP's manifest, from the
+# dependency registry (2026-08-06). A tool-specific exclusion is the last resort: if
+# a file is useless, it is useless to QuestaSim too.
+VERILATOR_FLIST_EXCLUDE ?= behavioral/tc_pad\.sv
+# scm_use_latch_scm: scm's manifest swaps its latch-based register files for FF
+# equivalents under the 'verilator' target, but that branch misses
+# register_file_1r_1w_test_wrap, which hier-icache instantiates (MODMISSING).
+# Forcing the latch set keeps Verilator compiling the same scm sources as
+# QuestaSim - the flow's byte-equivalence principle; inert where scm is absent.
+VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer -t scm_use_latch_scm
 # Flag rationale, all measured on the mesh example:
 # - hierarchical verilation is the only build mode: repeated tiles verilate once as child
 #   libraries (declared in the generated cfg/$(TOP_MOD).vlt) and the monolithic build costs
@@ -402,6 +418,18 @@ prep-sim-verilator: update-hw
 	$(BENDER) script verilator $(VERILATOR_TARGETS) | grep -vE "$(VERILATOR_FLIST_EXCLUDE)" | grep -v '^+define+TARGET_SYNTHESIS' > $(OUT_DIR)/compile_verilator.f
 	@grep '^+incdir+' $(OUT_DIR)/compile_verilator.f | sort -u > $(OUT_DIR)/verilator_incdirs.f
 	@grep -v '^+incdir+' $(OUT_DIR)/compile_verilator.f > $(OUT_DIR)/compile_verilator_src.f
+	@# The license-free flow has no VHDL front-end, and bender's verilator script
+	@# silently drops .vhd sources: every VHDL entity of the graph (the CTU CAN FD
+	@# APB wrapper is the only one today) is replaced by an auto-generated SV stub
+	@# with tied-low outputs - the flow's one declared coverage loss
+	@# (docs/getting_started.md, section 8.3). The stubs land outside every
+	@# Bender-visible tree and enter this file list alone: the QuestaSim flows
+	@# keep simulating the true mixed-language sources.
+	@$(BENDER) script flist $(VERILATOR_TARGETS) | grep -iE '\.vhdl?$$' > $(OUT_DIR)/vhdl_sources.f || true
+	@if [ -s $(OUT_DIR)/vhdl_sources.f ]; then \
+		$(PYTHON) $(OLLIVANDER_ROOT)/scripts/gen_vhdl_stubs.py $(OUT_DIR)/vhdl_sources.f $(OUT_DIR)/vhdl_stubs && \
+		ls $(OUT_DIR)/vhdl_stubs/*.sv 2>/dev/null >> $(OUT_DIR)/compile_verilator_src.f || true; \
+	fi
 
 build-sim-verilator: prep-sim-verilator build-sw
 	@printf "\n[MAKE] Building Verilator model (hierarchical)...\n"
