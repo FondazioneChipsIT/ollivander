@@ -62,11 +62,17 @@ VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer
 # - -Wno-ENUMVALUE is the twin of run-sim's '-suppress 8386' (FlooNoC assigns the collective
 #   opcode from raw flit bits; upstream PR candidate);
 # - assertions are structurally off: no --assert, plus ASSERTS_OFF for the common_cells
-#   macros - the superset of the ASSERTIONS=0 vsim knob, matching the test suite's default.
+#   macros - the superset of the ASSERTIONS=0 vsim knob, matching the test suite's default;
+# - --relative-includes replicates vlog's include resolution (relative to the including
+#   file): without it every IP whose manifest omits its own include dir parses under vlog
+#   and dies under Verilator - softex and vendored ibex on the crossbar family;
+# - the component-declared defines (the DEFINE: mechanism, e.g. FEATURE_ICACHE_STAT) are
+#   appended below, mirroring what INJECT_MACROS_SCRIPT patches into every vlog call.
 VERILATOR_SIM_FLAGS ?= --cc --main --build --hierarchical -j $(VERILATOR_JOBS) \
 	--MAKEFLAGS "CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2" \
 	--timing --timescale 1ns/1ps -Wno-fatal -Wno-TIMESCALEMOD -Wno-ASCRANGE \
-	-Wno-SYMRSVDWORD -Wno-ENUMVALUE --error-limit 200 +define+ASSERTS_OFF
+	-Wno-SYMRSVDWORD -Wno-ENUMVALUE --error-limit 200 +define+ASSERTS_OFF \
+	--relative-includes${(" " + " ".join(["+define+" + d for d in global_defines])) if global_defines else ""}
 VERILATOR_RUN_FLAGS ?= +fast_boot
 VERILATOR_WORK ?= verilator_work
 # The C++20 coroutines require a modern compiler; RHEL hosts ship them as gcc-toolset SCLs.

@@ -116,26 +116,81 @@ module pulp_cluster_isle
   // ===============================================================================
   // The shipped default configuration with the AXI boundary geometry and the address
   // decode replaced by this isle's parameters. Everything else (core count, TCDM,
-  // caches, HMR, HWPEs, boot addresses) deliberately stays at PulpClusterDefaultCfg:
+  // caches, HMR, HWPEs, boot addresses) deliberately mirrors PulpClusterDefaultCfg:
   // those fields are entangled with compile-time defines of the cluster sources, and
   // no example exercises them yet - the residual items of future_evolution_tasks.md
-  // section 3.5. Copy-then-override is used instead of a full '{...} literal so that
-  // an upstream change to the default cannot silently diverge from this file.
-  function automatic pulp_cluster_package::pulp_cluster_cfg_t cluster_cfg();
-    pulp_cluster_package::pulp_cluster_cfg_t cfg;
-    cfg                 = pulp_cluster_package::PulpClusterDefaultCfg;
-    cfg.AxiAddrWidth    = AxiAddrWidth;
-    cfg.AxiDataInWidth  = AxiDataWidth;
-    cfg.AxiDataOutWidth = AxiDataWidth;
-    cfg.AxiUserWidth    = AxiUserWidth;
-    cfg.AxiIdInWidth    = AxiInIdWidth;
-    cfg.AxiIdOutWidth   = AxiOutIdWidth;
-    cfg.AxiCdcLogDepth  = LogDepth;
-    cfg.ClusterBaseAddr = ClusterBaseAddr;
-    return cfg;
-  endfunction
-
-  localparam pulp_cluster_package::pulp_cluster_cfg_t ClusterCfg = cluster_cfg();
+  // section 3.5. A full assignment pattern is used instead of copying the default in
+  // a constant function because Verilator's constant evaluator cannot read unpacked
+  // struct constants (SimulateVisitor: unknown node, hit on 5.050); the 'default'
+  // entry keeps the literal elaborable if upstream adds fields, and the counts that
+  // must track the defines stay referenced from the package rather than restated.
+  localparam pulp_cluster_package::pulp_cluster_cfg_t ClusterCfg = '{
+    CoreType:               pulp_cluster_package::RI5CY,
+    NumCores:               pulp_cluster_package::NumCores,          // = `NB_CORES
+    DmaNumPlugs:            pulp_cluster_package::NumDmas,           // = `NB_DMAS
+    DmaNumOutstandingBursts: 8,
+    DmaBurstLength:         5,
+    NumMstPeriphs:          pulp_cluster_package::NB_MPERIPHS,
+    NumSlvPeriphs:          pulp_cluster_package::NB_SPERIPHS,
+    ClusterAlias:           1,
+    ClusterAliasBase:       'h0,
+    NumSyncStages:          3,
+    UseHci:                 1,
+    TcdmSize:               128*1024,
+    TcdmNumBank:            16,
+    HwpePresent:            1,
+    HwpeCfg:                '{NumHwpes: 3,
+                              HwpeList: {pulp_cluster_package::SOFTEX,
+                                         pulp_cluster_package::NEUREKA,
+                                         pulp_cluster_package::REDMULE}},
+    HwpeNumPorts:           9,
+    HMRPresent:             1,
+    HMRDmrEnabled:          1,
+    HMRTmrEnabled:          1,
+    HMRDmrFIxed:            0,
+    HMRTmrFIxed:            0,
+    HMRInterleaveGrps:      1,
+    HMREnableRapidRecovery: 1,
+    HMRSeparateDataVoters:  1,
+    HMRSeparateAxiBus:      0,
+    HMRNumBusVoters:        1,
+    EnableECC:              1,
+    ECCInterco:             1,
+    iCacheNumBanks:         2,
+    iCacheNumLines:         1,
+    iCacheNumWays:          4,
+    iCacheSharedSize:       4*1024,
+    iCachePrivateSize:      512,
+    iCachePrivateDataWidth: 32,
+    EnableReducedTag:       1,
+    L2Size:                 1000*1024,
+    DmBaseAddr:             'h60203000,
+    BootRomBaseAddr:        'h1C008080,
+    BootAddr:               'h1C008080,
+    EnablePrivateFpu:       1,
+    EnablePrivateFpDivSqrt: 0,
+    NumAxiIn:               pulp_cluster_package::NumAxiSubordinatePorts,
+    NumAxiOut:              pulp_cluster_package::NumAxiManagerPorts,
+    // The AXI boundary geometry and the address decode: the isle's own parameters,
+    // the whole point of instantiating the IP directly (one constant, both sides).
+    AxiIdInWidth:           AxiInIdWidth,
+    AxiIdOutWidth:          AxiOutIdWidth,
+    AxiAddrWidth:           AxiAddrWidth,
+    AxiDataInWidth:         AxiDataWidth,
+    AxiDataOutWidth:        AxiDataWidth,
+    AxiUserWidth:           AxiUserWidth,
+    AxiMaxInTrans:          64,
+    AxiMaxOutTrans:         64,
+    AxiCdcLogDepth:         LogDepth,
+    AxiCdcSyncStages:       3,
+    SyncStages:             3,
+    ClusterBaseAddr:        ClusterBaseAddr,
+    ClusterPeriphOffs:      'h00200000,
+    ClusterExternalOffs:    'h00400000,
+    EnableRemapAddress:     0,
+    SnitchICache:           0,
+    default:                '0
+  };
 
   // Direct instantiation of the IP: with the CDC geometry on both sides derived from
   // the same parameters, every async port width matches by construction and the ID
