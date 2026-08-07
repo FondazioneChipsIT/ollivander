@@ -222,19 +222,6 @@ dependencies:
   obi:
     git: "https://github.com/pulp-platform/obi.git"
     version: "0.1.7"
-    # obi_to_apb uses the same common_cells assertion macros as its twin apb_to_obi but
-    # without the OBI_ASSERTS_OFF guard the twin has - an upstream inconsistency (PR
-    # candidate). Under Verilator's single compilation unit OpenTitan's prim_assert
-    # dummy macros win the name collision and these calls stop parsing, so the verilator
-    # flow defines OBI_ASSERTS_OFF; the guard makes that switch actually cover the file.
-    # No behavioural change for QuestaSim, where the define is never set.
-    patches:
-      - file: "{bender_work}/obi/src/obi_to_apb.sv"
-        search: "  `ASSERT_INIT(no_rready, ObiCfg.UseRReady == 0,"
-        replace: "`ifndef OBI_ASSERTS_OFF\n  `ASSERT_INIT(no_rready, ObiCfg.UseRReady == 0,"
-      - file: "{bender_work}/obi/src/obi_to_apb.sv"
-        search: "      \"Address width mismatch between APB and OBI ports!\")"
-        replace: "      \"Address width mismatch between APB and OBI ports!\")\n`endif"
   # Transitive dependencies (pulled in by pulp_cluster / redmule / hci): never declared
   # by a pragma, listed here only to carry patches - run_pre_build_steps applies patches
   # to any entry whose checkout exists, and an entry with no git source contributes
@@ -243,14 +230,6 @@ dependencies:
   # hier-icache: a raw SVA property block guarded by SYNTHESIS alone, so every simulator
   # sees it; Verilator cannot parse the ##[0:1] cycle-delay range (upstream PR candidate:
   # extend the guard). The added VERILATOR guard nests inside the SYNTHESIS one.
-  hier-icache:
-    patches:
-      - file: "{bender_work}/hier-icache/RTL/L1.5_CACHE/share_icache.sv"
-        search: "   property valid_2_ready;"
-        replace: "`ifndef VERILATOR\n   property valid_2_ready;"
-      - file: "{bender_work}/hier-icache/RTL/L1.5_CACHE/share_icache.sv"
-        search: "       $display(\"@%0dns shared icache ready_2_valid assertion Failed\", $time);"
-        replace: "       $display(\"@%0dns shared icache ready_2_valid assertion Failed\", $time);\n`endif"
   # hwpe-ctrl: hwpe_ctrl_slave drives its packed flags_o struct with mixed styles - start,
   # evt, is_working and sw_evt non-blocking in always_ff processes, done and enable
   # combinationally - which is legal SV that QuestaSim accepts but Verilator rejects as
@@ -274,6 +253,7 @@ dependencies:
       - "$(PYTHON) {ollivander_dir}/scripts/patch_ibex_prim_asserts.py {bender_work}"
   # neureka: a 36-bit literal in a 9-bit case item; QuestaSim truncates it to the same
   # 9'h1ff Verilator refuses to guess (upstream PR candidate: fix the literal).
+  # Re-verified failing on Verilator 5.050 on 2026-08-07 (registry audit, wip 3.7).
   neureka:
     patches:
       - file: "{bender_work}/neureka/rtl/ctrl/neureka_ctrl.sv"

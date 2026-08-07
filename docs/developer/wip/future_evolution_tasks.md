@@ -174,11 +174,11 @@ The audit is a TRIAGE first and experiments second — revalidating everything e
 | 13 | idma `pip flatdict mako` + `make idma_hw_all` | 1 | static: `util/mario/tracer.py` imports flatdict; generates idma RTL |
 | 14 | snitch_cluster `pip` + llvm symlinks + `make rtl` | 1 | meta-generation, every mesh generate breaks without |
 | 15 | `datamover` ×2 (dead ports) | 1 | tied to the hci forcing (active); PINNOTFOUND is stable Verilator behaviour |
-| 16 | `obi` ×2 (`OBI_ASSERTS_OFF` guard) | **2** | the define appears NOWHERE in the flow today (template or generated Makefile) — the guard may be inert; and with the ibex signatures aligned, the macros may parse regardless. First candidate for a flow-evolution-obsoleted patch |
-| 17 | `hier-icache` ×2 (SVA `##[0:1]` guard) | **2** | verified on 5.041, never re-probed on 5.050 (likely still needed) |
-| 18 | `neureka` (36-bit literal in 9-bit case) | **2** | found on 5.041; Verilator width checking presumably stable, never re-probed |
+| 16 | `obi` ×2 (`OBI_ASSERTS_OFF` guard) | **3 — REMOVED 2026-08-07** | proven inert without an experiment: the define is set nowhere, so the guarded code was always active — and it compiled cleanly under Verilator in the 2026-08-06 nightly. The prim-assert signature alignment removed the root cause |
+| 17 | `hier-icache` ×2 (SVA `##[0:1]` guard) | **3 — REMOVED 2026-08-07** | re-probed on 5.050: `share_icache.sv` parses cleanly, the cycle-delay range is supported now. Obsoleted by the 5.041→5.050 bump |
+| 18 | `neureka` (36-bit literal in 9-bit case) | **1** | re-probed 2026-08-07: still fails on 5.050 (`neureka_ctrl.sv:1044`). Kept, comment dated |
 
-All three category-2 experiments are at Verilator *fast-check* level (~1 minute each), not full-run level. No category-3 entry today: the last suite's generation logs show no "Stale patch" warnings and no target has left the graph.
+Audit executed on 2026-08-07: two of the three doubtful entries were historical (`obi`, `hier-icache` — removed), one was re-confirmed (`neureka`). Every remaining entry is category 1 with dated evidence; the next audit is due when a tool or pin moves.
 
 ## 4. Input Validation: What Is Still Missing
 
