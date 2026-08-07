@@ -1263,20 +1263,40 @@ class RTLGenerator:
         lines = ["`verilator_config"]
 
         def _wrapper_params_ok(module):
-            """Parameter rule shared by both topologies: a wrapper whose header
-            declares type or struct-typed parameters, or parameter defaults that
-            read members of struct constants (e.g. AxiCfgJoin.AddrWidth), cannot
-            be rebuilt by Verilator 5.050's hier-parameters wrapper (internal
-            error, reported upstream) and must stay in the top unit."""
+            """Parameter rule shared by both topologies: a wrapper carrying a TYPE in
+            its parameterization cannot be a hier_block, because Verilator 5.050
+            serializes it into __hierParameters.v as a typedef and then fails on its
+            own output (V3LinkDot.cpp:496 internal error, reported upstream).
+
+            Two forms trip it, both established by probe rather than assumed
+            (2026-08-06): a real `parameter type` in the header — which the crossbar's
+            sync isles carry, since the generator injects the SoC's AXI types there —
+            and a body `localparam type`, which Verilator counts as parameterization
+            too. The templates no longer emit the latter, so the check guards against
+            its reappearance rather than any current wrapper.
+
+            Deliberately nothing else. Two earlier criteria were dropped once probed:
+            parameter defaults reading struct members (e.g. `= AxiCfgJoin.AddrWidth`)
+            build perfectly well, and they had been excluding the heaviest memory tiles
+            for nothing; package-qualified struct parameters never matched any wrapper
+            in any example. The rule errs on the permissive side on purpose, because
+            the two mistakes are not symmetric: admitting a module that cannot be built
+            fails loudly at verilation, naming the module, while excluding one that
+            could be built is silent forever - slower builds nobody attributes to a
+            rule they cannot see. Add a criterion only with a probe behind it."""
             wrapper = hw_dir / f"{module}.sv"
             if not wrapper.is_file():
                 return True
-            header = wrapper.read_text(encoding="utf-8", errors="ignore")
-            header = header.split(") (", 1)[0]
-            if re.search(r"parameter\s+type\s|parameter\s+\w+_pkg::", header) \
-               or re.search(r"parameter[^;)\n]*=\s*\w+\.\w+", header):
-                print(f"  -> vlt: skipping {module} (parameters the hierarchical "
-                      f"verilation wrapper cannot rebuild)")
+            text = wrapper.read_text(encoding="utf-8", errors="ignore")
+            header = text.split(") (", 1)[0]
+            reason = None
+            if re.search(r"parameter\s+type\s", header):
+                reason = "a 'parameter type' in its header"
+            elif re.search(r"^\s*localparam\s+type\s", text, re.M):
+                reason = "a body 'localparam type'"
+            if reason:
+                print(f"  -> vlt: skipping {module} ({reason}: Verilator cannot rebuild "
+                      f"a type in a hier_block's parameterization)")
                 return False
             return True
 

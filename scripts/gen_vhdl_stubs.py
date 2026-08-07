@@ -57,7 +57,24 @@ GENERIC_TYPES = {
     "boolean": "bit",
     "std_logic": "logic",
 }
-BOOL_LITERALS = {"true": "1'b1", "false": "1'b0"}
+BOOL_LITERALS = {"true": "1'b1", "false": "1'b0", "'0'": "1'b0", "'1'": "1'b1"}
+
+# A VHDL declaration may open with an object class keyword ('constant g : natural',
+# 'signal p : in std_logic'); it is noise for the stub and must not end up in the name.
+OBJECT_CLASS = re.compile(r"^\s*(?:constant|signal|variable)\s+", re.I)
+
+# VHDL has no reserved-word clash with these, SystemVerilog does: an entity whose port
+# or generic is named after one of them cannot be transcribed at all, and is skipped.
+SV_KEYWORDS = {
+    "input", "output", "inout", "wire", "logic", "reg", "module", "endmodule", "parameter",
+    "localparam", "begin", "end", "assign", "always", "initial", "function", "task", "generate",
+    "genvar", "if", "else", "case", "endcase", "default", "signed", "unsigned", "bit", "byte",
+    "int", "integer", "real", "time", "type", "class", "package", "interface", "program",
+    "return", "break", "continue", "force", "release", "disable", "event", "wait", "posedge",
+    "negedge", "edge", "and", "or", "not", "xor", "nand", "nor", "xnor", "buf", "supply0",
+    "supply1", "tri", "wand", "wor", "config", "cell", "instance", "library", "use", "do",
+    "while", "for", "forever", "repeat", "static", "automatic", "const", "ref", "var",
+}
 
 
 def _strip_comments(text):
@@ -106,6 +123,7 @@ def _split_decls(block):
 
 def _parse_generic(decl):
     """'name : natural range 32 to 4098 := 128' -> ('int unsigned', 'name', '128')."""
+    decl = OBJECT_CLASS.sub("", decl)
     m = re.match(r"^\s*([\w\s,]+?)\s*:\s*(\w+)(?:\s+range\b[^:=]*)?\s*(?::=\s*(.+?))?\s*$",
                  decl, re.S)
     if not m:
@@ -121,6 +139,7 @@ def _parse_generic(decl):
 
 def _parse_port(decl):
     """'a, b : in std_logic_vector(7 downto 0)' -> [('input', 'logic [7:0]', name)...]."""
+    decl = OBJECT_CLASS.sub("", decl)
     m = re.match(r"^\s*([\w\s,]+?)\s*:\s*(in|out|inout)\s+(\w+)\s*(\(.*\))?\s*$",
                  decl, re.I | re.S)
     if not m:
@@ -162,6 +181,12 @@ def stub_for_entity(name, body, src):
             if parsed is None:
                 return None, f"unmappable port '{decl.strip()[:50]}'"
             ports.extend(parsed)
+
+    clash = sorted({n for _, n, _ in generics} | {n for _, _, n in ports}
+                   if generics or ports else set())
+    clash = [n for n in clash if n.lower() in SV_KEYWORDS]
+    if clash:
+        return None, f"port/generic named after a SystemVerilog keyword ({', '.join(clash)})"
 
     lines = [
         f"// AUTO-GENERATED STUB - do not edit, do not compile under QuestaSim.",

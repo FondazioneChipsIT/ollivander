@@ -360,7 +360,7 @@ A few practical differences with respect to the QuestaSim flow are worth knowing
 > [!NOTE]
 > The Verilator simulation flow is validated end-to-end (identical UART output and EOT against QuestaSim) on the `noc` and `crossbar` examples — one SoC per topology family. Every example passes the Verilator `fast-check`. See `docs/developer/wip/future_evolution_tasks.md`, chapter 5, for the remaining work.
 
-The test suite can drive the Verilator backend for its simulation leg with:
+The test suite can drive the Verilator backend for its simulation leg with `SIM_TOOLS`, which takes a list: naming both simulators runs each in turn against the same generated tree, and leaves one summary attesting both.
 ```bash
-make test-all TEST_PROJECTS="noc" TEST_SIM=1 TEST_SIM_TOOL=verilator
+make test-all TEST_PROJECTS="noc" TEST_SIM=1 SIM_TOOLS=verilator
 ```

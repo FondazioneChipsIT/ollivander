@@ -961,15 +961,15 @@ module ${p_name}_${c_type}
           val = "'0" if p_info["dir"] == "input" else ""
           isle_connections.append(f".{port_name:<17} ( {val} )")
 %>
-% if isle_type_overrides:
-  // Internal type overrides for the Isle (defined at the bottom to ensure they can use the local typedefs)
-  % for k, v in sorted(isle_type_overrides.items()):
-    % if k.endswith('_t'):
-  localparam type ${k} = ${v};
-    % endif
-  % endfor
-
-% endif
+## The type overrides used to be mirrored here as 'localparam type' declarations. They
+## were dead: the Isle instantiation below already receives each override directly
+## (.axi_req_t ( axi_nw_join_req_t )), and no generated tile of any example ever
+## referenced the localparam names — verified across all seven projects on 2026-08-06.
+## Dead was not harmless: Verilator counts a body 'localparam type' as part of a
+## hier_block's parameterization, serializes it into __hierParameters.v as a typedef,
+## and then fails on its own output with an internal error (V3LinkDot.cpp:496). That is
+## what kept the L2 and wide-SPM tiles out of the hierarchical build, wrongly blamed on
+## their struct-member parameter defaults until a probe separated the two.
 
   // =======================================================================
   // 3. ISLE INSTANTIATION (${isle_name})

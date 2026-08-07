@@ -13,7 +13,7 @@
 #   TEST_CLEAN_SETUP  : Recreate Python virtual environment first (1/0, default 0)
 #   FAST_CHECK_TOOLS  : Tools to use for the fast-check (e.g. questa, verilator)
 #   TEST_SIM          : Build and run simulation tests (1/0, default 0)
-#   TEST_SIM_TOOL     : Simulator for the TEST_SIM leg: questa (default) or verilator
+#   SIM_TOOLS         : Simulator(s) for the TEST_SIM leg: questa (default), verilator, or both
 #
 # Usage:
 #   make test-all TEST_CLEAN=1 FAST_CHECK_TOOLS="questa" TEST_SIM=1
@@ -28,33 +28,26 @@ TEST_CLEAN_SETUP ?= 0
 TEST_SIM         ?= 0
 FAST_CHECK_TOOLS ?= questa
 
-# Simulator backend for the TEST_SIM leg: 'questa' (default) drives build-sim/run-sim,
-# 'verilator' drives the license-free *-verilator twins. The pass criterion is the same
-# ('[UART]:' output in the captured run log). The Verilator backend is validated end-to-end
-# on the noc example only so far; the other projects are covered by fast-check.
-TEST_SIM_TOOL ?= questa
-ifeq ($(TEST_SIM_TOOL),verilator)
-  SIM_BUILD_TARGET := build-sim-verilator
-  SIM_RUN_TARGET   := run-sim-verilator
-  SIM_RUN_ARGS     :=
-else
-  SIM_BUILD_TARGET := build-sim
-  SIM_RUN_TARGET   := run-sim
-  SIM_RUN_ARGS     := ASSERTIONS=0
-endif
+# Simulator backends for the TEST_SIM leg, run in the order given: 'questa' drives
+# build-sim/run-sim, 'verilator' the license-free twins. A list, exactly like
+# FAST_CHECK_TOOLS - naming both compares the two backends against the SAME generated
+# tree, and leaves a single summary attesting both, which is what 'check-tested' reads.
+# The pass criterion is identical ('[UART]:' in the captured run log).
+SIM_TOOLS ?= questa
 
 # "tool:module" pairs for ensure-tools (defined in ollivander.mk): a tool already
 # on PATH is never displaced, a missing one is loaded from Environment Modules
-# where available. The simulator required by the TEST_SIM leg follows TEST_SIM_TOOL.
+# where available. The simulators required by the TEST_SIM leg follow SIM_TOOLS.
 TOOL_PAIRS := bender:bender riscv64-unknown-elf-gcc:riscv-gcc
 ifneq ($(filter questa,$(FAST_CHECK_TOOLS)),)
   TOOL_PAIRS += vsim:questa
 endif
 ifneq ($(filter 1,$(TEST_SIM)),)
-  ifeq ($(TEST_SIM_TOOL),verilator)
-    TOOL_PAIRS += verilator:verilator
-  else
+  ifneq ($(filter questa,$(SIM_TOOLS)),)
     TOOL_PAIRS += vsim:questa
+  endif
+  ifneq ($(filter verilator,$(SIM_TOOLS)),)
+    TOOL_PAIRS += verilator:verilator
   endif
 endif
 ifneq ($(filter verilator,$(FAST_CHECK_TOOLS)),)
@@ -113,7 +106,7 @@ test-all:
 	@echo "======================================================================"
 	@$(call ensure-tools,$(sort $(TOOL_PAIRS))); \
 	fmt_dur() { printf "%02d:%02d:%02d" $$(($$1/3600)) $$(($$1%3600/60)) $$(($$1%60)); }; \
-	log_step() { printf "  -> %-22s : %s\n" "$$1" "$$2" >> soc_cfg_examples/test_summary.log; }; \
+	log_step() { printf "  -> %-28s : %s\n" "$$1" "$$2" >> soc_cfg_examples/test_summary.log; }; \
 	close_project() { log_step "Project Total Time" "$$(fmt_dur $$(( $$(date +%s) - $$1 )))"; echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; }; \
 	suite_start=$$(date +%s); \
 	if [ "$(TEST_CLEAN_SETUP)" = "1" ]; then \
@@ -139,6 +132,7 @@ test-all:
 	echo "Project Directories Tested : $(TEST_PROJECTS)" >> soc_cfg_examples/test_summary.log; \
 	echo "Tools Checked   : $(FAST_CHECK_TOOLS)" >> soc_cfg_examples/test_summary.log; \
 	echo "Run Simulation  : $(TEST_SIM)" >> soc_cfg_examples/test_summary.log; \
+	echo "Sim Tools       : $(SIM_TOOLS)" >> soc_cfg_examples/test_summary.log; \
 	echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; \
 	failed_tests=""; \
 	for p in $(TEST_PROJECTS); do \
@@ -210,36 +204,44 @@ test-all:
 		done; \
 		if [ "$(TEST_SIM)" = "1" ]; then \
 			if [ -f "soc_cfg_examples/$$p/generated/Makefile.sim" ]; then \
-				echo "  -> Compiling simulation for project $$proj_name..."; \
-				mkdir -p soc_cfg_examples/$$p/logs; \
-				step_start=$$(date +%s); \
-				$(MAKE) -C soc_cfg_examples/$$p $(SIM_BUILD_TARGET) > soc_cfg_examples/$$p/logs/test_build_sim.log 2>&1; \
-				step_rc=$$?; \
-				step_dur=$$(fmt_dur $$(( $$(date +%s) - step_start ))); \
-				if [ $$step_rc -ne 0 ]; then \
-					echo "[ERROR] Simulation build failed for project $$proj_name! Check soc_cfg_examples/$$p/logs/test_build_sim.log"; \
-					log_step "Simulation Build" "FAILED [$$step_dur] (Check soc_cfg_examples/$$p/logs/test_build_sim.log)"; \
-					failed_tests="$$failed_tests $$p(build-sim)"; \
-				else \
-					log_step "Simulation Build" "SUCCESS [$$step_dur]"; \
-					echo "  -> Running simulation for project $$proj_name..."; \
+				for stool in $(SIM_TOOLS); do \
+					if [ "$$stool" = "verilator" ]; then \
+						sim_bt=build-sim-verilator; sim_rt=run-sim-verilator; sim_ra=""; \
+					else \
+						sim_bt=build-sim; sim_rt=run-sim; sim_ra="ASSERTIONS=0"; \
+					fi; \
+					blog=soc_cfg_examples/$$p/logs/test_build_sim_$$stool.log; \
+					rlog=soc_cfg_examples/$$p/logs/test_run_sim_$$stool.log; \
+					echo "  -> Compiling simulation ($$stool) for project $$proj_name..."; \
 					mkdir -p soc_cfg_examples/$$p/logs; \
 					step_start=$$(date +%s); \
-					$(MAKE) -C soc_cfg_examples/$$p $(SIM_RUN_TARGET) $(SIM_RUN_ARGS) > soc_cfg_examples/$$p/logs/test_run_sim.log 2>&1; \
+					$(MAKE) -C soc_cfg_examples/$$p $$sim_bt > $$blog 2>&1; \
 					step_rc=$$?; \
 					step_dur=$$(fmt_dur $$(( $$(date +%s) - step_start ))); \
 					if [ $$step_rc -ne 0 ]; then \
-						echo "[ERROR] Simulation run failed for project $$proj_name! Check soc_cfg_examples/$$p/logs/test_run_sim.log"; \
-						log_step "Simulation Run" "FAILED [$$step_dur] (Check soc_cfg_examples/$$p/logs/test_run_sim.log)"; \
-						failed_tests="$$failed_tests $$p(run-sim)"; \
-					elif ! grep -q "\[UART\]:" soc_cfg_examples/$$p/logs/test_run_sim.log; then \
-						echo "[ERROR] Simulation run completed but no UART output was detected for project $$proj_name! Check soc_cfg_examples/$$p/logs/test_run_sim.log"; \
-						log_step "Simulation Run" "FAILED [$$step_dur] (No UART output detected)"; \
-						failed_tests="$$failed_tests $$p(run-sim-no-uart)"; \
+						echo "[ERROR] Simulation build ($$stool) failed for project $$proj_name! Check $$blog"; \
+						log_step "Simulation Build ($$stool)" "FAILED [$$step_dur] (Check $$blog)"; \
+						failed_tests="$$failed_tests $$p(build-sim-$$stool)"; \
 					else \
-						log_step "Simulation Run" "SUCCESS [$$step_dur]"; \
+						log_step "Simulation Build ($$stool)" "SUCCESS [$$step_dur]"; \
+						echo "  -> Running simulation ($$stool) for project $$proj_name..."; \
+						step_start=$$(date +%s); \
+						$(MAKE) -C soc_cfg_examples/$$p $$sim_rt $$sim_ra > $$rlog 2>&1; \
+						step_rc=$$?; \
+						step_dur=$$(fmt_dur $$(( $$(date +%s) - step_start ))); \
+						if [ $$step_rc -ne 0 ]; then \
+							echo "[ERROR] Simulation run ($$stool) failed for project $$proj_name! Check $$rlog"; \
+							log_step "Simulation Run ($$stool)" "FAILED [$$step_dur] (Check $$rlog)"; \
+							failed_tests="$$failed_tests $$p(run-sim-$$stool)"; \
+						elif ! grep -q "\[UART\]:" $$rlog; then \
+							echo "[ERROR] Simulation run ($$stool) completed but no UART output was detected for project $$proj_name! Check $$rlog"; \
+							log_step "Simulation Run ($$stool)" "FAILED [$$step_dur] (No UART output detected)"; \
+							failed_tests="$$failed_tests $$p(run-sim-$$stool-no-uart)"; \
+						else \
+							log_step "Simulation Run ($$stool)" "SUCCESS [$$step_dur]"; \
+						fi; \
 					fi; \
-				fi; \
+				done; \
 			else \
 				echo "  [INFO] No simulation Makefile found for project $$p. Skipping simulation."; \
 				log_step "Simulation" "SKIPPED (no generated/Makefile.sim)"; \
@@ -310,7 +312,7 @@ check-tested:
 			if [ -f "$$f" ] && [ "$$(stat -c %Y "$$f")" -gt "$$start" ]; then echo "    $$f"; fi; \
 		done); \
 	echo "[CHECK] Scope of the last suite:"; \
-	grep -E "^Project Directories Tested|^Tools Checked|^Run Simulation" "$$summary" | sed 's/^/    /'; \
+	grep -E "^Project Directories Tested|^Tools Checked|^Run Simulation|^Sim Tools" "$$summary" | sed 's/^/    /'; \
 	if [ -n "$$newer" ]; then \
 		echo "[CHECK] These sources changed after that suite started:"; \
 		echo "$$newer"; \
