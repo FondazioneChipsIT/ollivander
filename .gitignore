@@ -66,3 +66,8 @@ target/
 fast_check.log
 .tmp_llvm_bin/
 logs/
+
+# A stray bender binary: the official installer drops it in the CURRENT directory,
+# so a manual run from a project folder leaves a 13 MB executable there (found once,
+# 2026-08-07). The generated Makefile installs into .venv/bin instead.
+soc_cfg_examples/*/bender

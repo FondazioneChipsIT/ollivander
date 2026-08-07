@@ -121,9 +121,14 @@ with open("logs/debug/debug_testbench.txt", "w") as f:
 %>\
 BENDER_TARGETS ?= ${bender_targets_str}
 
+# Fallback when bender is neither on PATH nor loadable as a module: it is installed
+# into the generator's virtual environment bin/, the same place getting_started.md
+# tells a user to put a manual install - never into the project directory, where the
+# 2026-08-07 audit found a stray binary polluting git status (it is not ignored there,
+# and the installer's tarball timestamps make it look months old).
 BENDER_PREREQ :=
 ifeq (, $(shell command -v $(BENDER) 2> /dev/null))
-  BENDER = $(abspath ./bender)
+  BENDER = $(OLLIVANDER_ROOT)/.venv/bin/bender
   BENDER_PREREQ = $(BENDER)
 endif
 
@@ -140,9 +145,10 @@ endef
 export INJECT_MACROS_SCRIPT
 % endif
 
-$(abspath ./bender):
-	@printf "\n[MAKE] Downloading Bender...\n"
-	@curl --proto '=https' --tlsv1.2 -sSf https://fabianschuiki.github.io/bender/init | bash -s -- 0.31.0
+$(OLLIVANDER_ROOT)/.venv/bin/bender:
+	@printf "\n[MAKE] Bender not found on PATH: installing 0.31.0 into the virtual environment...\n"
+	@mkdir -p $(OLLIVANDER_ROOT)/.venv/bin
+	@cd $(OLLIVANDER_ROOT)/.venv/bin && curl --proto '=https' --tlsv1.2 -sSf https://fabianschuiki.github.io/bender/init | bash -s -- 0.31.0
 
 .PHONY: prep-sim build-sim run-sim fast-check build-sw prep-sim-verilator build-sim-verilator run-sim-verilator
 
