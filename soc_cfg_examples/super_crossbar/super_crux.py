@@ -397,6 +397,11 @@ config = OllivanderConfig(
     software_stack={
         "toolchain": "riscv64-unknown-elf-",
         "boot_memory": "l2_shared_memory",
-        "test_app": {"name": "hello_world", "auto_generate_c": True}
+        "test_app": {"name": "hello_world", "auto_generate_c": True,
+                     # Simulation-fast UART (divisor 3, ~2.08 Mbaud effective): at 115200
+                     # the UART dominates the run. The generator keeps firmware and
+                     # testbench monitor on the same divisor; drop the key to return to
+                     # 115200 for a physical terminal.
+                     "baudrate": 2000000}
     }
 )

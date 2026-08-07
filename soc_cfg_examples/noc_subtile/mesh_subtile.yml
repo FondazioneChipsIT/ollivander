@@ -296,3 +296,7 @@ software_stack:
   test_app:
     name: "hello_world"
     auto_generate_c: true            # Instructs Ollivander to create a basic main.c
+    # Simulation-fast UART (divisor 3, ~2.08 Mbaud effective): at 115200 the UART
+    # dominates the run. The generator keeps firmware and testbench monitor on the
+    # same divisor; drop the key to return to 115200 for a physical terminal.
+    baudrate: 2000000

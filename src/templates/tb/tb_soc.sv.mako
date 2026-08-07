@@ -446,8 +446,11 @@ if not uart_base:
   // ===========================================================================
   // UART TX Monitor (Self-contained serial receiver dynamically bound to top-level UART port)
   // ===========================================================================
-  localparam real BaudRate = 115200.0;
-  localparam real BitPeriodNs = 1_000_000_000.0 / BaudRate; // ~8680.55 ns per bit
+  // Timed on the divisor the firmware actually programs, not on a nominal baud: the
+  // divisor is an integer, so the real rate is uart_freq/(16*divisor) and the two would
+  // disagree by percents at high speed - enough to mis-sample a frame's last bits.
+  localparam real BitPeriodNs = 16.0 * ${uart_divisor} * (1_000_000_000.0 / ${uart_freq}.0);
+  localparam real BaudRate = 1_000_000_000.0 / BitPeriodNs;
 
   logic [7:0] rx_char;
   string rx_string;

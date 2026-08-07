@@ -65,10 +65,9 @@ if not uart_base:
         uart_base = "0x03002000" # Default internal Cheshire UART base
 %>
 <%
-  # The system/peripheral clock frequency in simulation is 100 MHz (10ns period)
-  # Divisor calculation for 115200 baud: F_clk / (16 * BaudRate)
-  uart_freq = 100000000
-  divisor = int(uart_freq / (16 * 115200))
+  # The 16550 divisor, resolved by the generator from software_stack.test_app.baudrate
+  # so that the testbench monitor times itself on the very same value (rtl_generator.py).
+  divisor = uart_divisor
 %>
 
 % if uart_base:

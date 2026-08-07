@@ -427,6 +427,7 @@ Defines the parameters for automated bare-metal C firmware generation and compil
 **Test App Object**:
 *   `name`: String. The base name used for the output files (`<name>.elf`, `<name>.hex`).
 *   `auto_generate_c`: Boolean. If `true`, Ollivander creates a starter `main.c` file. This file automatically `#include`s the generated hardware headers (e.g., `<project>_map.h` and `<project>_regs.h`) so you have immediate access to all peripheral base addresses, IRQs, and PeakRDL generated CSR macros.
+*   `baudrate`: Integer, optional (default `115200`). The UART rate the generated firmware programs. The generator converts it into the 16550 divisor and times the testbench's UART monitor on that **same divisor**, so the two sides cannot disagree — the divisor is an integer, and at high rates the true line rate differs from the nominal value by a few percent. Raising it is the single largest lever on simulation wall-clock time, because at 115200 a character costs ~87 µs of simulated time and the UART dominates a hello-world run: at `2000000` (divisor 3) the shipped examples close about **11× sooner**, which under Verilator turns an hour-long run into minutes. The examples ship with this value; lower it back to `115200` (or omit the key) when the firmware must drive a physical terminal.
 
 **Example:**
 ```yaml
@@ -436,6 +437,7 @@ software_stack:
   test_app:
     name: "hello_world"
     auto_generate_c: true
+    baudrate: 2000000
 ```
 ---
 

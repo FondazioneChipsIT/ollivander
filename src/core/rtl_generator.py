@@ -876,9 +876,27 @@ class RTLGenerator:
             noc_id_widths = resolve_noc_id_widths(self.soc_config, self.env.component_paths,
                                                   self.original_isle_types)
 
+        # UART baud, resolved once for the two consumers that must agree on it: the
+        # firmware, which programs the 16550 divisor, and the testbench monitor, which
+        # samples the line. What they share is the DIVISOR, not the nominal baud: the
+        # divisor is an integer, so the rate the hardware actually produces is
+        # uart_freq/(16*divisor), and at high rates that differs from the nominal by
+        # percents (a nominal 2 Mbaud lands on 2.083 with divisor 3). A monitor timed on
+        # the nominal value would drift across a frame and mis-sample the stop bit.
+        # Raising the baud is the largest lever on Verilator run time, where every idle
+        # bit-cycle is evaluated (future_evolution_tasks.md, chapter 5).
+        uart_freq = 100_000_000
+        uart_baudrate = 115200
+        if getattr(self.soc_config, "software_stack", None):
+            uart_baudrate = int(self.soc_config.software_stack.get("test_app", {})
+                                .get("baudrate", uart_baudrate))
+        uart_divisor = max(1, round(uart_freq / (16 * uart_baudrate)))
+
         template_kwargs = {
             "sys_regs_addr_width": sys_regs_addr_width,
             "config": self.soc_config,
+            "uart_freq": uart_freq,
+            "uart_divisor": uart_divisor,
             "noc_id_widths": noc_id_widths,
             "noc_user_widths": noc_user_widths,
             "ir": ir,

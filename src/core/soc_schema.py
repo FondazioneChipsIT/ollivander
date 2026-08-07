@@ -830,7 +830,7 @@ _ROOT_BLOCK_SPEC = {
                   "boot_timeout_ns": int, "boot_timeout_fast_ns": int, "sim_timeout_ns": int,
                   "preload_memories": [{"instance": str, "file": str}]},
     "software_stack": {"toolchain": str, "boot_memory": str,
-                       "test_app": {"name": str, "auto_generate_c": bool}},
+                       "test_app": {"name": str, "auto_generate_c": bool, "baudrate": int}},
 }
 
 

@@ -51,7 +51,17 @@ First, in the examples that boot from an always-on memory (`mesh` and `mesh_subt
 
 Second, the boot image still reaches memory through a simulation-only `$readmemh`, whereas silicon loads it through the debug module.
 
-Note that gwaihir never solved either problem: a whole-repository search finds no bring-up sequence at all, and its own `sw/cheshire/tests/access_l2.c` accesses the L2 tiles without enabling them, which cannot work against gated hardware. Implementing the firmware side would make Ollivander's examples strictly more correct than the design they are modelled on.
+Note that gwaihir solved only half of this, and differently than first recorded here (corrected 2026-08-07 after re-reading its testbench): its TB brings the tiles up through REAL external interfaces — `jtag_enable_tiles()` / `slink_enable_tiles()` write the reset and clock-enable registers via the debug module or the serial link, which is strictly more silicon-representative than our forces — but the firmware side is still absent, and its own `sw/cheshire/tests/access_l2.c` accesses the L2 tiles without enabling them, which cannot work against gated hardware. Its 105-line testbench is also the reference architecture for section 2.1: one fixture, plusarg-selected boot and preload modes (JTAG / serial link / UART / SRAM backdoor) coexisting as runtime choices of a single binary. Implementing the firmware side would still make Ollivander's examples strictly more correct than both references.
+
+### 2.1 A Generic Verification IP (`vip_ollivander_soc`)
+
+Decided on 2026-08-07: the testbench half of this chapter takes the shape of a generated, IP-agnostic verification IP, modelled on Cheshire's `vip_cheshire_soc` but bound to the standard interfaces every Ollivander SoC exposes rather than to one host's internals. Agents, in implementation order:
+
+*   **Clock / reset / bootmode drivers** and the **UART RX agent**, which replaces today's inline monitor and inherits the shared-divisor timing of the fast-UART knob unchanged (the knob lives in the firmware side and is untouched by this work).
+*   A **JTAG agent** on the riscv-dbg debug module: memory preload through the debug bus, bring-up by writing the system-controller registers, end-of-computation by polling — replacing the testbench's dotted-path forces as the *silicon-representative* path. The generic base ships with riscv-dbg itself (`tb/jtag_dmi/jtag_test.sv`, already in every graph; opentitan's vendored duplicate was removed on 2026-08-06 precisely so the two cannot collide in Verilator's single compilation unit).
+*   Later, a **UART TX / uart-boot agent** (loading binaries over the serial line, which the fast baud accelerates too).
+
+Two design constraints, both learned from Cheshire's VIP: JTAG preload is slow in simulation (bit-banged scan chains), so `$readmemh` stays as the fast regression path and the VIP boot becomes a selectable `testbench.boot_mode`; and the VIP must stay IP-agnostic — it talks RISC-V Debug Spec, 16550 and pins, never a host's package. The prize beyond silicon fidelity: with the forces gone, the host isle no longer needs to live in the Verilator top unit, shrinking it to the bare interconnect.
 
 #### Advantages
 *   **Removes the Testbench Dependency**: The design brings itself up, so the simulation stops relying on a sequence that has no counterpart on silicon.
@@ -135,6 +145,41 @@ The core of this task landed on 2026-08-05: `pulp_cluster_isle` instantiates `pu
 
 ---
 
+### 3.7 Audit of the Dependency Registry's Patches and Pre-Build Commands
+
+The registry has accumulated its repairs incrementally — 14 inline patch triples and 11 pre-build commands as of 2026-08-07, plus the per-IP scripts they invoke — and each was added against the toolchain of its day. Several are suspected to be historical: the Verilator 5.041→5.050 bump alone dissolved a whole class of workarounds, and the 2026-08-06 manifest cleanups changed what even reaches the compilers. A stale patch is not just dead weight: it documents a defect that may no longer exist, misleading the next reader.
+
+The audit is a TRIAGE first and experiments second — revalidating everything experimentally would be the wrong instrument, because the cost of one experiment depends on which tool the entry serves: a QuestaSim-only repair revalidates in a ~50-minute suite pass, but an entry that exists FOR Verilator (the packed-ification above all) needs the dual-backend leg, which measured 5h10 on just `crossbar noc`. So, per entry, classify on documentary evidence before touching anything:
+
+1.  **Surely necessary**: a probe or failure on the *current* pins and tools stands behind it (the hci self-assignments and the packed-ification, probed on 5.050 in the 2026-08-05/06 campaign, are here by construction). No experiment needed; make sure the rationale comment names the failing configuration precisely enough to be re-verified next time.
+2.  **Doubtful**: added against tools or revisions that have since moved, with no recent evidence either way. Only this category gets experiments — ordered by cost (Questa-only first), batched only when the entries are independent enough that a failure still bisects cheaply.
+3.  **Surely useless**: the target file or IP no longer in the graph, the search string no longer matching, or the defect verifiably fixed at the current pin. Drop without experiments, keeping the removal in git history rather than as a commented relic. Note that the patch engine already emits a free detector for this class: the "Stale patch" WARNING it prints when a search no longer matches a freshly restored file — the generation logs of a full suite pass are the first place to harvest candidates.
+
+**Initial triage, 2026-08-07** — so the analysis is not repeated; only category 2 needs work. Evidence keys: "probed" = a dedicated probe on the current 5.050 toolchain; "exercised nightly" = compiled and run by the 2026-08-06 dual-backend suite on crux+mesh; "static" = verified by inspection on the current pins today.
+
+| # | Entry | Cat. | Evidence / open question |
+| :- | :--- | :-: | :--- |
+| 1 | `hci` ×3 (ECC self-assignments) | 1 | real functional defects, probed |
+| 2 | `pulp_cluster` script (13 repairs incl. packed-ification) | 1 | probed + exercised nightly |
+| 3 | `cheshire` packed `field_storage_t` | 1 | probed (force/ARRAYSEL) + exercised nightly |
+| 4 | `cheshire` slink mask (vopt-7045) | 1 | verified by removal (both topologies fail) |
+| 5 | `axi_obi` ×2 (degenerate slice) | 1 | verified by removal (12 elaboration errors) |
+| 6 | `opentitan` script (xbar literals + dead cluster) | 1 | probed + exercised nightly |
+| 7 | `patch_ibex_ot` (vendored-ibex rename) | 1 | exercised nightly (single-unit collision) |
+| 8 | `ibex` prim-assert script (11 signatures) | 1 | exercised nightly |
+| 9 | `hwpe-ctrl` script (BLKANDNBLK) | 1 | exercised nightly |
+| 10 | `spatz` / `snitch_cluster` scripts (dead clusters, testharness) | 1 | landed 2026-08-06, validated both backends |
+| 11 | `patch_spatz_snitch` + `cva6` aes script (name collisions) | 1 | exercised by every build / super graphs |
+| 12 | cheshire `mkdir`+`touch` flash/EEPROM models | 1 | static: manifest at current pin still lists both files |
+| 13 | idma `pip flatdict mako` + `make idma_hw_all` | 1 | static: `util/mario/tracer.py` imports flatdict; generates idma RTL |
+| 14 | snitch_cluster `pip` + llvm symlinks + `make rtl` | 1 | meta-generation, every mesh generate breaks without |
+| 15 | `datamover` ×2 (dead ports) | 1 | tied to the hci forcing (active); PINNOTFOUND is stable Verilator behaviour |
+| 16 | `obi` ×2 (`OBI_ASSERTS_OFF` guard) | **2** | the define appears NOWHERE in the flow today (template or generated Makefile) — the guard may be inert; and with the ibex signatures aligned, the macros may parse regardless. First candidate for a flow-evolution-obsoleted patch |
+| 17 | `hier-icache` ×2 (SVA `##[0:1]` guard) | **2** | verified on 5.041, never re-probed on 5.050 (likely still needed) |
+| 18 | `neureka` (36-bit literal in 9-bit case) | **2** | found on 5.041; Verilator width checking presumably stable, never re-probed |
+
+All three category-2 experiments are at Verilator *fast-check* level (~1 minute each), not full-run level. No category-3 entry today: the last suite's generation logs show no "Stale patch" warnings and no target has left the graph.
+
 ## 4. Input Validation: What Is Still Missing
 
 Ollivander refuses malformed input rather than absorbing it, and what it does refuse is documented for users in section 6 of `docs/soc_configuration_guide.md`. Three gaps remain.
@@ -184,7 +229,7 @@ The wall fell on 2026-08-06: `crux` builds hierarchically (host + preload target
 All deferred pending the flow's first real use; each needs its own measurement before entering the recipe.
 
 *   **`--threads`**: multithreaded simulation runtime is the largest untapped wall-clock lever, but on the mesh it inflated *verilation* from minutes to hours per unit. Unusable in the edit-build-run loop; potentially right for production builds where one build serves many regression runs. Re-characterize on 5.050+ in isolation.
-*   **Simulation-fast UART**: at 115200 baud a character costs ~87 µs of simulated time and Verilator pays every idle bit-cycle (the event-driven QuestaSim does not), so the UART dominates the run. Divisor 1 proved indigestible to the 16550 (firmware spins on a THR that never empties, on both backends); the pista is divisor 2–4, or an auto-baud testbench monitor that measures the start bit and decouples the monitor from the firmware divisor for good.
+*   **UART clock independence**: the fast-UART knob landed on 2026-08-07 (`software_stack.test_app.baudrate`, firmware and testbench monitor sharing the one 16550 divisor the generator resolves — behaviour documented in `soc_configuration_guide.md`, section 5; the shipped examples run at divisor 3, ~11× less simulated time). Two refinements remain open. The generator still assumes a 100 MHz peripheral clock (`uart_freq` in `rtl_generator.py`): a project simulating at another frequency would get a silently scaled line rate. The mature pattern is astral's, where the firmware reads the frequency from the RTC register at runtime and derives the divisor itself — worth adopting when the clock tree starts varying between projects. And an auto-baud monitor (measure the start bit) would decouple the testbench from the divisor entirely, useful the day a test reprograms the UART mid-run.
 *   **Leave unused components gated (automatic bring-up set)**: the hello-world bring-up enables every component, and the compute clusters then trap-loop at PC 0 — which is real simulated activity (fetch, trap, jump, every cycle), so both backends pay for it: the cycle-driven one enormously, the event-driven one measurably (it is also the source of the 10k-line Illegal Instruction chatter of the first crux run). The generator can derive the boot-critical set itself — host, `software_stack.boot_memory`, the UART/EOT path — and leave everything else clock-gated, with a `testbench`-level list to bring up additional components per test. Two prerequisites: the bring-up must engage the per-component `isolate` before leaving a block gated (axi_isolate terminates transactions, so a stray access fails cleanly instead of hanging the interconnect), and the crossbar side needs verifying that per-isle clock domains are individually gateable at all — the mesh has per-tile gating already. Apply identically to both backends so the equivalence comparison stays fair.
 *   **Re-admit the L2 tile into the `.vlt`**: the generated wrapper's parameter defaults read package struct constants (`AxiCfgJoin.*`), which the 5.050 hierarchical wrapper cannot rebuild, so the emission excludes it and the top unit keeps the heaviest memory tiles. **The obvious fix does not work**: demoting those parameters to body localparams in `universal_tile.sv.mako` (they are never driven from the top) was tried on 2026-08-06 and reverted — with the demotion in place, *generation itself* turns pathological on the mesh (the generator spins at 100% CPU with RSS climbing past 8 GB, and a fast-check on the resulting tree past 44 GB, against 52 s for the same run without it). The mechanism was not identified, only bisected: same tree, same commands, the demotion is the single differing variable (the obvious suspect, the stub generator's `neutralize_body_relative_param_defaults` regex, was measured at 0.00 s on every generated tile and is not it). The lead worth following first: the demotion also moves the `Preload*` localparams out of the header, and those are *read back* from the header by `get_isle_info` to build the testbench (`PreloadType`, `PreloadTemplate`, `PreloadNumGroups`, `PreloadBanksPerGroup`) — a downstream consumer losing a count it loops over is the shape of defect that produces exactly this signature. Whoever picks this up should find the *why* first: a pathology that large is a defect in its own right, and it may well bite another change that touches generated headers.
 
