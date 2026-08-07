@@ -41,6 +41,7 @@ Two environment prerequisites are worth knowing before the first `make generate`
 
 *   **Bender** must be reachable on `PATH` (it is not covered by `make setup`). It is a single static binary; the official installer drops it in the current directory, so installing it straight into the virtual environment's `bin/` — which the Makefile targets already prepend to `PATH` — works well: `cd .venv/bin && curl --proto '=https' --tlsv1.2 -sSf https://pulp-platform.github.io/bender/init | bash && cd -`.
 *   **Some transitive dependencies hardcode SSH URLs** (`git@github.com:...`) in their own manifests. GitHub does not allow anonymous SSH, so on a machine without a registered key those fetches fail. Redirect them to HTTPS once per machine: `git config --global url."https://github.com/".insteadOf "git@github.com:"`.
+*   **The RISC-V toolchain needs multilib support for the `offload` test application** (`test_app.name: "offload"`, see the SoC configuration guide, section 5.1): the accelerator payloads are cross-compiled with the *host* toolchain for each target's own ISA/ABI (e.g. `rv32im/ilp32` next to the host's `rv64`). Check with `riscv64-unknown-elf-gcc -print-multi-lib`; the plain `hello_world` application has no such requirement.
 
 ---
 

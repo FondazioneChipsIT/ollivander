@@ -830,7 +830,8 @@ _ROOT_BLOCK_SPEC = {
                   "boot_timeout_ns": int, "boot_timeout_fast_ns": int, "sim_timeout_ns": int,
                   "preload_memories": [{"instance": str, "file": str}]},
     "software_stack": {"toolchain": str, "boot_memory": str,
-                       "test_app": {"name": str, "auto_generate_c": bool, "baudrate": int}},
+                       "test_app": {"name": str, "auto_generate_c": bool, "baudrate": int,
+                                    "offload_targets": [str]}},
 }
 
 
@@ -1165,3 +1166,138 @@ def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] =
                             f"Component '{comp.name}' declares an output interrupt on port '{port_name}'.\n"
                             f"However, the port '{port_name}' does not exist in its SystemVerilog header!"
                         )
+
+    # 5. OFFLOAD TEST RESOLUTION: when the generated firmware is the offload test, the
+    #    target list must resolve here, at validation time, so that a misconfigured
+    #    project (bad 'offload_targets' name, no capable component at all) fails before
+    #    any templating occurs. The resolved mapping itself is consumed - and printed -
+    #    by the generator, which calls resolve_offload_targets() again with report=True.
+    if (config.software_stack or {}).get("test_app", {}).get("name") == "offload":
+        if not config.software_stack.get("test_app", {}).get("auto_generate_c", False):
+            raise ValueError(
+                "\n[OFFLOAD ERROR] The 'offload' test application is entirely generated (host "
+                "firmware, payload, build rules): it requires 'test_app.auto_generate_c: true'."
+            )
+        resolve_offload_targets(config, search_paths, exclude_dir, original_types)
+
+
+def _snake_case(name: str) -> str:
+    """CamelCase -> snake_case, for the Offload* contract keys parsed from an SV header."""
+    return re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
+
+
+def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] = None,
+                            exclude_dir: str = None, original_types: Dict[str, str] = None,
+                            report: bool = False) -> Dict[str, Dict[str, Any]]:
+    """
+    Resolves which components take part in the generated 'offload' test application.
+
+    A component is offload-capable when its isle wrapper declares the Offload* localparam
+    contract (the IP-internal half of the boot protocol: register layout and payload ISA,
+    see pulp_cluster_isle.sv) AND its 'system_config' generates the SoC-side half the
+    host firmware needs to drive it: a fetch_enable bit to start the cores and an EOC
+    status flag to poll for completion. The selection is the 'test_app.offload_targets'
+    list when present - where an unknown or non-capable name is a hard error, never a
+    silent skip - and every capable component otherwise.
+
+    Returns an ordered {component_name: contract} mapping. The contract carries the
+    snake_cased Offload* values (contract, ctrl_offs, eoc_offs, boot_addr_offs, ...)
+    plus 'base_addr', the component's slave window the register offsets apply to.
+    With report=True the resolution is printed, so the generation log records which
+    targets the firmware was actually built for.
+    """
+    candidates: Dict[str, Dict[str, Any]] = {}
+    rejected: Dict[str, str] = {}  # declares a contract, but not eligible -> reason
+
+    for comp in (config.components or []):
+        c_type = original_types.get(comp.name, comp.type) if original_types else comp.type
+        info = get_isle_info(c_type, search_paths, exclude_dir)
+        if not info:
+            continue
+        raw = {k: v for k, v in info["fixed_params"].items() if k.startswith("Offload")}
+        if "OffloadContract" not in raw:
+            continue  # No contract declared: not an offload candidate at all.
+
+        # Resolve each contract value: strip the SV string quotes, convert integers, and
+        # allow one hop of symbolic reference to another header parameter (the pattern
+        # OffloadNumCores = NumCores), honoring a YAML override of that parameter. The
+        # one-hop rule exists because pyslang does not fold references between header
+        # parameters when the file is compiled stand-alone.
+        contract: Dict[str, Any] = {}
+        for k, v in raw.items():
+            key = _snake_case(k[len("Offload"):])
+            val = str(v).strip()
+            if val.startswith('"') and val.endswith('"'):
+                contract[key] = val.strip('"')
+                continue
+            if val in info["fixed_params"] or val in info["supported_params"]:
+                user_params = comp.parameters or {}
+                ref = user_params.get(val, info["fixed_params"].get(val, info["supported_params"].get(val)))
+                val = str(ref).strip()
+            try:
+                contract[key] = int(val, 0)
+            except ValueError:
+                raise ValueError(
+                    f"\n[OFFLOAD CONTRACT ERROR] in component '{comp.name}' ({c_type}):\n"
+                    f"The localparam '{k}' resolves to '{v}', which is neither an integer, nor a string\n"
+                    f"literal, nor a reference to another header parameter. The Offload* contract must\n"
+                    f"stay on self-contained scalars and strings (see pulp_cluster_isle.sv)."
+                )
+
+        sys_cfg = comp.system_config or {}
+        slaves = (comp.interfaces or {}).get("axi_slave", [])
+        if isinstance(slaves, dict):
+            slaves = [slaves]
+        if not sys_cfg.get("fetch_enable"):
+            rejected[comp.name] = "its 'system_config' does not generate a fetch_enable bit"
+        elif not sys_cfg.get("has_eoc_status"):
+            rejected[comp.name] = "its 'system_config' does not generate an EOC status flag"
+        elif not slaves:
+            rejected[comp.name] = "it exposes no axi_slave window for the host to reach its registers"
+        else:
+            base = slaves[0].get("base_addr", 0)
+            contract["base_addr"] = int(base, 0) if isinstance(base, str) else int(base)
+            # SoC-side capabilities beyond the two mandatory ones: the generated helpers
+            # shape the bring-up prologue on these (an isolated-at-reset domain must be
+            # de-isolated before its slave window is reachable).
+            contract["sys_isolate"] = bool(sys_cfg.get("isolate"))
+            contract["sys_boot_enable"] = bool(sys_cfg.get("boot_enable"))
+            contract["sys_busy_status"] = bool(sys_cfg.get("has_busy_status"))
+            candidates[comp.name] = contract
+
+    requested = (config.software_stack or {}).get("test_app", {}).get("offload_targets")
+    if requested:
+        targets: Dict[str, Dict[str, Any]] = {}
+        for name in requested:
+            if name in candidates:
+                targets[name] = candidates[name]
+            elif name in rejected:
+                raise ValueError(
+                    f"\n[OFFLOAD TARGET ERROR] Component '{name}' declares an offload contract, "
+                    f"but {rejected[name]}."
+                )
+            else:
+                raise ValueError(
+                    f"\n[OFFLOAD TARGET ERROR] 'offload_targets' names '{name}', which is not an "
+                    f"offload-capable component.\n"
+                    f"Capable components in this SoC: {list(candidates.keys()) or 'none'}."
+                )
+    else:
+        targets = candidates
+
+    if not targets:
+        details = "".join(f"\n  - '{n}': {r}" for n, r in rejected.items()) or \
+                  "\n  (no component declares the Offload* contract in its isle wrapper)"
+        raise ValueError(
+            f"\n[OFFLOAD TARGET ERROR] The 'offload' test application requires at least one "
+            f"offload-capable component, but none qualifies:{details}"
+        )
+
+    if report:
+        origin = "explicit 'offload_targets' selection" if requested else \
+                 "auto-discovered: all offload-capable components"
+        print(f"[INFO] Offload test targets ({origin}): {', '.join(targets.keys())}")
+        for name, reason in rejected.items():
+            print(f"[INFO]   Skipped '{name}': declares an offload contract, but {reason}.")
+
+    return targets

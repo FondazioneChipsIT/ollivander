@@ -425,9 +425,10 @@ Defines the parameters for automated bare-metal C firmware generation and compil
 | `test_app`    | Object | Configuration for the automatically generated test application.                     |
 
 **Test App Object**:
-*   `name`: String. The base name used for the output files (`<name>.elf`, `<name>.hex`).
+*   `name`: String. The base name used for the output files (`<name>.elf`, `<name>.hex`). Two names select a **generated application** rather than just naming the artifacts: `hello_world` (the default UART greeting) and `offload` (see below). Any other name simply labels a `main.c` you provide yourself.
 *   `auto_generate_c`: Boolean. If `true`, Ollivander creates a starter `main.c` file. This file automatically `#include`s the generated hardware headers (e.g., `<project>_map.h` and `<project>_regs.h`) so you have immediate access to all peripheral base addresses, IRQs, and PeakRDL generated CSR macros.
 *   `baudrate`: Integer, optional (default `115200`). The UART rate the generated firmware programs. The generator converts it into the 16550 divisor and times the testbench's UART monitor on that **same divisor**, so the two sides cannot disagree — the divisor is an integer, and at high rates the true line rate differs from the nominal value by a few percent. Raising it is the single largest lever on simulation wall-clock time, because at 115200 a character costs ~87 µs of simulated time and the UART dominates a hello-world run: at `2000000` (divisor 3) the shipped examples close about **11× sooner**, which under Verilator turns an hour-long run into minutes. The examples ship with this value; lower it back to `115200` (or omit the key) when the firmware must drive a physical terminal.
+*   `offload_targets`: List of component names, optional and meaningful only with `name: "offload"`. Restricts the offload test to a subset of the offload-capable components; by default every capable component is tested. A name that is not offload-capable stops generation with the reason — never a silent skip.
 
 **Example:**
 ```yaml
@@ -439,6 +440,28 @@ software_stack:
     auto_generate_c: true
     baudrate: 2000000
 ```
+
+### 5.1 The `offload` test application
+
+With `test_app.name: "offload"` (which requires `auto_generate_c: true`, since every piece of this application is generated), the firmware is a strict superset of `hello_world`: it prints the same greeting, then drives a five-phase offload sequence — load payload, configure entry, start, wait, collect — on each target, and only emits the end-of-transmission character after **every** target has passed. A failed phase is reported on the UART and the firmware parks without EOT, so the testbench timeout turns it into an explicit regression failure.
+
+A component qualifies as an **offload target** when both halves of its boot contract exist:
+
+*   the isle wrapper declares the `Offload*` localparam contract — the IP-internal half: the register layout behind its slave window, the core count and the payload ISA/ABI (see `docs/hw/isle_standardization.md`);
+*   its `system_config` generates the SoC-side half: `fetch_enable: true` and `has_eoc_status: true` (plus `isolate: true` where the domain resets isolated — the generated helpers then open the fence first).
+
+The resolved target list is printed at generation time (`[INFO] Offload test targets ...`) and again by the firmware itself on the UART (`[OFFLOAD] Targets: ...`), so both the generation log and every simulation transcript record what was actually tested.
+
+What gets generated: per-target helper functions built on the PeakRDL headers (`<project>_offload.h` — no hand-written register address anywhere), a generic payload cross-compiled per target for the ISA/ABI its contract declares, a payload linker script pinned to a **dedicated quarter of the boot memory** (the host image and its stack stay below it; the region deliberately avoids the aliased non-interleaved view that dyn_mem-based memories expose in their upper window half), and the `bin2header.py` embedder that turns each payload into a C header of the host firmware. The payload runs a small deterministic workload staged through the target's local memory and returns a whitened checksum the host compares against the expected value.
+
+Two command-line overrides avoid editing the YAML during bring-up and debug, following the usual rule that the command line wins over the description file:
+
+```
+make generate TEST_APP=hello_world             # run the plain greeting on an offload-configured project
+make generate OFFLOAD_TARGETS="pulp_cluster"   # restrict the offload test to a subset
+```
+
+**Toolchain prerequisite**: the payloads are cross-compiled with the *host* toolchain, so it must provide the multilibs for every target ISA/ABI pair (e.g. `rv32im/ilp32` next to the host's `rv64`). Check with `riscv64-unknown-elf-gcc -print-multi-lib`; a toolchain built without multilib support fails at payload compile time.
 ---
 
 ## 6. What Happens When the Configuration Is Wrong

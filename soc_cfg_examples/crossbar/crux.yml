@@ -183,7 +183,9 @@ host:
   description: "Main application processor (Cheshire host)"
   type: "cheshire_isle"       # Must match a SystemVerilog wrapper (e.g., cheshire_isle.sv)
   clock_domain: "host"        # Automatically wires clk_i/rst_ni to the 'host' clock tree
-  isa: "rv64imafdc"           # Host Instruction Set Architecture (ISA) for software compiler
+  isa: "rv64imafdc_zifencei"  # Host ISA for the software compiler. CVA6 implements fence.i
+                              # (the offload app relies on it to publish the payload); modern
+                              # binutils want the extension spelled out in the -march string.
   abi: "lp64d"                # Host Application Binary Interface (ABI) for software compiler
   cmodel: "medany"            # Host Code Model for software compiler
   export_interfaces: ["jtag", "uart", "spi", "i2c", "gpio"] # Routes these physical pins to the Top-Level
@@ -473,7 +475,9 @@ testbench:
   sim_timeout_ns: 10000000
   preload_memories:
     - instance: "i_l2_shared_memory"
-      file: "generated/sw/hello_world.hex"
+      # '{test_app}' resolves at generation time to the firmware actually built
+      # (test_app.name or its TEST_APP override), so the preload follows the app.
+      file: "generated/sw/{test_app}.hex"
 
 # ------------------------------------------------------------------------------
 # 9. SOFTWARE STACK & FIRMWARE
@@ -483,7 +487,10 @@ software_stack:
   toolchain: "riscv64-unknown-elf-"
   boot_memory: "l2_shared_memory"    # Ollivander will use this to auto-generate the Linker Script
   test_app:
-    name: "hello_world"
+    name: "offload"                  # Superset of hello_world: same greeting and EOT, plus the
+                                     # five-phase offload sequence on every offload-capable
+                                     # component (here: pulp_cluster). Run a plain hello world
+                                     # without editing this file via 'make generate TEST_APP=hello_world'.
     auto_generate_c: true            # Instructs Ollivander to create a basic main.c
     # Simulation-fast UART (divisor 3, ~2.08 Mbaud effective): at 115200 the UART
     # dominates the run. The generator keeps firmware and testbench monitor on the

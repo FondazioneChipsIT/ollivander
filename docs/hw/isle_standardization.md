@@ -465,3 +465,33 @@ Used by `l2_isle`. Consecutive AXI words rotate across the groups, and each AXI 
 When Ollivander parses a YAML configuration where `preload_memories` refers to a component wrapper declaring `PreloadType = "interleaved"`, the generator:
 1.  **Testbench Generation**: Automatically iterates over `PreloadNumGroups` and `PreloadBanksPerGroup` (falling back to `AxiDataWidth / PreloadBankWidth` if undefined) to generate individual `$readmemh` statements targeted at each physical bank using the resolved hierarchical path from `PreloadTemplate`.
 2.  **Hex Splitting Target**: Automatically appends a call to the generic `split_hex.py` script under the Makefile's `build-sw` target, passing the base address, size, and parsed width/group parameters, plus `--interleave <PreloadInterleave>` so the split matches the physical wiring described above.
+
+---
+
+## 9. Offload Boot Contract Standardization
+
+An Isle that wraps a **programmable accelerator** (a compute cluster the host can hand work to) can declare an *offload boot contract*: a block of `Offload*` localparams in its module parameter list, following exactly the mechanism the `Preload*` localparams of section 8 use for memories. The contract is the **IP-internal half** of what the generated `offload` test application (see the SoC configuration guide, section 5.1) needs to drive the component; the SoC-side half — which isolation, fetch-enable and EOC status registers exist in the System Controller — is declared by the user in the component's `system_config` and never restated here. The Isle declares only what the YAML cannot know: the register layout behind its own slave window, and the ISA its cores execute.
+
+### 9.1 Parameters Definition
+
+*   **`OffloadContract`** (`string`): The kind of boot protocol the IP implements. Currently supported: `"control_wire"` — payload and per-core boot addresses are written by the host through the slave window, the cores are released by the SoC-side fetch-enable wire, completion is signalled on `eoc_o` and the result read back from an MMIO register. (A `"memory_mapped"` kind, for snitch-style clusters driven through scratch registers and a CLINT, is planned.)
+*   **`OffloadCtrlOffs`** (`int unsigned`): Offset of the IP's control unit from the component's `axi_slave` base address.
+*   **`OffloadEocOffs`** (`int unsigned`): Offset, inside the control unit, of the EoC register the payload writes to raise `eoc_o`.
+*   **`OffloadBootAddrOffs`** / **`OffloadBootAddrStride`** (`int unsigned`): Offset of the first per-core boot-address register and the distance between consecutive ones.
+*   **`OffloadReturnOffs`** (`int unsigned`): Offset of the register the payload leaves its result in.
+*   **`OffloadStackOffs`** (`int unsigned`): Top of the IP-local memory the payload may use as its stack, as an offset from the component's base address.
+*   **`OffloadNumCores`** (`int unsigned`): Number of cores the boot-address loop and the payload's hart demux must cover. May reference another literal parameter of the same header (e.g. `= NumCores`): the generator resolves one hop of indirection.
+*   **`OffloadIsa`** / **`OffloadAbi`** (`string`): The `-march` / `-mabi` pair the payload is cross-compiled with. Spell extensions out the way modern binutils want them (`rv32im_zicsr`, not `rv32im`), and keep the ISA conservative: any multilib of the host toolchain must be able to serve it.
+
+Two rules keep the contract robust, both inherited from hard-won constraints:
+
+*   **Scalars and strings only, never `localparam type`**: a type parameter in a wrapper header evicts the module from hierarchical Verilation (see `docs/getting_started.md`, section 8.3).
+*   **Self-contained literals**: every value must be a literal or a one-hop reference to another literal of the same header, because the contract is parsed from the wrapper file alone, without elaborating its package dependencies.
+
+### 9.2 Eligibility and Discovery
+
+The contract alone does not make a component an offload target: the generated firmware also needs the SoC-side half, so the component's `system_config` must declare at least `fetch_enable: true` and `has_eoc_status: true` (plus `isolate: true` when the domain resets isolated, which shapes the generated bring-up prologue). Discovery is automatic — every component satisfying both halves is tested, unless `test_app.offload_targets` restricts the list. A component that declares a contract but misses the SoC-side half is reported and skipped in auto-discovery, and is a hard error when named explicitly.
+
+### 9.3 Reference Implementation
+
+`pulp_cluster_isle.sv` carries the reference `"control_wire"` contract; the authority for its offsets is the wrapped IP's own control unit (`cluster_control_unit.sv` of `cluster_peripherals`), and the header comment of the block records that derivation. When wrapping a new cluster IP, derive the offsets the same way — from the RTL of the register file behind the slave window, never from a software header of a reference project.

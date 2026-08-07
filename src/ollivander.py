@@ -71,11 +71,25 @@ def main():
         help="Path to an additional environment config YAML to merge with the base configuration."
     )
     parser.add_argument(
-        "--generate-stubs", 
-        action="store_true", 
+        "--generate-stubs",
+        action="store_true",
         help="Generate faithful RTL stubs for fast-check and exit."
     )
-    
+    parser.add_argument(
+        "--test-app",
+        type=str,
+        default=None,
+        help="Override software_stack.test_app.name from the command line (e.g. run a plain "
+             "'hello_world' on a project whose description selects the 'offload' test)."
+    )
+    parser.add_argument(
+        "--offload-targets",
+        type=str,
+        default=None,
+        help="Comma- or space-separated component names restricting the 'offload' test to a "
+             "subset of the offload-capable components (default: all of them)."
+    )
+
     args = parser.parse_args()
     config_path = Path(args.config)
     
@@ -146,6 +160,21 @@ def main():
         print(f"[ERROR] Failed to load configuration file:\n{e}")
         sys.exit(1)
         
+    # Command-line overrides of the software stack, applied on the raw configuration
+    # BEFORE the Pydantic validation so that every downstream consumer (validators,
+    # generator, templates) sees a single source of truth. Same precedence philosophy
+    # as -b / -o: the command line wins over the description file.
+    if args.test_app or args.offload_targets:
+        sw_stack = config_data.setdefault("software_stack", {})
+        test_app = sw_stack.setdefault("test_app", {})
+        if args.test_app:
+            test_app["name"] = args.test_app
+            print(f"[INFO] test_app.name overridden from the command line: '{args.test_app}'")
+        if args.offload_targets:
+            targets = [t for t in re.split(r"[,\s]+", args.offload_targets.strip()) if t]
+            test_app["offload_targets"] = targets
+            print(f"[INFO] test_app.offload_targets overridden from the command line: {targets}")
+
     print(f"[*] Validating SoC configuration: {config_path.name}...")
     try:
         soc_config = OllivanderConfig(**config_data)

@@ -12,6 +12,14 @@
 // outside it, so its sources do not compile without the define. Declared here, every project
 // that instantiates this isle inherits it - directly or through a macro that contains it.
 // DEFINE: name="FEATURE_ICACHE_STAT"
+//
+// The private icache slices the requested 32-bit word out of its 128-bit lines only under this
+// symbol; without it, pri_icache_controller.sv serves word 0 of the line for EVERY fetch, and
+// the cores execute each line's first instruction four times (found 2026-08-07, first time a
+// cluster core ever fetched in an Ollivander SoC). With iCachePrivateDataWidth = 32 in the Cfg
+// below it is a hard functional requirement of the IP; astral defines it globally in its own
+// compile flow (bender-common.mk), which is why the reference never shows the failure.
+// DEFINE: name="HIERARCHY_ICACHE_32BIT"
 
 `include "axi/typedef.svh"
 
@@ -44,6 +52,43 @@ module pulp_cluster_isle
   // in the `NB_CORES define (pulp_soc_defines.sv), which feeds PulpClusterDefaultCfg
   // and several sub-IP headers. Overriding only the Cfg field would desynchronize them.
   localparam int unsigned NumCores           = 8,
+  // ---------------------------------------------------------------------------------
+  // Offload boot contract - the IP-internal half of what the firmware generator needs
+  // to start this cluster's cores on a payload and collect a result. The SoC-side half
+  // (which boot/fetch-enable and EOC status registers exist) is declared by the user in
+  // the component's 'system_config' and generated into the System Controller; the isle
+  // declares here only what the YAML cannot know: the register layout INSIDE the IP and
+  // the ISA its cores execute. Parsed by get_isle_info() into 'fixed_params' (the same
+  // channel the Preload* tile localparams use), so the values must stay self-contained
+  // literals or references to literals of this header - and per the hierarchical
+  // Verilator constraint, scalars and strings only, never 'localparam type'.
+  //
+  // "control_wire" contract: payload code and per-core boot addresses are placed by the
+  // host through the slave port, cores are released by the SoC-side fetch-enable wire,
+  // completion is signalled on the eoc_o wire and the result is read back from an MMIO
+  // register. Authority for the offsets: cluster_control_unit.sv (cluster_peripherals),
+  // whose control unit occupies slot 0 of the peripheral region, hence OffloadCtrlOffs
+  // equals ClusterCfg.ClusterPeriphOffs below.
+  localparam string       OffloadContract       = "control_wire",
+  // Base of the control unit, as an offset from the component's axi_slave base address.
+  localparam int unsigned OffloadCtrlOffs       = 'h0020_0000,
+  // Inside the control unit: EoC register (write bit 0 to raise eoc_o)...
+  localparam int unsigned OffloadEocOffs        = 'h000,
+  // ...per-core 32-bit boot address registers, one every OffloadBootAddrStride bytes...
+  localparam int unsigned OffloadBootAddrOffs   = 'h040,
+  localparam int unsigned OffloadBootAddrStride = 'h4,
+  // ...and the cluster-internal return value register the payload writes its result to.
+  localparam int unsigned OffloadReturnOffs     = 'h100,
+  // Top of the cluster-local memory the payload may use as its stack, as an offset
+  // from the component's base address (the TCDM size, ClusterCfg.TcdmSize below).
+  localparam int unsigned OffloadStackOffs      = 'h0002_0000,
+  // Number of cores the boot-address loop and the payload's hart demux must cover, and
+  // the ISA/ABI the payload is cross-compiled for (RI5CY: rv32 integer multiply subset,
+  // deliberately conservative - no compressed, no Xpulp - so any rv32 multilib fits;
+  // zicsr spelled out because modern binutils no longer imply it in 'i').
+  localparam int unsigned OffloadNumCores       = NumCores,
+  localparam string       OffloadIsa            = "rv32im_zicsr",
+  localparam string       OffloadAbi            = "ilp32",
   // Async AXI IN (Slave Port)
   localparam int unsigned AsyncAxiInAwWidth  = (2**LogDepth)*axi_pkg::aw_width(AxiAddrWidth, AxiInIdWidth, AxiUserWidth),
   localparam int unsigned AsyncAxiInWWidth   = (2**LogDepth)*axi_pkg::w_width(AxiDataWidth, AxiUserWidth),

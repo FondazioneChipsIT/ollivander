@@ -134,13 +134,26 @@ setup:
 # ==============================================================================
 # 1. HARDWARE GENERATION
 # ==============================================================================
+# Optional overrides of the description's software_stack.test_app, forwarded to the
+# generator CLI. TEST_APP re-selects the generated firmware without editing the YAML
+# (e.g. 'make generate TEST_APP=hello_world' on a project that defaults to 'offload');
+# OFFLOAD_TARGETS restricts the offload test to a comma/space separated subset of the
+# offload-capable components ('make generate OFFLOAD_TARGETS="pulp_cluster"').
+OLLIVANDER_SW_FLAGS :=
+ifneq ($(strip $(TEST_APP)),)
+  OLLIVANDER_SW_FLAGS += --test-app $(TEST_APP)
+endif
+ifneq ($(strip $(OFFLOAD_TARGETS)),)
+  OLLIVANDER_SW_FLAGS += --offload-targets "$(OFFLOAD_TARGETS)"
+endif
+
 .PHONY: generate
 generate:
 	@printf "\n[MAKE] Generating the SoC with Ollivander...\n"
 	@if [ ! -f $(PYTHON) ]; then echo "[ERROR] Virtual environment not found. Run 'make setup' first."; exit 1; fi
 	@$(call ensure-tools,bender:bender); \
-	echo "$(PYTHON) $(OLLIVANDER) -c $(SOC_YAML) -a $(ENV_YAML) -o $(OUT_DIR)"; \
-	$(PYTHON) $(OLLIVANDER) -c $(SOC_YAML) -a $(ENV_YAML) -o $(OUT_DIR)
+	echo "$(PYTHON) $(OLLIVANDER) -c $(SOC_YAML) -a $(ENV_YAML) -o $(OUT_DIR) $(OLLIVANDER_SW_FLAGS)"; \
+	$(PYTHON) $(OLLIVANDER) -c $(SOC_YAML) -a $(ENV_YAML) -o $(OUT_DIR) $(OLLIVANDER_SW_FLAGS)
 
 # ==============================================================================
 # 2. SIMULATION

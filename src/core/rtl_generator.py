@@ -892,11 +892,77 @@ class RTLGenerator:
                                 .get("baudrate", uart_baudrate))
         uart_divisor = max(1, round(uart_freq / (16 * uart_baudrate)))
 
+        # Offload test resolution: which components the generated firmware will drive.
+        # Resolved here once with report=True, so the generation log records the target
+        # list the firmware was actually built for (schema validation already proved the
+        # resolution sound). The payload region is the UPPER half of the boot memory:
+        # the host image and its stack stay in the lower half (main_offload.c.mako caps
+        # the stack at the payload base), so the two can never collide.
+        app_name = "hello_world"
+        if getattr(self.soc_config, "software_stack", None):
+            app_name = self.soc_config.software_stack.get("test_app", {}).get("name", "hello_world")
+
+        # Preload entries may name the firmware through the '{test_app}' token instead of
+        # hardcoding it: the token resolves here, to the app that is actually generated,
+        # so a TEST_APP / --test-app override retargets the testbench preload with it.
+        # A hardcoded file name keeps working (legacy examples), but silently decouples
+        # from the override - the token is the recommended spelling.
+        if getattr(self.soc_config, "testbench", None):
+            for mem in (self.soc_config.testbench.get("preload_memories") or []):
+                if isinstance(mem.get("file"), str):
+                    mem["file"] = mem["file"].replace("{test_app}", app_name)
+
+        offload_targets = {}
+        offload_payload_base = 0
+        offload_payload_size = 0
+        if app_name == "offload":
+            from core.soc_schema import resolve_offload_targets
+            offload_targets = resolve_offload_targets(
+                self.soc_config, self.env.search_paths, self.env.exclude_dir,
+                self.original_isle_types, report=True)
+            boot_mem_name = self.soc_config.software_stack.get("boot_memory", "")
+            all_comps = [self.soc_config.host] + (self.soc_config.components or [])
+            boot_mem = next((c for c in all_comps if c.name == boot_mem_name), None)
+            slaves = (getattr(boot_mem, "interfaces", None) or {}).get("axi_slave", []) if boot_mem else []
+            if isinstance(slaves, dict):
+                slaves = [slaves]
+            if not slaves:
+                print(f"[ERROR] The 'offload' test derives its payload region from the boot memory, "
+                      f"but 'software_stack.boot_memory' ('{boot_mem_name}') does not resolve to a "
+                      f"component with an axi_slave window.")
+                sys.exit(1)
+            b_addr = slaves[0].get("base_addr", 0)
+            b_addr = int(b_addr, 0) if isinstance(b_addr, str) else int(b_addr)
+            b_size = slaves[0].get("size", slaves[0].get("size_per_instance", 0))
+            b_size = int(b_size, 0) if isinstance(b_size, str) else int(b_size)
+            # The payload region is the SECOND QUARTER of the boot memory window, not
+            # its upper half. The upper half is not safe to write on every memory: the
+            # dyn_mem-based L2 (l2_isle) maps it as the NON-interleaved VIEW of the same
+            # physical banks the lower half exposes interleaved (dyn_mem_addr_map.sv
+            # re-scrambles the same low address bits), so a payload written there lands
+            # scattered across the physical words holding the host image - the fence.i
+            # writeback then corrupts the code the host is running (found 2026-08-07:
+            # Illegal Instruction right after the first fence.i on crux). The second
+            # quarter stays inside the image's own view on such memories and is merely
+            # conservative on a flat one; the host stack is capped at the payload base
+            # (main_offload.c.mako), so image, stack and payload can never meet.
+            offload_payload_size = b_size // 4
+            offload_payload_base = b_addr + b_size // 4
+
         template_kwargs = {
             "sys_regs_addr_width": sys_regs_addr_width,
             "config": self.soc_config,
             "uart_freq": uart_freq,
             "uart_divisor": uart_divisor,
+            "offload_targets": offload_targets,
+            "offload_payload_base": offload_payload_base,
+            "offload_payload_size": offload_payload_size,
+            # The toy workload of the offload payload, as (iterations, whitening) of a
+            # sum of squares. Single source for BOTH sides of the check: the payload is
+            # compiled with these as -D macros (Makefile.sw.mako) and the host firmware
+            # bakes the expected result from the same two numbers (main_offload.c.mako).
+            "offload_check_n": 16,
+            "offload_check_xor": 0xCAFE0000,
             "noc_id_widths": noc_id_widths,
             "noc_user_widths": noc_user_widths,
             "ir": ir,
@@ -976,7 +1042,20 @@ class RTLGenerator:
             templates_to_render["sw/linker.ld.mako"] = sw_dir / "linker.ld"
             templates_to_render["sw/Makefile.sw.mako"] = sw_dir / "Makefile"
             if self.soc_config.software_stack.get("test_app", {}).get("auto_generate_c", False):
-                templates_to_render["sw/main.c.mako"] = sw_dir / "main.c"
+                if app_name == "offload":
+                    # The offload app swaps in its own host main and brings the payload
+                    # build with it: generic payload source, linker script pinned to the
+                    # payload region, per-target helpers, and the bin2header.py embedder
+                    # copied alongside so the generated tree builds with no path back
+                    # into the Ollivander installation.
+                    templates_to_render["sw/main_offload.c.mako"] = sw_dir / "main.c"
+                    templates_to_render["sw/offload.h.mako"] = sw_dir / f"{self.soc_config.project.name}_offload.h"
+                    templates_to_render["sw/payload_main.c.mako"] = sw_dir / "payload_main.c"
+                    templates_to_render["sw/payload.ld.mako"] = sw_dir / "payload.ld"
+                    bin2header_src = (Path(__file__).parent / "bin2header.py").read_text(encoding="utf-8")
+                    write_if_changed(sw_dir / "bin2header.py", bin2header_src)
+                else:
+                    templates_to_render["sw/main.c.mako"] = sw_dir / "main.c"
 
         for tpl_name, out_file in templates_to_render.items():
             if tpl_name == "tb/tb_soc.sv.mako":
