@@ -5,6 +5,38 @@
 import re
 from pathlib import Path
 
+import yaml
+
+
+class UniqueKeySafeLoader(yaml.SafeLoader):
+    """yaml.SafeLoader that refuses duplicate mapping keys.
+
+    Plain safe_load silently keeps the LAST value of a duplicated key, which is never
+    what the file means and disables the earlier entry without a trace: the spatz
+    registry entry carried two 'pre_build_cmds' keys and one of its patch scripts
+    stopped running the day the second was added (found 2026-08-07). Used for every
+    YAML file Ollivander owns - the dependency registry, the environment overlays and
+    the SoC descriptions; files produced by other tools (Bender manifests and locks)
+    keep the permissive loader, since their content is not ours to police.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    f"found duplicate key '{key}': the loader would silently keep only "
+                    f"the last value, dropping every earlier one", key_node.start_mark)
+            seen.add(key)
+        return super().construct_mapping(node, deep)
+
+
+def yaml_load_strict(stream):
+    """yaml.safe_load with duplicate mapping keys refused (UniqueKeySafeLoader)."""
+    return yaml.load(stream, Loader=UniqueKeySafeLoader)
+
 # =========================================================================
 # Mako Template Helper Functions
 # =========================================================================

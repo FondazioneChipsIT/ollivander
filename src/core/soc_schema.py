@@ -1248,9 +1248,19 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
         slaves = (comp.interfaces or {}).get("axi_slave", [])
         if isinstance(slaves, dict):
             slaves = [slaves]
-        if not sys_cfg.get("fetch_enable"):
+        # The SoC-side half the contract kind requires. "control_wire" clusters are
+        # started by the fetch-enable wire and signal completion on eoc_o, so both
+        # System Controller registers must exist. "memory_mapped" clusters need
+        # neither: their cores park in the IP's own bootrom at reset and are woken
+        # through the cluster CLINT behind the slave window, and completion returns
+        # through memory - the window itself is the whole system-side requirement.
+        kind = contract.get("contract")
+        if kind not in ("control_wire", "memory_mapped"):
+            rejected[comp.name] = (f"its OffloadContract kind '{kind}' is not one the "
+                                   f"firmware generator implements")
+        elif kind == "control_wire" and not sys_cfg.get("fetch_enable"):
             rejected[comp.name] = "its 'system_config' does not generate a fetch_enable bit"
-        elif not sys_cfg.get("has_eoc_status"):
+        elif kind == "control_wire" and not sys_cfg.get("has_eoc_status"):
             rejected[comp.name] = "its 'system_config' does not generate an EOC status flag"
         elif not slaves:
             rejected[comp.name] = "it exposes no axi_slave window for the host to reach its registers"

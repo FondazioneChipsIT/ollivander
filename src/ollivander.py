@@ -93,7 +93,7 @@ def main():
     args = parser.parse_args()
     config_path = Path(args.config)
     
-    from core.utils import get_ollivander_version, get_generation_comment
+    from core.utils import get_ollivander_version, get_generation_comment, yaml_load_strict
     print(f"Ollivander SoC Generator v{get_ollivander_version()}\n")
     
     # Ensure the provided SoC specification file exists.
@@ -152,7 +152,9 @@ def main():
                 sys.exit(1)
         elif config_path.suffix in ['.yaml', '.yml']:
             with open(config_path, "r", encoding="utf-8") as f:
-                config_data = yaml.safe_load(f)
+                # Strict loader: duplicate keys in a SoC description are refused
+                # rather than silently collapsed to the last value (core/utils.py).
+                config_data = yaml_load_strict(f)
         else:
             print(f"[ERROR] Unsupported configuration file extension: {config_path.suffix}. Use .yaml, .yml, or .py")
             sys.exit(1)

@@ -24,6 +24,47 @@ module spatz_cluster_isle
   parameter int unsigned SyncStages       = 3,
   parameter int unsigned AxiMaxOutTrans   = 4,
   parameter int unsigned NumCores         = 8,
+  // ---------------------------------------------------------------------------------
+  // Offload boot contract - the IP-internal half of what the firmware generator needs
+  // to hand work to this cluster (see pulp_cluster_isle.sv for the mechanism, and
+  // docs/hw/isle_standardization.md section 9 for the field semantics). Scalars and
+  // strings only, self-contained literals or references to literals of this header.
+  //
+  // "memory_mapped" contract, the snitch-family boot protocol: the cores come out of
+  // reset on their own, run the cluster's internal bootrom and park in WFI; the host
+  // writes the payload entry point into the CLUSTER_BOOT_CONTROL register, wakes every
+  // core through the cluster CLINT, and collects per-core results from a return array
+  // in the cluster's local memory (each core stores (value << 1) | 1, so the reset
+  // value zero can never read as completion). No fetch-enable wire, no EOC wire.
+  //
+  // Authority for the offsets: spatz_cluster_peripheral_reg.hjson (peripherals sit at
+  // the end of the TCDM: NrBanks * TCDMDepth * 8 bytes = 'h2_0000, fixed below at the
+  // spatz_cluster instantiation) and the cluster bootrom (hw/system/spatz_cluster/
+  // test/bootrom.S). NOTE the bootrom shipped by the IP bakes its default config's
+  // absolute TCDM base into BOOTDATA, which breaks at any other instantiation base
+  // and for any second instance; the dependency registry therefore patches its
+  // entry-point sequence to PC-relative arithmetic (the snitch_cluster bootrom
+  // pattern) - see the spatz patch in ollivander_config.yml. The 'h2_0000 TCDM
+  // geometry is the one constant that patch and contract share with the Cfg below.
+  localparam string       OffloadContract  = "memory_mapped",
+  // Base of the cluster peripheral registers: the end of the TCDM.
+  localparam int unsigned OffloadCtrlOffs  = 'h0002_0000,
+  // Inside the peripherals: the entry-point register the bootrom jumps through...
+  localparam int unsigned OffloadEntryOffs = 'h58,
+  // ...and the CLINT set register the host writes the wakeup mask to.
+  localparam int unsigned OffloadWakeOffs  = 'h30,
+  // Per-core return slots and payload stack region, both in the cluster TCDM: the
+  // slots live just under the peripherals, the stacks grow down from below the slots.
+  localparam int unsigned OffloadReturnOffs = 'h0001_FF00,
+  localparam int unsigned OffloadStackOffs  = 'h0001_F000,
+  localparam int unsigned OffloadNumCores   = NumCores,
+  // First hart id of the cluster (hart_base_id_i at the instantiation below): the
+  // payload derives its core index as mhartid - OffloadHartBase.
+  localparam int unsigned OffloadHartBase   = 'h10,
+  // Conservative subset of the snitch cores' ISA (rv32imafdv...): integer multiply
+  // is in hardware, zicsr spelled out for modern binutils.
+  localparam string       OffloadIsa        = "rv32im_zicsr",
+  localparam string       OffloadAbi        = "ilp32",
   // In channel
   parameter type axi_in_resp_t    = logic,
   parameter type axi_in_req_t     = logic,
@@ -134,15 +175,26 @@ module spatz_cluster_isle
   // localparam int unsigned ICacheSets = 2;
   localparam int unsigned ICacheWays = 2;
 
+  // Regions the snitch cores can FETCH from: the frontend fetches only through the
+  // icache, and the icache serves only what the PMA marks cacheable, so this list is
+  // effectively the executable map of the cluster. It must cover the internal bootrom
+  // (where the cores boot, see BootAddr at the instantiation below) and the SoC boot
+  // memory (where the offload payload lands). The value this isle shipped with was
+  // carfield's L2 window (48'h78000000) - a fossil of the wrapper's origin that
+  // nothing could expose until 2026-08-07, the first time code ever ran on these
+  // cores in an Ollivander SoC: with no fetchable region, pc_q never left X. Like the
+  // cluster base and hart base, these are hardwired to the crux placement until the
+  // isle is parametrized (see wip).
   function automatic snitch_pma_pkg::rule_t [snitch_pma_pkg::NrMaxRules-1:0] get_cached_regions();
     automatic snitch_pma_pkg::rule_t [snitch_pma_pkg::NrMaxRules-1:0] cached_regions;
     cached_regions = '{default: '0};
-    cached_regions[0] = '{base: 48'h78000000, mask: 48'hffffffc00000};
+    cached_regions[0] = '{base: 48'h51030000, mask: 48'hfffffffff000}; // internal bootrom, 4 KB
+    cached_regions[1] = '{base: 48'h88000000, mask: 48'hffffffe00000}; // boot memory (L2), 2 MB
     return cached_regions;
   endfunction
 
   localparam snitch_pma_pkg::snitch_pma_t SnitchPMACfg = '{
-    NrCachedRegionRules: 1,
+    NrCachedRegionRules: 2,
     CachedRegion: get_cached_regions(),
     default: 0
   };
@@ -346,7 +398,12 @@ module spatz_cluster_isle
     .AxiIdWidthIn             ( AxiInIdWidth             ),
     .AxiIdWidthOut            ( IwcAxiIdOutWidth         ),
     .AxiUserWidth             ( AxiUserWidth             ),
-    .BootAddr                 ( 32'h1000                 ),
+    // The internal bootrom placed right AFTER the cluster peripherals (TCDM 'h2_0000
+    // + peripherals 'h1_0000), NOT at the IP default of absolute 'h1000: the registry
+    // patch rewrites the bootrom's entry-point sequence to PC-RELATIVE arithmetic, and
+    // that only reaches the peripherals if the bootrom lives at a fixed offset from
+    // them. Tracks the hardwired cluster base below, like cluster_base_addr_i does.
+    .BootAddr                 ( 32'h5103_0000            ),
     .ClusterPeriphSize        ( 64                       ),
     .NrCores                  ( NumCores                 ),
     .NumSpatzFPUs             ( NumSpatzFPUs             ),

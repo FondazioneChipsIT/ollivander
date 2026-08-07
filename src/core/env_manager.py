@@ -6,6 +6,8 @@ import sys
 import yaml
 from pathlib import Path
 
+from core.utils import yaml_load_strict
+
 
 def load_env_yaml(path, what="environment configuration"):
     """Read one environment YAML file, or stop with the parser's own diagnostic.
@@ -22,7 +24,9 @@ def load_env_yaml(path, what="environment configuration"):
     """
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            # Strict loader: a duplicated key in a file we own is always a bug
+            # (see UniqueKeySafeLoader), and yaml reports its exact position.
+            return yaml_load_strict(f) or {}
     except yaml.YAMLError as e:
         print(f"\n[ERROR] Cannot parse the {what} '{path}':\n{e}")
         sys.exit(1)

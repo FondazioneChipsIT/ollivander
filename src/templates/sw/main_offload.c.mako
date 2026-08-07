@@ -154,6 +154,7 @@ int main(void) {
     if (${t_name}_deisolate() != 0) offload_fail("${t_name}", "de-isolation timed out");
 % endif
     ${t_name}_load_payload(payload_${t_name}_image, PAYLOAD_${t_name.upper()}_SIZE_WORDS);
+% if t["contract"] == "control_wire":
     ${t_name}_set_bootaddress(OFFLOAD_PAYLOAD_BASE);
     ${t_name}_start();
     if (${t_name}_wait_eoc() != 0) {
@@ -183,6 +184,38 @@ int main(void) {
         print_hex(ret);
         print_str(")\n");
     }
+% else:
+    ${t_name}_init_returns();
+    ${t_name}_set_entry(OFFLOAD_PAYLOAD_BASE);
+    ${t_name}_start();
+    if (${t_name}_wait_done() != 0) {
+        /* Dump the slots before parking: which cores never reported localizes
+         * the failure (none woke / one hung / the write path is broken). */
+        print_str("[OFFLOAD] ${t_name} slots at timeout:");
+        for (uint32_t c = 0; c < ${t_name.upper()}_OFFLOAD_NUM_CORES; c++) {
+            print_str(" ");
+            print_hex(*(volatile uint32_t *)(uintptr_t)(${t_name.upper()}_OFFLOAD_RETURN_BASE + c * 4u));
+        }
+        print_str("\n");
+        offload_fail("${t_name}", "return slots timed out");
+    }
+    {
+        /* Core 0 carries the checksum, every other core reports a bare done. */
+        uint32_t ret = ${t_name}_get_return(0);
+        if (ret != ${hex(expected)}u) {
+            print_str("[OFFLOAD] ${t_name} core 0 returned ");
+            print_hex(ret);
+            print_str(", expected ${hex(expected)}\n");
+            offload_fail("${t_name}", "wrong return value");
+        }
+        for (uint32_t c = 1; c < ${t_name.upper()}_OFFLOAD_NUM_CORES; c++) {
+            if (${t_name}_get_return(c) != 0u) offload_fail("${t_name}", "secondary core returned nonzero");
+        }
+        print_str("[OFFLOAD] ${t_name} PASS (ret=");
+        print_hex(ret);
+        print_str(")\n");
+    }
+% endif
 
 % endfor
     print_str("[OFFLOAD] All targets passed.\n\x04");

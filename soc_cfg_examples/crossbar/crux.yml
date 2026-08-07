@@ -371,12 +371,14 @@ components:
             [1] : mailbox.snd_irq_o[3] | mailbox.snd_irq_o[1],
             [0] : mailbox.snd_irq_o[2] | mailbox.snd_irq_o[0]
           }
-      mtip_i:
-        cdc: false
-        source: >
-          {
-            [7:0] : {8{manager.mtip_ext_o}}
-          }
+      # Deliberately tied off (was {8{manager.mtip_ext_o}}): the snitch cores park in
+      # their bootrom on WFI, whose wake logic samples the RAW pending lines - the host
+      # CLINT's mtip is X while Cheshire is still booting (the cores take it as an
+      # interrupt the moment the bootrom enables mie, and land in the fallback park
+      # with poisoned state) and permanently 1 afterwards (mtimecmp resets to 0),
+      # which would break the parking either way. The offload model wakes the cluster
+      # exclusively through its internal CLINT, like the gwaihir reference (2026-08-07).
+      mtip_i: { source: "none" }
       # 'none' explicitly ties the interrupt input to 0 to avoid floating wires
       meip_i: { source: "none" }
 
@@ -489,8 +491,13 @@ software_stack:
   test_app:
     name: "offload"                  # Superset of hello_world: same greeting and EOT, plus the
                                      # five-phase offload sequence on every offload-capable
-                                     # component (here: pulp_cluster). Run a plain hello world
-                                     # without editing this file via 'make generate TEST_APP=hello_world'.
+                                     # component. Run a plain hello world without editing this
+                                     # file via 'make generate TEST_APP=hello_world'.
+    # spatz_cluster declares the memory_mapped contract but is parked out of the test
+    # while its bring-up is completed: the cores still trap during the bootrom's CSR
+    # setup with clean irq inputs - the open point of wip 2.2 phase 2b (2026-08-07).
+    # Drop this line to re-enable the second target once that lands.
+    offload_targets: ["pulp_cluster"]
     auto_generate_c: true            # Instructs Ollivander to create a basic main.c
     # Simulation-fast UART (divisor 3, ~2.08 Mbaud effective): at 115200 the UART
     # dominates the run. The generator keeps firmware and testbench monitor on the

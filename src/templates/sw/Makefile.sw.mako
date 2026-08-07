@@ -32,14 +32,27 @@ PYTHON ?= python3
 
 % for t_name, t in offload_targets.items():
 <%
+# The contract kind selects both the payload's code path (-DOFFLOAD_MM) and where
+# its results travel: through the control unit's registers (control_wire) or
+# through a return-slot array in the cluster-local memory (memory_mapped).
 ctrl_base = t["base_addr"] + t["ctrl_offs"]
-payload_defines = " ".join([
+common = [
     f'-DOFFLOAD_STACK_TOP={hex(t["base_addr"] + t["stack_offs"])}',
-    f'-DOFFLOAD_RETURN_ADDR={hex(ctrl_base + t["return_offs"])}',
-    f'-DOFFLOAD_EOC_ADDR={hex(ctrl_base + t["eoc_offs"])}',
     f'-DOFFLOAD_CHECK_N={offload_check_n}',
     f'-DOFFLOAD_CHECK_XOR={hex(offload_check_xor)}',
-])
+]
+if t["contract"] == "control_wire":
+    specific = [
+        f'-DOFFLOAD_RETURN_ADDR={hex(ctrl_base + t["return_offs"])}',
+        f'-DOFFLOAD_EOC_ADDR={hex(ctrl_base + t["eoc_offs"])}',
+    ]
+else:
+    specific = [
+        '-DOFFLOAD_MM=1',
+        f'-DOFFLOAD_RETURN_ADDR={hex(t["base_addr"] + t["return_offs"])}',
+        f'-DOFFLOAD_HART_BASE={hex(t["hart_base"])}',
+    ]
+payload_defines = " ".join(common + specific)
 %>\
 # Target '${t_name}': ${t["isa"]}/${t["abi"]}, registers via the '${t["contract"]}' contract.
 payload_${t_name}.elf: payload_main.c payload.ld

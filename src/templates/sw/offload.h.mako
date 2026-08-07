@@ -50,10 +50,16 @@ P = project_name.upper()
 
 /* IP-internal register layout, from the Offload* contract of the isle. */
 #define ${T}_OFFLOAD_CTRL_BASE      (${P}_${T}_BASE_ADDR + ${hex(t["ctrl_offs"])}u)
+#define ${T}_OFFLOAD_NUM_CORES      ${t["num_cores"]}u
+% if t["contract"] == "control_wire":
 #define ${T}_OFFLOAD_EOC_REG        (${T}_OFFLOAD_CTRL_BASE + ${hex(t["eoc_offs"])}u)
 #define ${T}_OFFLOAD_BOOT_ADDR_REG  (${T}_OFFLOAD_CTRL_BASE + ${hex(t["boot_addr_offs"])}u)
 #define ${T}_OFFLOAD_RETURN_REG     (${T}_OFFLOAD_CTRL_BASE + ${hex(t["return_offs"])}u)
-#define ${T}_OFFLOAD_NUM_CORES      ${t["num_cores"]}u
+% else:
+#define ${T}_OFFLOAD_ENTRY_REG      (${T}_OFFLOAD_CTRL_BASE + ${hex(t["entry_offs"])}u)
+#define ${T}_OFFLOAD_WAKE_REG       (${T}_OFFLOAD_CTRL_BASE + ${hex(t["wake_offs"])}u)
+#define ${T}_OFFLOAD_RETURN_BASE    (${P}_${T}_BASE_ADDR + ${hex(t["return_offs"])}u)
+% endif
 
 % if t["sys_isolate"]:
 /* Bring the domain out of isolation (it resets isolated) and wait for the fence
@@ -77,6 +83,7 @@ static inline void ${t_name}_load_payload(const uint32_t *image, uint32_t n_word
     __asm__ volatile("fence.i" ::: "memory");
 }
 
+% if t["contract"] == "control_wire":
 /* Point every core of the target at the payload entry, through the per-core
  * boot-address registers behind the slave window. */
 static inline void ${t_name}_set_bootaddress(uint32_t boot_addr) {
@@ -104,6 +111,48 @@ static inline int ${t_name}_wait_eoc(void) {
 static inline uint32_t ${t_name}_get_return(void) {
     return *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_RETURN_REG;
 }
+% else:
+/* Zero the per-core return slots BEFORE waking the cores: each slot reads as
+ * done only once its core stores (value << 1) | 1, so a stale bit 0 from a
+ * previous run must never survive into the poll below. */
+static inline void ${t_name}_init_returns(void) {
+    for (uint32_t i = 0; i < ${T}_OFFLOAD_NUM_CORES; i++) {
+        *(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE + i * 4u) = 0;
+    }
+}
+
+/* Publish the payload entry point where the cluster bootrom will read it. */
+static inline void ${t_name}_set_entry(uint32_t entry) {
+    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_ENTRY_REG = entry;
+}
+
+/* Wake every core at once through the cluster CLINT: the cores sit in the
+ * bootrom's WFI since reset, no fetch-enable wire exists on this contract. */
+static inline void ${t_name}_start(void) {
+    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_WAKE_REG =
+        (1u << ${T}_OFFLOAD_NUM_CORES) - 1u;
+}
+
+/* Poll the return slots until every core reported (bit 0 set), reading through
+ * the slave window - MMIO on this side, so no cache can hold a stale copy. */
+static inline int ${t_name}_wait_done(void) {
+    /* The budget counts SLOT READS (the sweep restarts on the first pending core),
+     * so the bound holds regardless of the core count and the diagnostic failure
+     * below still prints well before the testbench timeout. */
+    uint32_t done = 0;
+    for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
+        uint32_t slot = *(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE + done * 4u);
+        if ((slot & 1u) == 0u) continue;
+        if (++done == ${T}_OFFLOAD_NUM_CORES) return 0;
+    }
+    return -1;
+}
+
+/* Result a given core left in its return slot (the value above the done bit). */
+static inline uint32_t ${t_name}_get_return(uint32_t core) {
+    return (*(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE + core * 4u)) >> 1;
+}
+% endif
 
 % endfor
 #endif /* ${project_name.upper()}_OFFLOAD_H */
