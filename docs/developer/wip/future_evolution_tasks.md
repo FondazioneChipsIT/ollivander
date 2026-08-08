@@ -241,6 +241,10 @@ The wall fell on 2026-08-06: `crux` builds hierarchically (host + preload target
 *   **A crossbar build would be monolithic today**: `generate_verilator_config` emits hierarchical blocks only for NoC grids, so `cfg/crux.vlt` is empty — fine for probing, but the mesh measurements (~45 GB monolithic) say the isles should become `hier_block`s before a full crux build is attempted.
 *   **The super examples stay out of scope regardless**: their unified Bender graphs carry the crossbar IPs (and their size compounds it) — though the measured hierarchical footprint (~3 GB per child against ~45 GB monolithic) may eventually relax the memory ceiling that limits `super_noc` today.
 
+#### Coverage after the 2026-08-08/09 weekend campaign
+
+Full-simulation Verilator status per example, from the weekend sweep (fast-check passes everywhere): `crossbar` PASS **including the generated offload application** (run 15:29 at the fast baud - it was 53 minutes with hello world at 115200, the dividend finally measured), `crossbar_isle` PASS (first ever, run 8:03), `noc` PASS, `noc_subtile` PASS (first ever, run 6:02). **`noc_isle` FAILS with no UART output at all**: its gated-L2 boot path (image in a gated tile, testbench bring-up) never gets the host to the UART under Verilator, while the snitch cores of every cluster tile storm Illegal Instruction at PC 0 - the two-state engine turns the never-really-parked cores from silent-X (QuestaSim) into executing-zeros, the same defect family as the spatz bring-up of section 2.2 and prime material for phase 2c. To be debugged with the QuestaSim comparison alongside. The two supers remain unprobed: their hierarchical builds need tens of GB of scratch headroom, which the shared volume could not offer during the campaign - size the disk budget before scheduling them.
+
 ### 5.2 Performance Levers Not Yet Adopted
 
 All deferred pending the flow's first real use; each needs its own measurement before entering the recipe.
@@ -301,3 +305,22 @@ Two tiers are worth evaluating, not mutually exclusive:
     *   *Mitigation*: scope to `components/` and generated output only; the IPs have their own upstreams (and our patch/PR pipeline for what we find).
 *   **SpyGlass adds license coupling to a flow whose sibling exists precisely to avoid it.**
     *   *Mitigation*: keep the tiers independent — Verilator lint as the always-on CI gate, SpyGlass as an on-demand deep pass, mirroring the QuestaSim/Verilator split of the simulation flow.
+
+---
+
+## 8. Multi-Simulator Compatibility (Xcelium, VCS)
+
+Declaring Ollivander compatible with every major simulator would be a substantial selling point, and after the 2026-08-07 license outage it is also risk mitigation: the three vendors run three independent FlexLM servers on this site, so a lapse in one leaves the others standing. Surveyed on 2026-08-08, while QuestaSim was down: **Xcelium 25.03 works today** (license checked out, a probe design compiled, elaborated and simulated), the Cadence features all run to 31-dec-2026, and the bulk of the Synopsys features do too. **VCS 2024.09 is installed completely but unusable as provisioned**: its module resolves the legacy 32-bit `linux` target (the installation only carries `linux64`, compiler present), and with the architecture overridden the platform check rejects the host kernel string — both environment matters to resolve outside this repository. Priority follows availability: Xcelium first, VCS when its environment is fixed.
+
+The architecture is already shaped for this: `SIM_TOOLS` / `FAST_CHECK_TOOLS` are lists by design, the suite's pass criterion (UART output + EOT in the transcript) is tool-agnostic, and Bender emits `vcs` scripts natively (for Xcelium, verify `bender script` support at the pinned version or reuse the generic-flist route the Verilator flow validated).
+
+#### Advantages
+*   **License-risk decorrelation**: a regression that can attest on any one of three commercial engines plus Verilator never stalls on a single vendor's renewal.
+*   **Defect yield**: every engine has found defect classes the others tolerate (Verilator alone: the silent icache define, the pragma-comment trap, the 2-state exposure of the never-parked snitch cores). A third and fourth engine extend that coverage.
+*   **Marketability**: "generates environments for Questa, Xcelium, VCS and Verilator" is a concrete differentiator for the tool.
+
+#### Difficulties & Mitigation Strategies
+*   **The cost is the probe campaign, not the scripts**: the Verilator enablement measured it - compile legs came cheap, the iterative probing of latent RTL and flag issues was the real effort.
+    *   *Mitigation*: replay the Verilator playbook (one SoC per topology family first, message-policy tables per tool, findings routed to the registry/upstream pipeline), and expect per-tool fossils.
+*   **Suite semantics must stay unified**: per-tool summary lines, `check-tested` attestation and log layout already handle two engines; a third must slot into the same scheme, not fork it.
+    *   *Mitigation*: the `SIM_TOOLS` loop in `ollivander_test.mk` is the single extension point; add engines there only.

@@ -60,8 +60,11 @@ module pulp_cluster_isle
   // declares here only what the YAML cannot know: the register layout INSIDE the IP and
   // the ISA its cores execute. Parsed by get_isle_info() into 'fixed_params' (the same
   // channel the Preload* tile localparams use), so the values must stay self-contained
-  // literals or references to literals of this header - and per the hierarchical
-  // Verilator constraint, scalars and strings only, never 'localparam type'.
+  // literals or references to literals of this header - and, per the hierarchical
+  // verilation constraint, scalars and strings only (never 'localparam type'). A
+  // comment line here must also never BEGIN with the tool's own name: Verible's
+  // reflow once produced one, and the tool reads such comments as its pragmas
+  // (BADVLTPRAGMA, found 2026-08-08 by the first Verilator sweep of this header).
   //
   // "control_wire" contract: payload code and per-core boot addresses are placed by the
   // host through the slave port, cores are released by the SoC-side fetch-enable wire,
