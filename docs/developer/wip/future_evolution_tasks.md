@@ -61,7 +61,7 @@ Decided on 2026-08-07: the testbench half of this chapter takes the shape of a g
 *   A **JTAG agent** on the riscv-dbg debug module: memory preload through the debug bus, bring-up by writing the system-controller registers, end-of-computation by polling — replacing the testbench's dotted-path forces as the *silicon-representative* path. The generic base ships with riscv-dbg itself (`tb/jtag_dmi/jtag_test.sv`, already in every graph; opentitan's vendored duplicate was removed on 2026-08-06 precisely so the two cannot collide in Verilator's single compilation unit).
 *   Later, a **UART TX / uart-boot agent** (loading binaries over the serial line, which the fast baud accelerates too).
 
-Two design constraints, both learned from Cheshire's VIP: JTAG preload is slow in simulation (bit-banged scan chains), so `$readmemh` stays as the fast regression path and the VIP boot becomes a selectable `testbench.boot_mode`; and the VIP must stay IP-agnostic — it talks RISC-V Debug Spec, 16550 and pins, never a host's package. The prize beyond silicon fidelity: with the forces gone, the host isle no longer needs to live in the Verilator top unit, shrinking it to the bare interconnect.
+Three design constraints, the first two learned from Cheshire's VIP, the third from gwaihir's (see `docs/developer/references/gwaihir_simulation_reference.md`, 2026-08-09): JTAG preload is slow in simulation (bit-banged scan chains), so `$readmemh` stays as the fast regression path and the VIP boot becomes a selectable `testbench.boot_mode`; and the VIP must stay IP-agnostic — it talks RISC-V Debug Spec, 16550 and pins, never a host's package. And the loader's ACCESS SIZE must be a property of the target, not of the channel: gwaihir had to clone its JTAG and serial-link preloaders into 32-bit variants because Snitch ELF sections corrupt through 64-bit SBA writes - the agent interface should carry the granularity per target (contract material, alongside the Offload* block) rather than rediscover it per engine. The prize beyond silicon fidelity: with the forces gone, the host isle no longer needs to live in the Verilator top unit, shrinking it to the bare interconnect.
 
 ### 2.2 Cluster Offload Tests: What Remains After Phase 1
 
@@ -75,6 +75,21 @@ Phase 1 landed on 2026-08-07: the generated `offload` test application runs end-
 *   **Firmware domain bring-up.** The offload firmware de-isolates its target, but clock-enable and software-reset of the managed domains are still forced by the testbench before the host boots (the pulp domain included). Folding that into the generated firmware prologue remains open, tied to the `auto_control_groups` machinery described above.
 
 ---
+
+### 2.3 Negative Tests: Proving the Suite Detects Failure
+
+The suite has no expected-failure test: the offload application's failure policy (report on the UART, park WITHOUT the EOT so the testbench timeout turns the run into a FAILED) is designed but never exercised by the regression - if that path silently broke, a failing firmware would pass the suite and nobody would know. Gwaihir treats this as a first-class test class (`sanity_fail` returning an exact nonzero code, CI matching `FAILED: return code 7` literally and requiring exactly one error line; a cluster-side variant proves the per-core return path with an exact aggregate). Recorded 2026-08-10 from the reference analysis.
+
+*   **Shape for Ollivander**: a generated expected-failure variant (a `test_app` name or a suite knob) that makes the firmware return a known nonzero code or corrupts the offload expectation on purpose, plus a suite leg asserting the run is reported FAILED for that exact reason. Small, near-term, independent of every other task.
+*   **Bonus from the same source**: the memory_mapped host check can adopt gwaihir's sum-of-return-codes convention, which makes multi-core negative expectations exact ((cores) x (code), e.g. 64 x 14 = 896 in their CI).
+
+#### Advantages
+*   **Protects the failure path itself**: the one part of the test machinery that no passing regression can ever validate.
+*   **Nearly free**: the firmware and criteria already exist; only the expected outcome flips.
+
+#### Difficulties & Mitigation Strategies
+*   **The suite equates FAILED with regression**: an expected failure must not turn the summary red.
+    *   *Mitigation*: the suite leg inverts the criterion for the negative project/app (expects the FAILED marker and the exact diagnostic), keeping the summary green when the failure is the designed one.
 
 ## 3. Open Decisions from the Simulation-Log Reviews
 
@@ -324,3 +339,12 @@ The architecture is already shaped for this: `SIM_TOOLS` / `FAST_CHECK_TOOLS` ar
     *   *Mitigation*: replay the Verilator playbook (one SoC per topology family first, message-policy tables per tool, findings routed to the registry/upstream pipeline), and expect per-tool fossils.
 *   **Suite semantics must stay unified**: per-tool summary lines, `check-tested` attestation and log layout already handle two engines; a third must slot into the same scheme, not fork it.
     *   *Mitigation*: the `SIM_TOOLS` loop in `ollivander_test.mk` is the single extension point; add engines there only.
+
+---
+
+## 9. A Trace/Performance Measurement Pipeline
+
+The offload tests make the examples COMPUTE for the first time, and the next natural question after "does it pass" is "how fast" - none of Ollivander's flows measures anything yet. Gwaihir ships the only complete measurement stack seen in the references (2026-08-09 analysis): the cores' unconditional `.dasm`/`.log` traces are turned into per-hart performance JSONs (`gen_trace.py`), source-annotated listings (`annotate.py` + addr2line, host and cluster alike), merged (`join.py`), cut into labelled regions of interest by Mako ROI specs (`roi.py`), and rendered as Chrome-trace timelines (`visualize.py`); an experiment framework fits analytical models on top. All of it operates on trace formats our instantiated IPs already emit (snitch harts, CVA6) - the pipeline is IP-side, not testbench-side, so most of it could be adopted rather than rebuilt.
+
+*   **Advantages**: turns the offload family from smoke tests into benchmarks; gives the generated SoCs a per-hart timeline for debugging cross-domain interactions (which the noc_isle-class findings would have benefited from); the ROI-spec idea maps naturally onto the generated firmware's phases (the generator knows where the phases are and could emit the ROI spec itself).
+*   **Difficulties & Mitigation Strategies**: the upstream scripts are snitch-repo-shaped (paths, hart numbering conventions) - start by driving them as-is on a mesh project's logs before considering any integration; trace volume is significant - keep it an on-demand target (`make traces`-style), never part of the suite; the host-side story differs per host IP - begin with the snitch harts only. Schedule after the VIP (chapter 2.1): the two share the "measure through what the IPs already provide" philosophy but neither depends on the other.

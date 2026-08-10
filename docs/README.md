@@ -39,5 +39,7 @@ A component enters the generator through a standardized SystemVerilog wrapper. W
 | :--- | :--- |
 | [SystemVerilog Intermediate Representation](developer/intermediate_representation.md) | The SV-IR data model, its construction flow, and the static verification engine that runs before rendering |
 | [Future Evolution Tasks](developer/wip/future_evolution_tasks.md) | Planned work and open decisions — read it **before** proposing an architectural change: the work may already be planned there, with its trade-offs discussed |
+| [Astral Simulation Reference](developer/references/astral_simulation_reference.md) | How the Astral reference project simulates and verifies — testbench/VIP architecture, boot modes, test suite, scripts, CI. `developer/references/` hosts these analyses of the read-only reference trees |
+| [Gwaihir Simulation Reference](developer/references/gwaihir_simulation_reference.md) | The same analysis for the Gwaihir mesh SoC, closing with a side-by-side comparison of the two reference verification models |
 
 The `developer/wip/` directory contains only work in progress or not yet started: how Ollivander *currently* behaves is documented in the guides above, never there.
