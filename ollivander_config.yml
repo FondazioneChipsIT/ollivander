@@ -329,29 +329,10 @@ dependencies:
     pre_build_cmds:
       - "$(PYTHON) {ollivander_dir}/scripts/patch_spatz.py {bender_work}"
       - "$(PYTHON) {ollivander_dir}/scripts/patch_spatz_snitch.py {bender_work}"
-    patches:
-      # The shipped bootrom bakes its default config's ABSOLUTE TCDM base (0x0010_0000)
-      # into BOOTDATA and computes the entry-point register's address from it: at any
-      # other instantiation base - crux places the cluster at 0x5100_0000 - the wakeup
-      # read leaves the cluster through its master port, and no single baked value can
-      # ever serve two instances. The two patches below replace the BOOTDATA arithmetic
-      # (7 instructions, hand-assembled in the ROM literal) with the PC-RELATIVE pattern
-      # of the snitch_cluster bootrom: auipc t2, -'h10; addi t2, t2, -'h64; lw t2, (t2);
-      # jr t2. PC-relative needs the bootrom at a FIXED OFFSET from the peripherals, so
-      # spatz_cluster_isle.sv instantiates it at cluster_base + 'h3_0000 (right after
-      # the peripherals; the IP default of absolute 'h1000 is disjoint from the cluster
-      # block and unreachable by any position-independent arithmetic): from the auipc at
-      # bootrom offset 'hbc the sequence lands on base + 'h2_0058, the
-      # CLUSTER_BOOT_CONTROL entry point, for EVERY instance at ANY base. The baked
-      # constants are the TCDM+peripheral geometry, fixed by the same isle, which
-      # documents the coupling in its Offload* contract block. Upstream candidate: adopt
-      # a PC-relative bootrom in spatz proper (upstream_pr_candidates.md, 2026-08-07).
-      - file: "{bender_work}/spatz/hw/system/spatz_cluster/src/generated/bootrom.sv"
-        search: "0185a383_10500073_30461073"
-        replace: "ffff0397_10500073_30461073"
-      - file: "{bender_work}/spatz/hw/system/spatz_cluster/src/generated/bootrom.sv"
-        search: "ffdff06f_10500073_00038067_0003a383_00038393_05838393_01c383b3_0205ae03"
-        replace: "ffdff06f_10500073_00000013_00000013_00000013_00038067_0003a383_f9c38393"
+    # The cluster bootrom repairs (PC-relative entry sequence, sub-line slicing for
+    # narrow readers) live in patch_spatz.py: the slicing fix (2026-08-10) pushed the
+    # set past the three-inline-patches limit, so the whole family moved to the script
+    # per the rule above. See the script docstring for the full analysis.
   timer_unit:
     git: "https://github.com/pulp-platform/timer_unit.git"
     version: "1.0.3"

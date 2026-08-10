@@ -44,7 +44,7 @@ module spatz_cluster_isle
   // absolute TCDM base into BOOTDATA, which breaks at any other instantiation base
   // and for any second instance; the dependency registry therefore patches its
   // entry-point sequence to PC-relative arithmetic (the snitch_cluster bootrom
-  // pattern) - see the spatz patch in ollivander_config.yml. The 'h2_0000 TCDM
+  // pattern) and repairs its sub-line read slicing - see patch_spatz.py. The 'h2_0000 TCDM
   // geometry is the one constant that patch and contract share with the Cfg below.
   localparam string       OffloadContract  = "memory_mapped",
   // Base of the cluster peripheral registers: the end of the TCDM.

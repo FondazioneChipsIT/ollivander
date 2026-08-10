@@ -961,8 +961,11 @@ class RTLGenerator:
             # sum of squares. Single source for BOTH sides of the check: the payload is
             # compiled with these as -D macros (Makefile.sw.mako) and the host firmware
             # bakes the expected result from the same two numbers (main_offload.c.mako).
+            # The whitening constant must keep bit 31 CLEAR: the memory_mapped return
+            # slots carry (value << 1) | 1 in 32 bits, so only 31 bits of value survive
+            # the round-trip (found 2026-08-10: 0xCAFE0000 came back as 0x4AFE...).
             "offload_check_n": 16,
-            "offload_check_xor": 0xCAFE0000,
+            "offload_check_xor": 0x4AFE0000,
             "noc_id_widths": noc_id_widths,
             "noc_user_widths": noc_user_widths,
             "ir": ir,
