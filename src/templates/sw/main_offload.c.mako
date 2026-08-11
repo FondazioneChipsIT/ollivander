@@ -31,11 +31,11 @@
 
 <%
 # Stack pointer derivation - hello_world places the stack at the very end of the
-# boot memory, but the offload app carves a quarter of that memory out as the
-# payload region (see payload.ld and the carve rationale in rtl_generator.py):
-# the host stack therefore tops out at the payload base, growing down over the
-# host's own image region, so image, stack and payload can never meet.
-stack_pointer = hex(offload_payload_base)
+# boot memory; the offload app does the same UNLESS the payload region is carved
+# out of that memory (the default, no 'payload_memory' declared), in which case
+# the stack is capped at the payload base so image, stack and payload can never
+# meet. The generator resolves both cases into one value (rtl_generator.py).
+stack_pointer = hex(offload_host_stack_top)
 
 # UART discovery - same logic as main.c.mako.
 all_comps = [config.host] + (config.components if config.components else [])
@@ -146,10 +146,19 @@ int main(void) {
      * documents what this firmware was actually generated to test. */
     print_str("[OFFLOAD] Targets: ${", ".join(offload_targets.keys())}\n");
 
+% if offload_payload_ctrl_group:
+    /* The payload memory powers on gated: bring its control group up before
+     * the first payload write (helper rationale in the offload header). */
+    offload_payload_mem_enable();
+
+% endif
 % for t_name, t in offload_targets.items():
     /* ------------------------------------------------------------------
      * Target '${t_name}' ('${t["contract"]}' contract)
      * ------------------------------------------------------------------ */
+% if t["sys_ctrl_group"]:
+    ${t_name}_enable();
+% endif
 % if t["sys_isolate"]:
     if (${t_name}_deisolate() != 0) offload_fail("${t_name}", "de-isolation timed out");
 % endif
@@ -185,34 +194,50 @@ int main(void) {
         print_str(")\n");
     }
 % else:
-    ${t_name}_init_returns();
-    ${t_name}_set_entry(OFFLOAD_PAYLOAD_BASE);
-    ${t_name}_start();
+    /* Parallel launch: configure and wake EVERY instance before polling any,
+     * so all clusters of the array run the payload concurrently. */
+    for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
+        ${t_name}_init_returns(n);
+        ${t_name}_set_entry(n, OFFLOAD_PAYLOAD_BASE);
+    }
+    for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
+        ${t_name}_start(n);
+    }
     if (${t_name}_wait_done() != 0) {
-        /* Dump the slots before parking: which cores never reported localizes
-         * the failure (none woke / one hung / the write path is broken). */
+        /* Dump the slots before parking: which instances/cores never reported
+         * localizes the failure (none woke / one hung / a broken write path). */
         print_str("[OFFLOAD] ${t_name} slots at timeout:");
-        for (uint32_t c = 0; c < ${t_name.upper()}_OFFLOAD_NUM_CORES; c++) {
-            print_str(" ");
-            print_hex(*(volatile uint32_t *)(uintptr_t)(${t_name.upper()}_OFFLOAD_RETURN_BASE + c * 4u));
+        for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
+            print_str(" |");
+            for (uint32_t c = 0; c < ${t_name.upper()}_OFFLOAD_NUM_CORES; c++) {
+                print_str(" ");
+                print_hex(*(volatile uint32_t *)(uintptr_t)(${t_name.upper()}_OFFLOAD_RETURN_BASE(n) + c * 4u));
+            }
         }
         print_str("\n");
         offload_fail("${t_name}", "return slots timed out");
     }
     {
-        /* Core 0 carries the checksum, every other core reports a bare done. */
-        uint32_t ret = ${t_name}_get_return(0);
-        if (ret != ${hex(expected)}u) {
-            print_str("[OFFLOAD] ${t_name} core 0 returned ");
-            print_hex(ret);
-            print_str(", expected ${hex(expected)}\n");
-            offload_fail("${t_name}", "wrong return value");
+        /* Core 0 of every instance carries the checksum, every other core
+         * reports a bare done. */
+        for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
+            uint32_t ret = ${t_name}_get_return(n, 0);
+            if (ret != ${hex(expected)}u) {
+                print_str("[OFFLOAD] ${t_name} inst ");
+                print_hex(n);
+                print_str(" core 0 returned ");
+                print_hex(ret);
+                print_str(", expected ${hex(expected)}\n");
+                offload_fail("${t_name}", "wrong return value");
+            }
+            for (uint32_t c = 1; c < ${t_name.upper()}_OFFLOAD_NUM_CORES; c++) {
+                if (${t_name}_get_return(n, c) != 0u) offload_fail("${t_name}", "secondary core returned nonzero");
+            }
         }
-        for (uint32_t c = 1; c < ${t_name.upper()}_OFFLOAD_NUM_CORES; c++) {
-            if (${t_name}_get_return(c) != 0u) offload_fail("${t_name}", "secondary core returned nonzero");
-        }
-        print_str("[OFFLOAD] ${t_name} PASS (ret=");
-        print_hex(ret);
+        print_str("[OFFLOAD] ${t_name} PASS (");
+        print_hex(${t_name.upper()}_OFFLOAD_NUM_INSTANCES);
+        print_str(" instances, ret=");
+        print_hex(${t_name}_get_return(0, 0));
         print_str(")\n");
     }
 % endif

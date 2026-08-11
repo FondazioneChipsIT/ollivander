@@ -132,7 +132,9 @@ config = OllivanderConfig(
         description="Main application processor (Cheshire host)",
         type="cheshire_isle",
         clock_domain="system",
-        isa="rv64imafdc",           # Host Instruction Set Architecture for the software compiler
+        # CVA6 implements fence.i (the offload app relies on it to publish the payload);
+        # modern binutils want the extension spelled out in the -march string.
+        isa="rv64imafdc_zifencei",  # Host Instruction Set Architecture for the software compiler
         abi="lp64d",                # Host Application Binary Interface for the software compiler
         cmodel="medany",            # Host Code Model for the software compiler
         placement={"logical": {"x": 9, "y": 3}},
@@ -146,7 +148,14 @@ config = OllivanderConfig(
             ]
         },
         features={"error_slaves": ["async_axi_llc", "axi_llc"], "terminate_ports": ["async_axi_in", "async_axi_out"]},
-        parameters={"Vga": False, "Cva6ExtCieLength": 0x60000000, "Cva6ExtCieOnTop": True, "LlcCdcSyncStages": 0}
+        parameters={"Vga": False, "Cva6ExtCieLength": 0x60000000, "Cva6ExtCieOnTop": True, "LlcCdcSyncStages": 0,
+                    # The LLC-out window doubles as CVA6's cached+executable region above
+                    # the CIE ceiling (see cheshire_isle.sv). This map boots from the L2 at
+                    # BASE_L2, so the window covers exactly the 8 L2 tiles and nothing more:
+                    # with the DefaultCfg window ([0x8000_0000, 4G)) the cluster windows at
+                    # BASE_CLUSTERS would be CACHED, and the offload firmware's return-slot
+                    # polls would spin forever on a stale line.
+                    "LlcOutRegionStart": BASE_L2, "LlcOutRegionEnd": BASE_L2 + 8 * 0x00100000}
     ),
     
     # --- SYSTEM COMPONENTS (Compute, Memories, Peripherals) ---
@@ -266,7 +275,7 @@ config = OllivanderConfig(
         "sim_timeout_ns": 10000000,
         "preload_memories": [
             # Hierarchical RTL path to the first L2 tile, placed at (0,0).
-            {"instance": "i_tile_0_0.i_isle", "file": "generated/sw/hello_world.hex"}
+            {"instance": "i_tile_0_0.i_isle", "file": "generated/sw/{test_app}.hex"}
         ]
     },
 
@@ -277,7 +286,13 @@ config = OllivanderConfig(
     software_stack={
         "toolchain": "riscv64-unknown-elf-",
         "boot_memory": "l2_shared_memory",
-        "test_app": {"name": "hello_world", "auto_generate_c": True,
+        # The offload app is a strict superset of hello_world: same greeting first, then
+        # payload offload onto every component declaring an Offload* contract (here: the
+        # 16 directly-instantiated cluster_subtile instances, launched in parallel; the
+        # nested macros are opaque tops and correctly resolve as non-candidates). No
+        # 'payload_memory': the boot L2 is reachable from both networks, so the default
+        # carve (second quarter of its instance-0 window) is fetchable by the clusters.
+        "test_app": {"name": "offload", "auto_generate_c": True,
                      # Simulation-fast UART (divisor 3, ~2.08 Mbaud effective): at 115200
                      # the UART dominates the run. The generator keeps firmware and
                      # testbench monitor on the same divisor; drop the key to return to

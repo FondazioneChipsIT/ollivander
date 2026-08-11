@@ -120,7 +120,7 @@ host:
   description: "Main application processor (Cheshire host)"
   type: "cheshire_isle"
   clock_domain: "system"
-  isa: "rv64imafdc"           # Host Instruction Set Architecture (ISA) for software compiler
+  isa: "rv64imafdc_zifencei"  # Host Instruction Set Architecture (ISA) for software compiler
   abi: "lp64d"                # Host Application Binary Interface (ABI) for software compiler
   cmodel: "medany"            # Host Code Model for software compiler
   placement:
@@ -148,7 +148,13 @@ host:
     terminate_ports: ["async_axi_in", "async_axi_out"]
   parameters:                 # Renamed from system_config to match HW-First semantics
     Vga: false                # Aligned standard Cheshire parameter name
-    Cva6ExtCieLength: 0x60000000
+    # The CIE window is CVA6's cached+executable slice of the external space:
+    # [0x8000_0000 - length, 0x8000_0000) with OnTop. 0x2000_0000 covers exactly
+    # the SPMs (the host image at 0x6000_0000 must stay executable) and the L2
+    # (payload published through fence.i), while the cluster windows at
+    # 0x2000_0000 stay UNCACHED: the offload firmware polls its return slots
+    # there, and a cached poll would spin on a stale line forever.
+    Cva6ExtCieLength: 0x20000000
     Cva6ExtCieOnTop: true
     LlcCdcSyncStages: 0
 
@@ -266,7 +272,7 @@ testbench:
     # first instruction without any external bring-up. See the boot memory note in
     # the software_stack section below.
     - instance: "i_tile_9_2.i_isle" # Hierarchical RTL path to the narrow SPM tile
-      file: "generated/sw/hello_world.hex"    # Path to the compiled hex binary
+      file: "generated/sw/{test_app}.hex"     # Path to the compiled hex binary ({test_app} resolves to the configured app)
 
 # ------------------------------------------------------------------------------
 # 8. SOFTWARE STACK & FIRMWARE
@@ -282,7 +288,15 @@ software_stack:
   # them. Ollivander uses this to auto-generate the Linker Script.
   boot_memory: "top_spm_narrow"
   test_app:
-    name: "hello_world"
+    # The offload app is a strict superset of hello_world: same greeting first,
+    # then payload offload onto every component declaring an Offload* contract
+    # (here: the 16 snitch cluster_subtile instances, launched in parallel).
+    name: "offload"
+    # The payload cannot live in the (narrow-only) boot SPM: the snitch clusters
+    # refill their instruction caches through their WIDE master, so the payload
+    # must sit in a memory both networks reach. L2 is; the firmware ungates its
+    # control group before the load.
+    payload_memory: "l2_shared_memory"
     auto_generate_c: true            # Instructs Ollivander to create a basic main.c
     # Simulation-fast UART (divisor 3, ~2.08 Mbaud effective): at 115200 the UART
     # dominates the run. The generator keeps firmware and testbench monitor on the

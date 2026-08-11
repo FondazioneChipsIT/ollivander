@@ -22,6 +22,18 @@ module cluster_subtile
   import snitch_cluster_pkg::*;
 #(
   parameter bit UseHWPE = 1'b0,
+  // -------------------------------------------------------------------------------
+  // INSTANCE IDENTITY (see docs/hw/subtile_standardization.md, "Instance identity
+  // parameters"). A subtile that decodes its own slave window declares this pair and
+  // Ollivander fills it PER INSTANCE at tile instantiation (rtl_ir_builder.py):
+  // base_addr + index * size_per_instance for the base, size_per_instance for the
+  // size - the same x-major enumeration the FlooGen address map and the auto control
+  // group bit-selects use, and the same declared-parameter route as L2BaseAddr /
+  // L2MemSize on the memory isles. Values are PROJECT-LOCAL in macro builds too: the
+  // border adapters rebase incoming traffic before it reaches any tile.
+  // -------------------------------------------------------------------------------
+  parameter longint unsigned InstanceBaseAddr   = 64'h0,
+  parameter longint unsigned InstanceWindowSize = 64'h0,
   // The geometry this subtile cannot depart from, stated as literals so that Ollivander
   // can read it and validate the connection to the bus this subtile is attached to
   // (soc_schema.py, HARDWARE CONSTRAINTS CHECK). Literal rather than a reference to
@@ -41,7 +53,39 @@ module cluster_subtile
   localparam int unsigned AxiNarrowInIdWidth  = 2,   // snitch_cluster_pkg::NarrowIdWidthIn
   localparam int unsigned AxiNarrowOutIdWidth = 4,   // snitch_cluster_pkg::NarrowIdWidthOut
   localparam int unsigned AxiWideInIdWidth    = 1,   // snitch_cluster_pkg::WideIdWidthIn
-  localparam int unsigned AxiWideOutIdWidth   = 3    // snitch_cluster_pkg::WideIdWidthOut
+  localparam int unsigned AxiWideOutIdWidth   = 3,   // snitch_cluster_pkg::WideIdWidthOut
+  // ---------------------------------------------------------------------------------
+  // Offload boot contract - "memory_mapped", the snitch-family protocol (semantics in
+  // docs/hw/isle_standardization.md section 9; the spatz isle carries the sibling
+  // realization). The cores boot the cluster's internal PC-RELATIVE bootrom and park
+  // in WFI; the host writes the payload entry point into scratch[1] of the cluster
+  // peripherals, wakes every hart through cl_clint_set, and collects per-core
+  // (value << 1) | 1 results from a slot array in the cluster TCDM.
+  //
+  // Authority for the offsets: the meta-generated RTL this subtile wraps, produced by
+  // the registry pre-build from the amended default cfg. Peripherals sit after the
+  // napot-rounded TCDM (128 KiB) plus the 4 KiB internal bootrom, hence 'h2_1000;
+  // scratch[1] and cl_clint_set offsets come from the generated register decoder
+  // (snitch_cluster_peripheral_reg.sv: scratch[] at 'h180 + i*8, cl_clint_set 'h1a0).
+  // Values must track the generated snitch_cluster_pkg (NrCores = 9 counts the DM
+  // core: it boots and reports a slot like every other hart).
+  localparam string       OffloadContract   = "memory_mapped",
+  localparam int unsigned OffloadCtrlOffs   = 'h0002_1000,
+  localparam int unsigned OffloadEntryOffs  = 'h188,
+  localparam int unsigned OffloadWakeOffs   = 'h1a0,
+  // Slots and payload stacks live in the TCDM, addressed by the PAYLOAD through the
+  // cluster's ALIAS REGION (every instance sees ITSELF at OffloadLocalBase, so one
+  // payload image serves all instances without knowing its own cluster - mandatory
+  // here, since hart_base_id_i is tied to zero on every instance below and mhartid
+  // carries no cluster identity). The host reaches the same slots through each
+  // instance's own window. Tracks AliasRegionBase in the generated wrapper.
+  localparam int unsigned OffloadLocalBase  = 'h1800_0000,
+  localparam int unsigned OffloadReturnOffs = 'h0001_FF00,
+  localparam int unsigned OffloadStackOffs  = 'h0001_F000,
+  localparam int unsigned OffloadNumCores   = 9,
+  // Snitch executes rv32imafd; the payload keeps the conservative integer subset.
+  localparam string       OffloadIsa        = "rv32im_zicsr",
+  localparam string       OffloadAbi        = "ilp32"
 ) (
   input  logic                                    clk_i,
   input  logic                                    rst_ni,
@@ -52,10 +96,7 @@ module cluster_subtile
   input  logic                      [snitch_cluster_pkg::NrCores-1:0] meip_i,
   input  logic                      [snitch_cluster_pkg::NrCores-1:0] mtip_i,
   input  logic                      [snitch_cluster_pkg::NrCores-1:0] msip_i,
-  input  logic                      [        9:0] hart_base_id_i,
-  input  snitch_cluster_pkg::addr_t               cluster_base_addr_i,
-  input  snitch_cluster_pkg::addr_t               cluster_base_offset_i,
-  
+
   // Dual-Network AXI Master Ports
   output snitch_cluster_pkg::narrow_out_req_t     axi_narrow_req_o,
   input wire snitch_cluster_pkg::narrow_out_resp_t    axi_narrow_resp_i,
@@ -225,9 +266,13 @@ module cluster_subtile
     .meip_i,
     .mtip_i,
     .msip_i,
-    .hart_base_id_i,
-    .cluster_base_addr_i,
-    .cluster_base_offset_i,
+    // Every instance keeps hart base ZERO: mhartid identifies a core only within
+    // its own cluster, which is why the offload payload runs through the alias
+    // region (unique global IDs are an open question, docs/developer/wip).
+    .hart_base_id_i        ('0),
+    // The instance identity parameters, filled per instance by the generator.
+    .cluster_base_addr_i   (snitch_cluster_pkg::addr_t'(InstanceBaseAddr)),
+    .cluster_base_offset_i (snitch_cluster_pkg::addr_t'(InstanceWindowSize)),
     .mxip_i            (mxip),
     .clk_d2_bypass_i   ('0),
     .sram_cfg_tcdm_i        ('0),

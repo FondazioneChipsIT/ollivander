@@ -163,7 +163,9 @@ host:
   description: "Main application processor (Cheshire host)"
   type: "cheshire_isle"       # Must match a SystemVerilog wrapper (e.g., cheshire_isle.sv)
   clock_domain: "host"        # Automatically wires clk_i/rst_ni to the 'host' clock tree
-  isa: "rv64imafdc"           # Host Instruction Set Architecture (ISA) for software compiler
+  isa: "rv64imafdc_zifencei"  # Host ISA for the software compiler. CVA6 implements fence.i
+                              # (the offload app relies on it to publish the payload); modern
+                              # binutils want the extension spelled out in the -march string.
   abi: "lp64d"                # Host Application Binary Interface (ABI) for software compiler
   cmodel: "medany"            # Host Code Model for software compiler
   export_interfaces: ["jtag", "uart", "spi", "i2c"] # Routes these physical pins to the Top-Level
@@ -349,12 +351,13 @@ components:
             [1] : mailbox.snd_irq_o[3] | mailbox.snd_irq_o[1],
             [0] : mailbox.snd_irq_o[2] | mailbox.snd_irq_o[0]
           }
-      mtip_i:
-        cdc: false
-        source: >
-          {
-            [7:0] : {8{manager.mtip_ext_o}}
-          }
+      # Deliberately tied off (was {8{manager.mtip_ext_o}}): the snitch cores park in
+      # their bootrom on WFI, whose wake logic samples the RAW pending lines - the host
+      # CLINT's mtip is X while Cheshire is still booting and permanently 1 afterwards
+      # (mtimecmp resets to 0), which would break the parking either way. The offload
+      # model wakes the cluster exclusively through its internal CLINT (same rationale
+      # as crux, 2026-08-07).
+      mtip_i: { source: "none" }
       # 'none' explicitly ties the interrupt input to 0 to avoid floating wires
       meip_i: { source: "none" }
 
@@ -439,7 +442,7 @@ testbench:
   sim_timeout_ns: 10000000
   preload_memories:
     - instance: "i_l2_shared_memory"
-      file: "generated/sw/hello_world.hex"
+      file: "generated/sw/{test_app}.hex"     # {test_app} resolves to the configured app
 
 # ------------------------------------------------------------------------------
 # 9. SOFTWARE STACK & FIRMWARE
@@ -449,7 +452,10 @@ software_stack:
   toolchain: "riscv64-unknown-elf-"
   boot_memory: "l2_shared_memory"    # Ollivander will use this to auto-generate the Linker Script
   test_app:
-    name: "hello_world"
+    # The offload app is a strict superset of hello_world: same greeting first, then
+    # payload offload onto every component declaring an Offload* contract (here:
+    # pulp_cluster via control_wire and spatz_cluster via memory_mapped, as on crux).
+    name: "offload"
     auto_generate_c: true            # Instructs Ollivander to create a basic main.c
     # Simulation-fast UART (divisor 3, ~2.08 Mbaud effective): at 115200 the UART
     # dominates the run. The generator keeps firmware and testbench monitor on the

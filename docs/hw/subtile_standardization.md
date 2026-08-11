@@ -94,6 +94,19 @@ For memory subtiles (e.g., `l2_subtile.sv`), the wrapper should expose standard 
 
 These parameters are dynamically overridden at instantiation time by the generator based on the YAML configuration interfaces mapping.
 
+### 2.6 Instance Identity Parameters
+
+Some IPs decode their **own slave window internally**: the block compares incoming addresses against a base and an extent it was told at instantiation, serves what falls inside (local memory, internal peripherals) and forwards the rest to its master port. The snitch-family cluster is the reference case. When such a block is instantiated as a component **array** (a placement `box` with `size_per_instance`), every instance needs its own base — one shared constant cannot serve sixteen windows, and a wrong base makes every window access miss the internal decode and stall (there is no error response: the transaction re-enters the network and never completes).
+
+A subtile that decodes its own window declares the following pair in its header, and the generator fills it **per instance** at tile instantiation (`rtl_ir_builder.py`):
+
+*   `InstanceBaseAddr` (`parameter longint unsigned`): the base address of THIS instance's slave window. The generator computes `base_addr + index * size_per_instance`, with the same x-major instance enumeration the FlooGen address map and the auto-control-group bit-selects use, so the three mechanisms can never disagree. In macro builds the value stays **project-local**: the macro's border adapters rebase incoming traffic before any tile sees it.
+*   `InstanceWindowSize` (`parameter longint unsigned`): the per-instance window extent (`size_per_instance`, or `size` for a single instance).
+
+Current generator bound: the tile wrapper re-declares header parameters with a type inferred from the parsed default value, which normalizes to a 32-bit `int unsigned` — identity values must therefore stay below 4 GiB for now. Every example map satisfies this by construction; lifting the bound means carrying the declared parameter type through the SV parser (noted with the instance-identity follow-ups in `docs/developer/wip/future_evolution_tasks.md`).
+
+This is a **declared-parameter opt-in**, the same route as `L2BaseAddr`/`L2MemSize` above: the generator acts only when the header declares the parameter, and never matches on component types or port names. The subtile consumes the parameters internally (e.g. `cluster_subtile.sv` drives the meta-generated wrapper's `cluster_base_addr_i`/`cluster_base_offset_i` ports from them, and ties `hart_base_id_i` to zero — global hart IDs deliberately repeat across the array, see the alias-region rationale in the offload contract and the open question in `docs/developer/wip/future_evolution_tasks.md`); no identity port appears on the subtile interface.
+
 ---
 
 ## 3. Supported Interfaces & Port Naming

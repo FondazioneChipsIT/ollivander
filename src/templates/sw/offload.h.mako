@@ -28,10 +28,23 @@ sys_regs_type = f"{top_level_module_name}_sys_regs_t"
 /* The System Controller, through its PeakRDL struct overlay. */
 #define OFFLOAD_SYS_REGS ((volatile ${sys_regs_type} *)(uintptr_t)${sys_ctrl_base_macro})
 
-/* Payload region: the second quarter of the boot memory, shared by every target
- * in turn (the offload test is sequential and blocking). Must match payload.ld;
- * the carve is explained in rtl_generator.py (dyn_mem view aliasing). */
+/* Payload region, shared by every target (loaded once, fetched by all): either
+ * the second quarter of the boot memory (default carve) or the window of the
+ * explicit 'test_app.payload_memory' component. Must match payload.ld; both
+ * modes and their reasons are explained in rtl_generator.py. */
 #define OFFLOAD_PAYLOAD_BASE ${hex(offload_payload_base)}u
+
+% if offload_payload_ctrl_group:
+/* The payload memory sits under the '${offload_payload_ctrl_group}' auto control
+ * group and powers on gated: ungate the whole group (clock on, reset released)
+ * before the first payload write. The read-back drains the posted writes so no
+ * later access can overtake the release. */
+static inline void offload_payload_mem_enable(void) {
+    OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_clk_en.w = 0xFFFFFFFFu;
+    OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_rst.w = 0u;
+    (void)OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_rst.w;
+}
+% endif
 
 /* Bound on every polling loop: sized so a dead target is reported on the UART
  * well before the testbench sim_timeout turns the run into a silent hang (an
@@ -56,9 +69,29 @@ P = project_name.upper()
 #define ${T}_OFFLOAD_BOOT_ADDR_REG  (${T}_OFFLOAD_CTRL_BASE + ${hex(t["boot_addr_offs"])}u)
 #define ${T}_OFFLOAD_RETURN_REG     (${T}_OFFLOAD_CTRL_BASE + ${hex(t["return_offs"])}u)
 % else:
-#define ${T}_OFFLOAD_ENTRY_REG      (${T}_OFFLOAD_CTRL_BASE + ${hex(t["entry_offs"])}u)
-#define ${T}_OFFLOAD_WAKE_REG       (${T}_OFFLOAD_CTRL_BASE + ${hex(t["wake_offs"])}u)
-#define ${T}_OFFLOAD_RETURN_BASE    (${P}_${T}_BASE_ADDR + ${hex(t["return_offs"])}u)
+/* Instance array: a placement box generates N instances at a fixed stride; the
+ * firmware drives all of them in parallel. Single-instance targets degenerate
+ * to N = 1, stride 0, and the very same code. */
+#define ${T}_OFFLOAD_NUM_INSTANCES  ${t["num_instances"]}u
+#define ${T}_OFFLOAD_INST_STRIDE    ${hex(t["instance_stride"])}u
+#define ${T}_OFFLOAD_INST_BASE(i)   (${P}_${T}_BASE_ADDR + (i) * ${T}_OFFLOAD_INST_STRIDE)
+#define ${T}_OFFLOAD_ENTRY_REG(i)   (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["ctrl_offs"])}u + ${hex(t["entry_offs"])}u)
+#define ${T}_OFFLOAD_WAKE_REG(i)    (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["ctrl_offs"])}u + ${hex(t["wake_offs"])}u)
+#define ${T}_OFFLOAD_RETURN_BASE(i) (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["return_offs"])}u)
+% endif
+
+% if t["sys_ctrl_group"]:
+/* This target's instances sit under the '${t["sys_ctrl_group"]}' auto control
+ * group and power on gated: ungate the WHOLE group (clock on, reset released)
+ * before the first slave-window access - a transaction into a gated isle never
+ * completes and would hang the host. The tile's NoC router itself stays on the
+ * always-on system clock (universal_tile.sv), so the network is routable while
+ * gated; only the isle behind the chimney needs this bring-up. */
+static inline void ${t_name}_enable(void) {
+    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w = 0xFFFFFFFFu;
+    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w = 0u;
+    (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w;
+}
 % endif
 
 % if t["sys_isolate"]:
@@ -112,45 +145,49 @@ static inline uint32_t ${t_name}_get_return(void) {
     return *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_RETURN_REG;
 }
 % else:
-/* Zero the per-core return slots BEFORE waking the cores: each slot reads as
- * done only once its core stores (value << 1) | 1, so a stale bit 0 from a
- * previous run must never survive into the poll below. */
-static inline void ${t_name}_init_returns(void) {
+/* Zero one instance's return slots BEFORE waking it: each slot reads as done
+ * only once its core stores (value << 1) | 1, so a stale bit 0 from a previous
+ * run must never survive into the poll below. */
+static inline void ${t_name}_init_returns(uint32_t inst) {
     for (uint32_t i = 0; i < ${T}_OFFLOAD_NUM_CORES; i++) {
-        *(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE + i * 4u) = 0;
+        *(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE(inst) + i * 4u) = 0;
     }
 }
 
-/* Publish the payload entry point where the cluster bootrom will read it. */
-static inline void ${t_name}_set_entry(uint32_t entry) {
-    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_ENTRY_REG = entry;
+/* Publish the payload entry point where the instance's bootrom will read it. */
+static inline void ${t_name}_set_entry(uint32_t inst, uint32_t entry) {
+    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_ENTRY_REG(inst) = entry;
 }
 
-/* Wake every core at once through the cluster CLINT: the cores sit in the
- * bootrom's WFI since reset, no fetch-enable wire exists on this contract. */
-static inline void ${t_name}_start(void) {
-    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_WAKE_REG =
+/* Wake every core of one instance through its cluster CLINT: the cores sit in
+ * the bootrom's WFI since reset, no fetch-enable wire exists on this contract.
+ * The caller wakes ALL instances before polling any, so they run in parallel. */
+static inline void ${t_name}_start(uint32_t inst) {
+    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_WAKE_REG(inst) =
         (1u << ${T}_OFFLOAD_NUM_CORES) - 1u;
 }
 
-/* Poll the return slots until every core reported (bit 0 set), reading through
- * the slave window - MMIO on this side, so no cache can hold a stale copy. */
+/* Poll the return slots of every instance until every core reported (bit 0
+ * set), reading through the slave windows - MMIO on this side, so no cache can
+ * hold a stale copy. The budget counts SLOT READS (the sweep resumes at the
+ * first pending slot), so the bound holds regardless of the population and the
+ * diagnostic failure below still prints well before the testbench timeout. */
 static inline int ${t_name}_wait_done(void) {
-    /* The budget counts SLOT READS (the sweep restarts on the first pending core),
-     * so the bound holds regardless of the core count and the diagnostic failure
-     * below still prints well before the testbench timeout. */
     uint32_t done = 0;
+    const uint32_t total = ${T}_OFFLOAD_NUM_INSTANCES * ${T}_OFFLOAD_NUM_CORES;
     for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
-        uint32_t slot = *(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE + done * 4u);
+        uint32_t inst = done / ${T}_OFFLOAD_NUM_CORES;
+        uint32_t core = done % ${T}_OFFLOAD_NUM_CORES;
+        uint32_t slot = *(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE(inst) + core * 4u);
         if ((slot & 1u) == 0u) continue;
-        if (++done == ${T}_OFFLOAD_NUM_CORES) return 0;
+        if (++done == total) return 0;
     }
     return -1;
 }
 
-/* Result a given core left in its return slot (the value above the done bit). */
-static inline uint32_t ${t_name}_get_return(uint32_t core) {
-    return (*(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE + core * 4u)) >> 1;
+/* Result a given core of a given instance left in its return slot. */
+static inline uint32_t ${t_name}_get_return(uint32_t inst, uint32_t core) {
+    return (*(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE(inst) + core * 4u)) >> 1;
 }
 % endif
 

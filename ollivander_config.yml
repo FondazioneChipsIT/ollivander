@@ -299,6 +299,27 @@ dependencies:
   snitch_cluster:
     git: "https://github.com/pulp-platform/snitch_cluster.git"
     rev: "2fa38482c2c822bfbedfdfd87abb3ed45521646e"
+    # The generated cluster's PMA (its FETCHABLE regions) comes from this cfg: the
+    # default marks only [0x8000_0000, +2G) cacheable, but the mesh examples hold
+    # their boot images and offload payloads in SPM/L2 windows the default misses:
+    # noc at [0x6000_0000, +512M), noc_subtile and noc_isle at [0x2000_0000, +512M).
+    # Without these regions the snitch cores cannot fetch the payload (the spatz PMA
+    # lesson replayed at cfg level, 2026-08-10). Patches apply before pre_build_cmds,
+    # so the 'make rtl' below generates from the amended cfg.
+    #
+    # cluster_base_expose makes the generated wrapper PASS THROUGH its identity
+    # ports (hart_base_id_i, cluster_base_addr_i, cluster_base_offset_i) instead
+    # of hard-wiring the inner cluster to the cfg constants: one baked base
+    # cannot serve an ARRAY of instances, and every window access missed the
+    # cluster's internal decode and hung the host (found 2026-08-10). Ollivander
+    # drives the per-instance base/extent at tile instantiation (rtl_ir_builder).
+    patches:
+      - file: "{bender_work}/snitch_cluster/cfg/default.json"
+        search: "            name: \"dram\","
+        replace: "            name: \"ollivander_low_l2_spm\",\n            address: 0x20000000,\n            length: 0x20000000,\n            cacheable: true\n        },\n        {\n            name: \"ollivander_boot_and_l2\",\n            address: 0x60000000,\n            length: 0x20000000,\n            cacheable: true\n        },\n        {\n            name: \"dram\","
+      - file: "{bender_work}/snitch_cluster/cfg/default.json"
+        search: "        alias_region_enable: true,"
+        replace: "        alias_region_enable: true,\n        cluster_base_expose: true,"
     bender_targets:
       - "snitch_cluster"
       - "snitch_cluster_wrapper"

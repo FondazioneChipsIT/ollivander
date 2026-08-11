@@ -98,6 +98,15 @@ module cheshire_isle
   parameter int unsigned LlcNumBlocks       = 8,
   parameter bit          Cva6ExtCieOnTop    = 0,
   parameter int unsigned Cva6ExtCieLength   = 'h2000_0000,
+  // The LLC-out window doubles as CVA6's cached+executable region ABOVE the CIE
+  // ceiling (the CIE is anchored below 0x8000_0000 by construction, see
+  // gen_cva6_cfg in cheshire_pkg.sv). A SoC that boots from a memory mapped
+  // high must cover exactly that memory here and nothing more: anything else in
+  // the window becomes CACHED for the host, and polling device memory (e.g. the
+  // offload return slots in a cluster TCDM) through a cache spins on a stale
+  // line forever. Defaults are the upstream DefaultCfg values.
+  parameter longint unsigned LlcOutRegionStart = 64'h8000_0000,
+  parameter longint unsigned LlcOutRegionEnd   = 64'h1_0000_0000,
   // Outstanding transaction limits for AXI isolators
   parameter int unsigned AxiMaxSlvTrans     = 32,
   parameter int unsigned AxiMaxMstTrans     = 32,
@@ -322,6 +331,8 @@ module cheshire_isle
     cfg.LlcNumBlocks      = LlcNumBlocks;
     cfg.Cva6ExtCieOnTop   = Cva6ExtCieOnTop;
     cfg.Cva6ExtCieLength  = Cva6ExtCieLength;
+    cfg.LlcOutRegionStart = LlcOutRegionStart;
+    cfg.LlcOutRegionEnd   = LlcOutRegionEnd;
     cfg.LlcMaxReadTxns    = ollivander_soc_pkg::LlcMaxReadTxns;
     cfg.LlcMaxWriteTxns   = ollivander_soc_pkg::LlcMaxWriteTxns;
     cfg.LlcAmoNumCuts     = ollivander_soc_pkg::LlcAmoNumCuts;

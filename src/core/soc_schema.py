@@ -831,7 +831,7 @@ _ROOT_BLOCK_SPEC = {
                   "preload_memories": [{"instance": str, "file": str}]},
     "software_stack": {"toolchain": str, "boot_memory": str,
                        "test_app": {"name": str, "auto_generate_c": bool, "baudrate": int,
-                                    "offload_targets": [str]}},
+                                    "offload_targets": [str], "payload_memory": str}},
 }
 
 
@@ -1273,6 +1273,31 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
             contract["sys_isolate"] = bool(sys_cfg.get("isolate"))
             contract["sys_boot_enable"] = bool(sys_cfg.get("boot_enable"))
             contract["sys_busy_status"] = bool(sys_cfg.get("has_busy_status"))
+            # Auto control group membership: when the component's type is the
+            # target of a clk_rst_control group, its instances power on gated
+            # (or not - the POR value is a policy detail) and the firmware owns
+            # the bring-up: the generated helpers get an <name>_enable() that
+            # ungates the WHOLE group before the first slave-window access.
+            contract["sys_ctrl_group"] = None
+            if config.system_controller and config.system_controller.auto_control_groups:
+                for g in config.system_controller.auto_control_groups:
+                    if g.type == "clk_rst_control" and c_type in (g.target_component_type, g.target_tile_type):
+                        contract["sys_ctrl_group"] = g.name.lower()
+                        break
+            # Multi-instance components: a placement box generates an ARRAY of
+            # instances at 'size_per_instance' strides, and the offload firmware
+            # drives every one of them in parallel (decided 2026-08-10). Anything
+            # single-instance keeps num_instances = 1 and the stride at zero.
+            num_inst = 1
+            placement = comp.placement or {}
+            logical = placement.get("logical") if isinstance(placement, dict) else None
+            if isinstance(logical, dict) and "box" in logical:
+                b = logical["box"]
+                num_inst = ((int(b.get("x_end", 0)) - int(b.get("x_start", 0)) + 1) *
+                            (int(b.get("y_end", 0)) - int(b.get("y_start", 0)) + 1))
+            stride = slaves[0].get("size_per_instance", 0)
+            contract["num_instances"] = max(1, num_inst)
+            contract["instance_stride"] = int(stride, 0) if isinstance(stride, str) else int(stride)
             candidates[comp.name] = contract
 
     requested = (config.software_stack or {}).get("test_app", {}).get("offload_targets")

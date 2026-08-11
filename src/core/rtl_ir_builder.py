@@ -428,6 +428,33 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
 
                 c_info = comp_info.get(c.name, {})
                 tile_ports = c_info.get("ports", {})
+
+                # INSTANCE IDENTITY parameters (docs/hw/subtile_standardization.md): a
+                # subtile that decodes its own slave window declares InstanceBaseAddr /
+                # InstanceWindowSize in its header, and every instance receives ITS OWN
+                # window here - base + inst_idx * stride, the same x-major enumeration
+                # FlooGen's address map and the control group bit-selects use. This is
+                # the declared-parameter route L2BaseAddr / L2MemSize already travel:
+                # the header opts in, no component- or port-name matching is involved.
+                # Values stay PROJECT-LOCAL in macro builds too: the border adapters
+                # rebase incoming traffic (they subtract MACRO_BASE_ADDR before any
+                # tile sees it, noc_soc_top.sv.mako). Left at the '0 default, every
+                # window access missed the internal decode and hung the host
+                # (found 2026-08-10).
+                supported = c_info.get("supported_params", {})
+                if "InstanceBaseAddr" in supported:
+                    slaves = (c.interfaces or {}).get("axi_slave", [])
+                    if isinstance(slaves, dict):
+                        slaves = [slaves]
+                    if slaves:
+                        s_base = slaves[0].get("base_addr", 0)
+                        s_base = int(s_base, 0) if isinstance(s_base, str) else int(s_base)
+                        s_size = slaves[0].get("size_per_instance", slaves[0].get("size", 0))
+                        s_size = int(s_size, 0) if isinstance(s_size, str) else int(s_size)
+                        inst.parameters["InstanceBaseAddr"] = f"64'h{s_base + inst_idx * s_size:X}"
+                        if "InstanceWindowSize" in supported:
+                            inst.parameters["InstanceWindowSize"] = f"64'h{s_size:X}"
+
                 connected_ports = {conn.port_name for conn in inst.connections}
                 for port_name, p_info in tile_ports.items():
                     if port_name not in connected_ports:

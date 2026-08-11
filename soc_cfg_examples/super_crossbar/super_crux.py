@@ -114,7 +114,9 @@ config = OllivanderConfig(
         description="Main application processor (Cheshire host)",
         type="cheshire_isle",
         clock_domain="host",
-        isa="rv64imafdc",
+        # CVA6 implements fence.i (the offload app relies on it to publish the payload);
+        # modern binutils want the extension spelled out in the -march string.
+        isa="rv64imafdc_zifencei",
         abi="lp64d",
         cmodel="medany",
         export_interfaces=["jtag", "uart", "spi", "i2c", "gpio"],
@@ -272,12 +274,13 @@ config = OllivanderConfig(
                               "  [0] : mailbox.snd_irq_o[2] | mailbox.snd_irq_o[0]\n"
                               "}"
                 },
-                "mtip_i": {
-                    "cdc": False,
-                    "source": "{\n"
-                              "  [7:0] : {8{manager.mtip_ext_o}}\n"
-                              "}"
-                },
+                # Deliberately tied off (was {8{manager.mtip_ext_o}}): the snitch cores
+                # park in their bootrom on WFI, whose wake logic samples the RAW pending
+                # lines - the host CLINT's mtip is X while Cheshire is still booting and
+                # permanently 1 afterwards (mtimecmp resets to 0), which breaks the
+                # parking either way. The offload model wakes the cluster exclusively
+                # through its internal CLINT (same rationale as crux, 2026-08-07).
+                "mtip_i": {"source": "none"},
                 "meip_i": {"source": "none"}
             }
         ),
@@ -387,7 +390,7 @@ config = OllivanderConfig(
         "boot_timeout_fast_ns": 2000000,
         "sim_timeout_ns": 10000000,
         "preload_memories": [
-            {"instance": "i_l2_shared_memory", "file": "generated/sw/hello_world.hex"}
+            {"instance": "i_l2_shared_memory", "file": "generated/sw/{test_app}.hex"}
         ]
     },
     
@@ -397,7 +400,10 @@ config = OllivanderConfig(
     software_stack={
         "toolchain": "riscv64-unknown-elf-",
         "boot_memory": "l2_shared_memory",
-        "test_app": {"name": "hello_world", "auto_generate_c": True,
+        # The offload app is a strict superset of hello_world: same greeting first, then
+        # payload offload onto every component declaring an Offload* contract (here:
+        # pulp_cluster via control_wire and spatz_cluster via memory_mapped, as on crux).
+        "test_app": {"name": "offload", "auto_generate_c": True,
                      # Simulation-fast UART (divisor 3, ~2.08 Mbaud effective): at 115200
                      # the UART dominates the run. The generator keeps firmware and
                      # testbench monitor on the same divisor; drop the key to return to

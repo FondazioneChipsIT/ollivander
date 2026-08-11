@@ -56,11 +56,40 @@
       if isinstance(val, int): return f"{val:X}"
       return str(val).replace('0x', '').replace('_', '').upper()
       
+  def instance_count(c):
+      # Number of physical instances a component's placement generates: a box
+      # yields its area, a list of boxes the sum of areas, a single coordinate 1.
+      p = getattr(c, 'placement', None) or {}
+      log = p.get('logical') if isinstance(p, dict) else None
+      if log is None: return 1
+      items = log if isinstance(log, list) else [log]
+      n = 0
+      for item in items:
+          if isinstance(item, dict) and 'box' in item:
+              b = item['box']
+              n += ((int(b.get('x_end', 0)) - int(b.get('x_start', 0)) + 1) *
+                    (int(b.get('y_end', 0)) - int(b.get('y_start', 0)) + 1))
+          else:
+              n += 1
+      return max(1, n)
+
   axi_slaves = []
   for c in config.components:
       if c.interfaces and 'axi_slave' in c.interfaces:
           for slv in c.interfaces['axi_slave']:
-              axi_slaves.append({'name': c.name, 'base': slv['base_addr'], 'size': slv.get('size', slv.get('size_per_instance', '0x1000'))})
+              # These rules become Cheshire's external-region table: they decide which
+              # addresses LEAVE the host at all (anything outside dies in the internal
+              # DECERR slave). 'size_per_instance' covers ONE instance, so the region
+              # must span the whole array - with one instance's size, every access
+              # beyond instance 0 was silently swallowed inside the host, B response
+              # and all (found 2026-08-10: 15 of 16 mesh clusters unreachable).
+              if 'size' in slv:
+                  size = slv['size']
+              else:
+                  per = slv.get('size_per_instance', '0x1000')
+                  per = int(per, 0) if isinstance(per, str) else int(per)
+                  size = hex(per * instance_count(c))
+              axi_slaves.append({'name': c.name, 'base': slv['base_addr'], 'size': size})
 %><%namespace file="/license_header.mako" import="license"/>\
 ${license()}\
 //

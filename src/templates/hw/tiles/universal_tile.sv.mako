@@ -107,9 +107,12 @@
               continue # Port handled, move to next one
 
           # Passthrough ports for architecture wiring
+          # NOTE: instance identity (window base/size of a self-decoding subtile) is
+          # deliberately NOT a port family: it travels as the InstanceBaseAddr /
+          # InstanceWindowSize header parameters (docs/hw/subtile_standardization.md),
+          # which reach the isle through the ordinary parameter path below.
           passthrough_ports = {
               'sys_clk_i', 'sys_rst_ni', 'pwr_on_rst_ni', 'rt_clk_i', 'boot_mode_i', 'bootmode_i',
-              'hart_base_id_i', 'cluster_base_addr_i', 'cluster_base_offset_i',
               'axi_isolate_i', 'axi_isolated_o', 'fetch_en_i', 'en_sa_boot_i', 'boot_addr_i',
               'busy_o', 'eoc_o', 'debug_req_i'
           }
@@ -252,15 +255,26 @@
 
   def fmt_param_type(p_val):
       if isinstance(p_val, bool) or str(p_val) in ["True", "False"]: return "bit"
-      if str(p_val).isdigit(): return "int unsigned"
+      # A default written as a sized 64-bit literal declares its intent: keep the
+      # 64-bit parameter type across the tile boundary (InstanceBaseAddr et al.),
+      # or a wider override would silently truncate against an 'int unsigned'.
+      if str(p_val).startswith("64'"): return "longint unsigned"
+      if str(p_val).isdigit():
+          # A bare decimal literal is 32-bit in SV, and 'int unsigned' cannot hold
+          # more: a wider default (first hit: cheshire_isle's LlcOutRegionEnd,
+          # 0x1_0000_0000) needs the 64-bit parameter type, paired with the sized
+          # literal fmt_param_val emits for the same values.
+          return "longint unsigned" if int(str(p_val)) > 0xFFFFFFFF else "int unsigned"
       if str(p_val) == "logic" or str(p_val).endswith("_t"): return "type"
       if str(p_val).startswith('"') or str(p_val).startswith("'"): return "string"
       return "int unsigned"
-      
+
   def fmt_param_val(p_val):
       if isinstance(p_val, bool): return "1'b1" if p_val else "1'b0"
       if str(p_val) == "True": return "1'b1"
       if str(p_val) == "False": return "1'b0"
+      # Size any literal beyond 32 bits: unsized decimals cap at 32 bits (vlog-13008).
+      if str(p_val).isdigit() and int(str(p_val)) > 0xFFFFFFFF: return f"64'd{p_val}"
       return str(p_val)
       
   has_offload = 'offload_wide_req_i' in known_ports

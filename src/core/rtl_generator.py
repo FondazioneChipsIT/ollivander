@@ -895,9 +895,9 @@ class RTLGenerator:
         # Offload test resolution: which components the generated firmware will drive.
         # Resolved here once with report=True, so the generation log records the target
         # list the firmware was actually built for (schema validation already proved the
-        # resolution sound). The payload region is the UPPER half of the boot memory:
-        # the host image and its stack stay in the lower half (main_offload.c.mako caps
-        # the stack at the payload base), so the two can never collide.
+        # resolution sound). The payload region comes from 'test_app.payload_memory'
+        # when declared, and is carved out of the boot memory otherwise - the two modes
+        # and their reasons are commented at the resolution below.
         app_name = "hello_world"
         if getattr(self.soc_config, "software_stack", None):
             app_name = self.soc_config.software_stack.get("test_app", {}).get("name", "hello_world")
@@ -915,39 +915,77 @@ class RTLGenerator:
         offload_targets = {}
         offload_payload_base = 0
         offload_payload_size = 0
+        offload_host_stack_top = 0
+        offload_payload_ctrl_group = None
         if app_name == "offload":
             from core.soc_schema import resolve_offload_targets
             offload_targets = resolve_offload_targets(
                 self.soc_config, self.env.search_paths, self.env.exclude_dir,
                 self.original_isle_types, report=True)
-            boot_mem_name = self.soc_config.software_stack.get("boot_memory", "")
+
             all_comps = [self.soc_config.host] + (self.soc_config.components or [])
-            boot_mem = next((c for c in all_comps if c.name == boot_mem_name), None)
-            slaves = (getattr(boot_mem, "interfaces", None) or {}).get("axi_slave", []) if boot_mem else []
-            if isinstance(slaves, dict):
-                slaves = [slaves]
-            if not slaves:
-                print(f"[ERROR] The 'offload' test derives its payload region from the boot memory, "
-                      f"but 'software_stack.boot_memory' ('{boot_mem_name}') does not resolve to a "
-                      f"component with an axi_slave window.")
-                sys.exit(1)
-            b_addr = slaves[0].get("base_addr", 0)
-            b_addr = int(b_addr, 0) if isinstance(b_addr, str) else int(b_addr)
-            b_size = slaves[0].get("size", slaves[0].get("size_per_instance", 0))
-            b_size = int(b_size, 0) if isinstance(b_size, str) else int(b_size)
-            # The payload region is the SECOND QUARTER of the boot memory window, not
-            # its upper half. The upper half is not safe to write on every memory: the
-            # dyn_mem-based L2 (l2_isle) maps it as the NON-interleaved VIEW of the same
-            # physical banks the lower half exposes interleaved (dyn_mem_addr_map.sv
-            # re-scrambles the same low address bits), so a payload written there lands
-            # scattered across the physical words holding the host image - the fence.i
-            # writeback then corrupts the code the host is running (found 2026-08-07:
-            # Illegal Instruction right after the first fence.i on crux). The second
-            # quarter stays inside the image's own view on such memories and is merely
-            # conservative on a flat one; the host stack is capped at the payload base
-            # (main_offload.c.mako), so image, stack and payload can never meet.
-            offload_payload_size = b_size // 4
-            offload_payload_base = b_addr + b_size // 4
+
+            def _slave_window(comp_name, role):
+                """First axi_slave window (component, base, size) of a named component,
+                accepting 'size_per_instance' so multi-instance memories resolve to
+                their instance-0 window. A miss is a hard error: the offload firmware
+                cannot be linked without the region this window provides."""
+                comp = next((c for c in all_comps if c.name == comp_name), None)
+                slaves = (getattr(comp, "interfaces", None) or {}).get("axi_slave", []) if comp else []
+                if isinstance(slaves, dict):
+                    slaves = [slaves]
+                if not slaves:
+                    print(f"[ERROR] The 'offload' test derives its {role} from '{comp_name}', "
+                          f"which does not resolve to a component with an axi_slave window.")
+                    sys.exit(1)
+                addr = slaves[0].get("base_addr", 0)
+                addr = int(addr, 0) if isinstance(addr, str) else int(addr)
+                size = slaves[0].get("size", slaves[0].get("size_per_instance", 0))
+                size = int(size, 0) if isinstance(size, str) else int(size)
+                return comp, addr, size
+
+            boot_mem_name = self.soc_config.software_stack.get("boot_memory", "")
+            _, b_addr, b_size = _slave_window(boot_mem_name, "payload region (via 'boot_memory')")
+
+            payload_mem_name = self.soc_config.software_stack.get(
+                "test_app", {}).get("payload_memory")
+            if payload_mem_name:
+                # An explicit 'test_app.payload_memory' places the payload at the base of
+                # that component's (instance-0) window instead of carving the boot memory.
+                # This exists because the carve is not universally FETCHABLE: on the mesh
+                # family the boot SPM is a narrow-network endpoint, while the snitch
+                # instruction cache refills through the cluster's WIDE master (the hive's
+                # axi port, snitch_cluster.sv) - the payload must therefore live in a
+                # memory both networks reach (L2), which only the SoC author can name.
+                pm_comp, offload_payload_base, offload_payload_size = \
+                    _slave_window(payload_mem_name, "payload region (via 'payload_memory')")
+                # The host image and stack keep the WHOLE boot memory: nothing is carved.
+                offload_host_stack_top = b_addr + b_size
+                # When the payload memory is under an auto control group it powers on
+                # gated: the firmware must ungate the group before loading the payload,
+                # so the group's name travels to the templates alongside the region.
+                pm_type = self.original_isle_types.get(pm_comp.name, pm_comp.type)
+                sys_ctrl = self.soc_config.system_controller
+                for g in (sys_ctrl.auto_control_groups if sys_ctrl else None) or []:
+                    if g.type == "clk_rst_control" and pm_type in (g.target_component_type,
+                                                                   g.target_tile_type):
+                        offload_payload_ctrl_group = g.name.lower()
+                        break
+            else:
+                # The payload region is the SECOND QUARTER of the boot memory window, not
+                # its upper half. The upper half is not safe to write on every memory: the
+                # dyn_mem-based L2 (l2_isle) maps it as the NON-interleaved VIEW of the same
+                # physical banks the lower half exposes interleaved (dyn_mem_addr_map.sv
+                # re-scrambles the same low address bits), so a payload written there lands
+                # scattered across the physical words holding the host image - the fence.i
+                # writeback then corrupts the code the host is running (found 2026-08-07:
+                # Illegal Instruction right after the first fence.i on crux). The second
+                # quarter stays inside the image's own view on such memories and is merely
+                # conservative on a flat one; the host stack is capped at the payload base
+                # (main_offload.c.mako), so image, stack and payload can never meet.
+                offload_payload_size = b_size // 4
+                offload_payload_base = b_addr + b_size // 4
+                offload_host_stack_top = offload_payload_base
 
         template_kwargs = {
             "sys_regs_addr_width": sys_regs_addr_width,
@@ -957,6 +995,13 @@ class RTLGenerator:
             "offload_targets": offload_targets,
             "offload_payload_base": offload_payload_base,
             "offload_payload_size": offload_payload_size,
+            # Top of the HOST's stack in the offload app: the payload base when the
+            # payload is carved from the boot memory, the end of the boot memory when
+            # an explicit 'payload_memory' hosts the payload elsewhere.
+            "offload_host_stack_top": offload_host_stack_top,
+            # Auto control group gating the payload memory (None when ungated): the
+            # firmware ungates it before the first payload write.
+            "offload_payload_ctrl_group": offload_payload_ctrl_group,
             # The toy workload of the offload payload, as (iterations, whitening) of a
             # sum of squares. Single source for BOTH sides of the check: the payload is
             # compiled with these as -D macros (Makefile.sw.mako) and the host firmware

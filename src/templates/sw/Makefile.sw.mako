@@ -36,8 +36,12 @@ PYTHON ?= python3
 # its results travel: through the control unit's registers (control_wire) or
 # through a return-slot array in the cluster-local memory (memory_mapped).
 ctrl_base = t["base_addr"] + t["ctrl_offs"]
+# The PAYLOAD's view of its own cluster: multi-instance targets declare an alias
+# base (OffloadLocalBase) at which every instance sees ITSELF, so one image serves
+# the whole array; targets without one decode their own global base internally.
+local_base = t.get("local_base", t["base_addr"])
 common = [
-    f'-DOFFLOAD_STACK_TOP={hex(t["base_addr"] + t["stack_offs"])}',
+    f'-DOFFLOAD_STACK_TOP={hex(local_base + t["stack_offs"])}',
     f'-DOFFLOAD_CHECK_N={offload_check_n}',
     f'-DOFFLOAD_CHECK_XOR={hex(offload_check_xor)}',
 ]
@@ -49,8 +53,8 @@ if t["contract"] == "control_wire":
 else:
     specific = [
         '-DOFFLOAD_MM=1',
-        f'-DOFFLOAD_RETURN_ADDR={hex(t["base_addr"] + t["return_offs"])}',
-        f'-DOFFLOAD_HART_BASE={hex(t["hart_base"])}',
+        f'-DOFFLOAD_RETURN_ADDR={hex(local_base + t["return_offs"])}',
+        f'-DOFFLOAD_HART_BASE={hex(t.get("hart_base", 0))}',
     ]
 payload_defines = " ".join(common + specific)
 %>\

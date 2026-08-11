@@ -2,14 +2,15 @@
  * =============================================================================
  * OLLIVANDER AUTO-GENERATED OFFLOAD PAYLOAD LINKER SCRIPT
  * =============================================================================
- * Links the offload payload as one contiguous image starting at the payload
- * region the generator carved out of the boot memory: its second quarter,
- * above the host image and stack (which the offload firmware caps at the
- * payload base) and deliberately inside the same lower-half VIEW of the
- * memory the image lives in - see the payload-region comment in
- * rtl_generator.py for the dyn_mem aliasing this avoids. Every offload
- * target reuses this same region: the offload test is sequential and
- * blocking, so at most one payload lives there at any time.
+ * Links the offload payload as one contiguous image at the payload region the
+ * generator resolved: by default the second quarter of the boot memory (above
+ * the host image and stack, inside the image's own dyn_mem VIEW - see the
+ * payload-region comment in rtl_generator.py), or the window of the component
+ * an explicit 'test_app.payload_memory' names, when the carve would not be
+ * fetchable by the targets (the mesh case: narrow-only boot SPM against a
+ * wide-refilling instruction cache). Every offload target fetches this same
+ * single image; each run of it is confined to core-local state, so concurrent
+ * readers are fine and the region is only ever written by the host's load.
  *
  * The image must stay contiguous and self-contained: bin2header.py embeds the
  * flat 'objcopy -O binary' output, whose bytes span from the region base to the
@@ -24,7 +25,7 @@ ENTRY(_start)
 
 MEMORY
 {
-    /* Upper half of '${config.get("software_stack", {}).get("boot_memory", "")}' */
+    /* Payload region resolved by the generator (rtl_generator.py) */
     payload (rx) : ORIGIN = ${hex(offload_payload_base)}, LENGTH = ${hex(offload_payload_size)}
 }
 
