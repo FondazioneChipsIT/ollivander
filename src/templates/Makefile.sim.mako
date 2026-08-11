@@ -296,11 +296,11 @@ for mem in preload_mems:
       data_width = resolve_param_val("AxiDataWidth", matched_comp, fixed_params)
       mem_size = None
       if matched_comp:
-          mem_size = (matched_comp.parameters or {}).get("MemSize") or (matched_comp.parameters or {}).get("L2MemSize")
+          mem_size = (matched_comp.parameters or {}).get("MemSize") or (matched_comp.parameters or {}).get("InstanceWindowSize")
           if not mem_size:
               for slv in matched_comp.interfaces.get("axi_slave", []):
                   mem_size = slv.get("size", mem_size)
-      mem_size = resolve_param_val(fixed_params.get("L2MemSize") or mem_size, matched_comp, fixed_params)
+      mem_size = resolve_param_val(fixed_params.get("InstanceWindowSize") or mem_size, matched_comp, fixed_params)
       base_addr = "0x78000000"
       if matched_comp:
           for slv in matched_comp.interfaces.get("axi_slave", []):
@@ -308,7 +308,7 @@ for mem in preload_mems:
       # The memory size resolved just above is the authoritative one for this instance and
       # is what the wrapper's own parameters carry; expose it under every name the isles
       # use for it, so that expressions like PreloadBanksPerGroup evaluate correctly.
-      size_params = {"L2MemSize": mem_size, "SpmTileSize": mem_size, "MemSize": mem_size}
+      size_params = {"InstanceWindowSize": mem_size, "SpmTileSize": mem_size, "MemSize": mem_size}
       num_groups = resolve_param_val(fixed_params.get("PreloadNumGroups"), matched_comp, fixed_params, size_params)
       num_banks_per_group = resolve_param_val(fixed_params.get("PreloadBanksPerGroup"), matched_comp, fixed_params, size_params)
       # Physical interleaving scheme of the memory, declared by the isle itself via the

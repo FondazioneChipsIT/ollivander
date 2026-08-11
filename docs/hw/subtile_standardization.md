@@ -89,10 +89,10 @@ A wrapper that does **not** expose these as `parameter type`, typing its ports f
 
 ### 2.5 Memory Mapping Parameters
 For memory subtiles (e.g., `l2_subtile.sv`), the wrapper should expose standard configurable parameters defining its size and base address:
-*   `L2BaseAddr` (`parameter logic [63:0]`): Base address of the memory mapping range. Defaults to a standard constant (e.g., `64'h88000000`).
-*   `L2MemSize` (`parameter int unsigned`): Size of the memory block in bytes. Defaults to a standard constant (e.g., `32'h00200000` / 2 MB).
+*   `InstanceBaseAddr` (`parameter logic [63:0]` or `longint unsigned`): Base address of the memory mapping range.
+*   `InstanceWindowSize` (`parameter int unsigned` or `longint unsigned`): Size of the memory block in bytes. Wrappers typically alias their internal sizing constant to it (`MemSize`, `SpmTileSize`).
 
-These parameters are dynamically overridden at instantiation time by the generator based on the YAML configuration interfaces mapping.
+These are the **instance identity parameters** (see section 2.6 of the subtile standardization, which owns the full definition): the generator fills them from the component's `axi_slave` window whenever the header declares them — per instance on component arrays. They replaced the historical `L2BaseAddr`/`L2MemSize` pair on 2026-08-11, folding memories and self-decoding clusters into one convention.
 
 ### 2.6 Instance Identity Parameters
 
@@ -103,9 +103,9 @@ A subtile that decodes its own window declares the following pair in its header,
 *   `InstanceBaseAddr` (`parameter longint unsigned`): the base address of THIS instance's slave window. The generator computes `base_addr + index * size_per_instance`, with the same x-major instance enumeration the FlooGen address map and the auto-control-group bit-selects use, so the three mechanisms can never disagree. In macro builds the value stays **project-local**: the macro's border adapters rebase incoming traffic before any tile sees it.
 *   `InstanceWindowSize` (`parameter longint unsigned`): the per-instance window extent (`size_per_instance`, or `size` for a single instance).
 
-Current generator bound: the tile wrapper re-declares header parameters with a type inferred from the parsed default value, which normalizes to a 32-bit `int unsigned` — identity values must therefore stay below 4 GiB for now. Every example map satisfies this by construction; lifting the bound means carrying the declared parameter type through the SV parser (noted with the instance-identity follow-ups in `docs/developer/wip/future_evolution_tasks.md`).
+The declared parameter type travels through the SV parser to the generated tile wrapper (2026-08-11): a plain built-in type (`bit`, `int unsigned`, `longint unsigned`, `logic[N:M]`, `string`) is re-declared as written, so 64-bit identity values cross the tile boundary intact; only package-scoped or otherwise exotic types still fall back to value-based inference.
 
-This is a **declared-parameter opt-in**, the same route as `L2BaseAddr`/`L2MemSize` above: the generator acts only when the header declares the parameter, and never matches on component types or port names. The subtile consumes the parameters internally (e.g. `cluster_subtile.sv` drives the meta-generated wrapper's `cluster_base_addr_i`/`cluster_base_offset_i` ports from them, and ties `hart_base_id_i` to zero — global hart IDs deliberately repeat across the array, see the alias-region rationale in the offload contract and the open question in `docs/developer/wip/future_evolution_tasks.md`); no identity port appears on the subtile interface.
+This is a **declared-parameter opt-in**: the generator acts only when the header declares the parameter, and never matches on component types or port names. The memory isles travel the same route (section 2.5) — one convention for every self-mapping component, memories and clusters alike. The subtile consumes the parameters internally (e.g. `cluster_subtile.sv` drives the meta-generated wrapper's `cluster_base_addr_i`/`cluster_base_offset_i` ports from them, and ties `hart_base_id_i` to zero — global hart IDs deliberately repeat across the array, see the alias-region rationale in the offload contract and the open question in `docs/developer/wip/future_evolution_tasks.md`); no identity port appears on the subtile interface.
 
 ---
 

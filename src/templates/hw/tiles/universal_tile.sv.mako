@@ -253,7 +253,17 @@
   for k in isle_type_overrides.keys():
       if k.endswith('_t') and k in all_params: del all_params[k]
 
-  def fmt_param_type(p_val):
+  param_decl_types = isle_info.get('param_types', {}) if isle_info else {}
+
+  def fmt_param_type(p_name, p_val):
+      # The type the isle header DECLARES wins whenever it is a plain built-in
+      # (bit / int unsigned / longint unsigned / logic[N:M] / string): the value
+      # heuristics below cannot tell a 64-bit parameter from a 32-bit one once
+      # the parser has normalized the default, which capped instance-identity
+      # values at 4 GiB. Scoped or exotic types fall back to the heuristics.
+      decl = (param_decl_types.get(p_name) or "").strip()
+      if re.fullmatch(r"[a-z][a-z0-9_ ]*(\[[0-9]+:[0-9]+\])?", decl):
+          return decl
       if isinstance(p_val, bool) or str(p_val) in ["True", "False"]: return "bit"
       # A default written as a sized 64-bit literal declares its intent: keep the
       # 64-bit parameter type across the tile boundary (InstanceBaseAddr et al.),
@@ -264,7 +274,7 @@
           # more: a wider default (first hit: cheshire_isle's LlcOutRegionEnd,
           # 0x1_0000_0000) needs the 64-bit parameter type, paired with the sized
           # literal fmt_param_val emits for the same values.
-          return "longint unsigned" if int(str(p_val)) > 0xFFFFFFFF else "int unsigned"
+          return "longint unsigned" if int(str(p_val)) > 0x7FFFFFFF else "int unsigned"
       if str(p_val) == "logic" or str(p_val).endswith("_t"): return "type"
       if str(p_val).startswith('"') or str(p_val).startswith("'"): return "string"
       return "int unsigned"
@@ -274,7 +284,9 @@
       if str(p_val) == "True": return "1'b1"
       if str(p_val) == "False": return "1'b0"
       # Size any literal beyond 32 bits: unsized decimals cap at 32 bits (vlog-13008).
-      if str(p_val).isdigit() and int(str(p_val)) > 0xFFFFFFFF: return f"64'd{p_val}"
+      # The signed-32 boundary, not the unsigned one: an unsized decimal literal
+      # is SIGNED, so anything past 2^31-1 sign-extends into a wider parameter.
+      if str(p_val).isdigit() and int(str(p_val)) > 0x7FFFFFFF: return f"64'd{p_val}"
       return str(p_val)
       
   has_offload = 'offload_wide_req_i' in known_ports
@@ -331,10 +343,10 @@ module ${p_name}_${c_type}
 % if all_params or fixed_params_to_expose:
 #(
  % for i, (param_name, p_val) in enumerate(all_params.items()):
-  parameter ${fmt_param_type(p_val)} ${param_name} = ${fmt_param_val(p_val)}${"," if (i < len(all_params)-1 or fixed_params_to_expose) else ""}
+  parameter ${fmt_param_type(param_name, p_val)} ${param_name} = ${fmt_param_val(p_val)}${"," if (i < len(all_params)-1 or fixed_params_to_expose) else ""}
  % endfor
  % for i, (param_name, p_val) in enumerate(fixed_params_to_expose):
-  localparam ${fmt_param_type(p_val)} ${param_name} = ${fmt_param_val(p_val)}${"," if i < len(fixed_params_to_expose)-1 else ""}
+  localparam ${fmt_param_type(param_name, p_val)} ${param_name} = ${fmt_param_val(p_val)}${"," if i < len(fixed_params_to_expose)-1 else ""}
  % endfor
 )
 % endif

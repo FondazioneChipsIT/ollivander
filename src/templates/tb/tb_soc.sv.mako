@@ -333,12 +333,12 @@ def resolve_param_val(val, comp, fixed_params=None, extra_params=None):
       # instead of silently falling back to an arbitrary literal.
       inst_mem_size = None
       if matched_comp:
-          inst_mem_size = (matched_comp.parameters or {}).get("MemSize") or (matched_comp.parameters or {}).get("L2MemSize")
+          inst_mem_size = (matched_comp.parameters or {}).get("MemSize") or (matched_comp.parameters or {}).get("InstanceWindowSize")
           if not inst_mem_size:
               for slv in (matched_comp.interfaces or {}).get("axi_slave", []):
                   inst_mem_size = slv.get("size", slv.get("size_per_instance", inst_mem_size))
-      inst_mem_size = resolve_param_val(fixed_params.get("L2MemSize") or inst_mem_size, matched_comp, fixed_params)
-      size_params = {"L2MemSize": inst_mem_size, "SpmTileSize": inst_mem_size, "MemSize": inst_mem_size}
+      inst_mem_size = resolve_param_val(fixed_params.get("InstanceWindowSize") or inst_mem_size, matched_comp, fixed_params)
+      size_params = {"InstanceWindowSize": inst_mem_size, "SpmTileSize": inst_mem_size, "MemSize": inst_mem_size}
       num_groups = resolve_param_val(fixed_params.get("PreloadNumGroups"), matched_comp, fixed_params, size_params)
       num_banks_per_group = resolve_param_val(fixed_params.get("PreloadBanksPerGroup"), matched_comp, fixed_params, size_params)
       if num_banks_per_group == 0 and bank_width > 0:

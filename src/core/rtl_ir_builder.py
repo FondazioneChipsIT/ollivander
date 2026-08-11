@@ -18,9 +18,11 @@ from core.sv_ir import PortConnection
 from core.utils import fmt_rst, is_external
 
 
-def get_l2_instance_params(comp, inst_idx=0):
+def get_instance_window(comp, inst_idx=0):
     """
-    Calculate the instance-specific base address and size for an L2 memory component.
+    Calculate one instance's slave window (base address, size) for a component that
+    decodes its own window internally - the values behind the InstanceBaseAddr /
+    InstanceWindowSize identity parameters (docs/hw/subtile_standardization.md 2.6).
     """
     base_addr = 0
     size_val = 0
@@ -142,24 +144,21 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                     b_addr = comp.base_addr
                 b_val = int(b_addr, 16) if isinstance(b_addr, str) else b_addr
                 inst.parameters[p] = f"64'h{b_val:X}"
-            elif p == 'L2BaseAddr':
-                b_val, _ = get_l2_instance_params(comp)
+            elif p == 'InstanceBaseAddr':
+                # INSTANCE IDENTITY (docs/hw/subtile_standardization.md section 2.6): a
+                # component that decodes its own slave window internally (the pulp
+                # cluster's cluster_bus_wrap, the memory isles' mapping rules) declares
+                # this parameter and receives the axi_slave 'base_addr' the description
+                # maps it at. Crossbar macros keep GLOBAL addresses inside - no border
+                # rebase exists on this family, unlike the NoC one (build_noc_ir) - so
+                # a macro build offsets the base by the macro's placement.
+                b_val, _ = get_instance_window(comp)
                 if soc_config.project.build_mode == "macro":
                     inst.parameters[p] = f"MACRO_BASE_ADDR + {b_val}"
                 else:
                     inst.parameters[p] = b_val
-            elif p == 'ClusterBaseAddr':
-                # The pulp cluster decodes its own slave region internally against this
-                # base (cluster_bus_wrap), so it must match the axi_slave 'base_addr'
-                # the SoC description maps the component at; the same macro relocation
-                # rule as L2BaseAddr applies when the SoC is built as a macro.
-                b_val, _ = get_l2_instance_params(comp)
-                if soc_config.project.build_mode == "macro":
-                    inst.parameters[p] = f"MACRO_BASE_ADDR + {b_val}"
-                else:
-                    inst.parameters[p] = b_val
-            elif p == 'L2MemSize':
-                _, size_val = get_l2_instance_params(comp)
+            elif p == 'InstanceWindowSize':
+                _, size_val = get_instance_window(comp)
                 inst.parameters[p] = size_val
             elif p.startswith('AsyncAxiLlc'):
                 if p == 'AsyncAxiLlcAwWidth': inst.parameters[p] = f'{pkg}::LlcAwWidth'
@@ -198,6 +197,11 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
             for p_k, p_v in comp.parameters.items():
                 if isinstance(p_v, bool):
                     inst.parameters[p_k] = "1'b1" if p_v else "1'b0"
+                elif isinstance(p_v, int) and p_v > 0x7FFFFFFF:
+                    # An unsized decimal literal is SIGNED 32-bit in SV: past 2^31-1 it
+                    # sign-extends when overriding a wider parameter (see the identical
+                    # guard in build_noc_ir and the 2026-08-11 LlcOutRegionStart case).
+                    inst.parameters[p_k] = f"64'h{p_v:X}"
                 else:
                     inst.parameters[p_k] = str(p_v)
 
@@ -357,23 +361,15 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                         if isinstance(p_val, bool):
                             formatted_val = "1'b1" if p_val else "1'b0"
                         elif isinstance(p_val, int):
-                            formatted_val = str(p_val)
+                            # An unsized decimal literal is a SIGNED 32-bit value in SV:
+                            # anything past 2^31-1 would sign-extend when it overrides a
+                            # wider parameter (LlcOutRegionStart=0xD000_0000 became
+                            # 0xFFFF_FFFF_D000_0000 and broke CVA6's execute region,
+                            # found 2026-08-11). Size everything past the boundary.
+                            formatted_val = f"64'h{p_val:X}" if p_val > 0x7FFFFFFF else str(p_val)
                         else:
                             formatted_val = str(p_val)
                         inst.parameters[p_name] = formatted_val
-
-                # Overrides for L2 parameters to support scaling of multiple instances
-                if 'l2' in c.name or (c.system_config and c.system_config.get('is_l2_mem')):
-                    b_val, size_val = get_l2_instance_params(c, inst_idx)
-                    info = comp_info.get(module_type) or {}
-                    supported = info.get('supported_params', {})
-                    if 'L2BaseAddr' in supported:
-                        if soc_config.project.build_mode == "macro":
-                            inst.parameters['L2BaseAddr'] = f"MACRO_BASE_ADDR + {b_val}"
-                        else:
-                            inst.parameters['L2BaseAddr'] = b_val
-                    if 'L2MemSize' in supported:
-                        inst.parameters['L2MemSize'] = size_val
 
                 # Note: tile coordinates are passed via id_i port (below), not as
                 # module parameters. Tiles do not declare x/y parameters.
@@ -429,18 +425,22 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 c_info = comp_info.get(c.name, {})
                 tile_ports = c_info.get("ports", {})
 
-                # INSTANCE IDENTITY parameters (docs/hw/subtile_standardization.md): a
-                # subtile that decodes its own slave window declares InstanceBaseAddr /
-                # InstanceWindowSize in its header, and every instance receives ITS OWN
-                # window here - base + inst_idx * stride, the same x-major enumeration
-                # FlooGen's address map and the control group bit-selects use. This is
-                # the declared-parameter route L2BaseAddr / L2MemSize already travel:
-                # the header opts in, no component- or port-name matching is involved.
-                # Values stay PROJECT-LOCAL in macro builds too: the border adapters
-                # rebase incoming traffic (they subtract MACRO_BASE_ADDR before any
-                # tile sees it, noc_soc_top.sv.mako). Left at the '0 default, every
-                # window access missed the internal decode and hung the host
-                # (found 2026-08-10).
+                # INSTANCE IDENTITY parameters (docs/hw/subtile_standardization.md,
+                # section 2.6): a component that decodes its own slave window declares
+                # InstanceBaseAddr / InstanceWindowSize in its header, and every
+                # instance receives ITS OWN window here - base + inst_idx * stride,
+                # the same x-major enumeration FlooGen's address map and the control
+                # group bit-selects use. The header opts in; no component- or
+                # port-name matching is involved. One route for every self-mapping
+                # component: the snitch cluster arrays and the memory isles alike
+                # (the former per-component L2 override with its name heuristic was
+                # absorbed here, 2026-08-11). Values stay PROJECT-LOCAL in macro
+                # builds too: the NoC border adapters rebase incoming traffic (they
+                # subtract MACRO_BASE_ADDR before any tile sees it, noc_soc_top
+                # .sv.mako) - the crossbar family keeps global addresses instead,
+                # see the same parameter in build_crossbar_ir. Left at the '0
+                # default, every window access missed the internal decode and hung
+                # the host (found 2026-08-10).
                 supported = c_info.get("supported_params", {})
                 if "InstanceBaseAddr" in supported:
                     slaves = (c.interfaces or {}).get("axi_slave", [])

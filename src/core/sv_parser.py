@@ -34,6 +34,12 @@ def _clean_param_val(val: Any) -> str:
         return "1" if val else "0"
     
     val_str = str(val).strip()
+    # A QUOTED value is a string literal, never a number: normalizing would chew
+    # any SV-literal-looking text inside it ("32'h00000000" used to come out as
+    # plain 0, which surfaced as `localparam string X = 0` once the declared
+    # parameter types started travelling to the generated tile, 2026-08-11).
+    if val_str.startswith('"'):
+        return val_str
     # Handle Verilog-style literals like 1'b1, 32'hFF, 8'd10
     m = re.search(r'\'([dDbBhH]?)([0-9a-fA-F_]+)', val_str)
     if m:
@@ -103,6 +109,13 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     info = {
         "supported_params": {},
         "fixed_params": {},
+        # Declared type of each VALUE parameter (canonical pyslang form, e.g.
+        # 'longint unsigned', 'logic[63:0]'). The tile wrapper re-declares the
+        # supported parameters and needs the real type: inferring it from the
+        # (normalized) default value cannot tell a 64-bit parameter from a
+        # 32-bit one, which silently capped instance-identity values at 4 GiB.
+        # Empty under the regex fallback, whose consumers keep the inference.
+        "param_types": {},
         # Subset of the parameters above that are SystemVerilog *type* parameters,
         # mapping each name to the type it defaults to. Consumers that re-declare a
         # module's ports outside the module itself (the generated testbench) need this:
@@ -179,6 +192,10 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
                         if not val and hasattr(p, 'syntax') and p.syntax and hasattr(p.syntax, 'initializer') and p.syntax.initializer and hasattr(p.syntax.initializer, 'expr') and p.syntax.initializer.expr:
                             val = str(p.syntax.initializer.expr).strip()
                         clean_val = _clean_param_val(val)
+                        try:
+                            info["param_types"][p.name] = str(p.type)
+                        except Exception:
+                            pass
                         if p.isLocalParam:
                             info["fixed_params"][p.name] = clean_val
                         else:

@@ -92,10 +92,10 @@ However, if you are designing a **truly reusable** Custom Tile meant to be insta
 
 ### 5.2 Memory Mapping Parameters
 For custom memory tiles (e.g., `l2_shared_memory_tile.sv` or generic memory tiles wrappers), the wrapper should expose standard configurable parameters defining its size and base address:
-*   `L2BaseAddr` (`parameter logic [63:0]`): Base address of the memory mapping range. Defaults to a standard constant (e.g., `64'h88000000`).
-*   `L2MemSize` (`parameter int unsigned`): Size of the memory block in bytes. Defaults to a standard constant (e.g., `32'h00200000` / 2 MB).
+*   `InstanceBaseAddr` (`parameter logic [63:0]` or `longint unsigned`): Base address of the memory mapping range.
+*   `InstanceWindowSize` (`parameter int unsigned` or `longint unsigned`): Size of the memory block in bytes.
 
-These parameters are dynamically overridden at instantiation time by the generator in the top-level mesh wrapper (e.g., `noc_soc_top.sv`) based on the YAML configuration interfaces mapping to ensure correct address mapping for each coordinate-specific tile.
+These are the **instance identity parameters** (section 2.6 of the subtile standardization owns the full definition): the generator fills them per instance in the top-level mesh wrapper from the component's `axi_slave` window whenever the header declares them, so each coordinate-specific tile decodes its own region. They replaced the historical `L2BaseAddr`/`L2MemSize` pair on 2026-08-11.
 
 ### 5.3 Simulation Force-Boot Parameters (Host Tiles Only)
 If the Custom Tile acts as the Host component of the SoC, it can optionally expose standard parameters defining the startup control for simulation force-booting:

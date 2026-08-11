@@ -45,9 +45,9 @@ module pulp_cluster_isle
   parameter int unsigned LogDepth           = 3,
   // Base of the SoC address region mapped to this cluster, driven by the generator
   // from the component's axi_slave 'base_addr'. The cluster decodes its own slave
-  // traffic against ClusterBaseAddr + (cluster_id_i << 22) (cluster_bus_wrap), so
+  // traffic against InstanceBaseAddr + (cluster_id_i << 22) (cluster_bus_wrap), so
   // leaving the IP default here would send every external access to the wrong rule.
-  parameter logic [63:0] ClusterBaseAddr    = 64'h1000_0000,
+  parameter logic [63:0] InstanceBaseAddr    = 64'h1000_0000,
   // Not configurable: the cluster sources shipped by Bender hardwire the core count
   // in the `NB_CORES define (pulp_soc_defines.sv), which feeds PulpClusterDefaultCfg
   // and several sub-IP headers. Overriding only the Cfg field would desynchronize them.
@@ -232,7 +232,9 @@ module pulp_cluster_isle
     AxiCdcLogDepth:         LogDepth,
     AxiCdcSyncStages:       3,
     SyncStages:             3,
-    ClusterBaseAddr:        ClusterBaseAddr,
+    // The cfg struct field keeps the IP's own name; our side of the assignment is
+    // the identity parameter (subtile standardization 2.6, ex ClusterBaseAddr).
+    ClusterBaseAddr:        InstanceBaseAddr,
     ClusterPeriphOffs:      'h00200000,
     ClusterExternalOffs:    'h00400000,
     EnableRemapAddress:     0,

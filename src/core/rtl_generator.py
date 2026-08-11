@@ -1881,7 +1881,13 @@ class RTLGenerator:
             m_dir = re.match(r"^\s*(input|output|inout)\b\s*(.*)$", port_decl_clean)
             if m_dir:
                 remaining = m_dir.group(2).strip()
-                m_name = re.search(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\\[[^\\]]*\\]\s*)*)$", remaining)
+                # Port name, then any trailing UNPACKED dimensions ('foo [2:0]'). The
+                # bracket escapes were doubled from birth (8342ebe), which demanded
+                # literal backslashes: the dims group degenerated to the empty match
+                # and a port with unpacked dims was silently never registered as an
+                # IR signal (fixed 2026-08-11; no shipped example exposes such a
+                # port, so no generated output changes).
+                m_name = re.search(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$", remaining)
                 if m_name:
                     sig_name = m_name.group(1)
                     trailing_dims = m_name.group(2).strip()

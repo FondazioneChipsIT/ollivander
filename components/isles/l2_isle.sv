@@ -36,8 +36,8 @@ module l2_isle
   /// Mapping rules
   parameter int unsigned NumRules   = dyn_mem_pkg::NUM_MAP_TYPES * NumPort,
   /// L2 Memory settings
-  parameter logic [63:0] L2BaseAddr = 64'h88000000,
-  parameter int unsigned L2MemSize  = 32'h00200000,
+  parameter logic [63:0] InstanceBaseAddr = 64'h88000000,
+  parameter int unsigned InstanceWindowSize  = 32'h00200000,
   /// Non-changable parameters
   localparam int unsigned AxiStrbWidth    = AxiDataWidth / 8,
   // Memory preloading standardization parameters
@@ -184,24 +184,24 @@ typedef struct packed {
   logic [AxiAddrWidth-1:0] end_addr;
 } map_rule_t;
 
-localparam logic [63:0] L2Port0InterlBase    = L2BaseAddr;
-localparam logic [63:0] L2Port0NonInterlBase = L2BaseAddr + L2MemSize / 2;
-localparam logic [63:0] L2Port1InterlBase    = L2BaseAddr + L2MemSize;
-localparam logic [63:0] L2Port1NonInterlBase = L2BaseAddr + L2MemSize + L2MemSize / 2;
+localparam logic [63:0] L2Port0InterlBase    = InstanceBaseAddr;
+localparam logic [63:0] L2Port0NonInterlBase = InstanceBaseAddr + InstanceWindowSize / 2;
+localparam logic [63:0] L2Port1InterlBase    = InstanceBaseAddr + InstanceWindowSize;
+localparam logic [63:0] L2Port1NonInterlBase = InstanceBaseAddr + InstanceWindowSize + InstanceWindowSize / 2;
 
 localparam map_rule_t [NumRules-1:0] MappingRules = '{
   '{idx       : dyn_mem_pkg::INTERLEAVE,
     start_addr: L2Port0InterlBase,
-    end_addr  : L2Port0InterlBase + L2MemSize/2},
+    end_addr  : L2Port0InterlBase + InstanceWindowSize/2},
   '{idx       : dyn_mem_pkg::NONE_INTER,
     start_addr: L2Port0NonInterlBase,
-    end_addr  : L2Port0NonInterlBase + L2MemSize/2},
+    end_addr  : L2Port0NonInterlBase + InstanceWindowSize/2},
   '{idx       : dyn_mem_pkg::INTERLEAVE,
     start_addr: L2Port1InterlBase,
-    end_addr  : L2Port1InterlBase + L2MemSize/2},
+    end_addr  : L2Port1InterlBase + InstanceWindowSize/2},
   '{idx       : dyn_mem_pkg::NONE_INTER,
     start_addr: L2Port1NonInterlBase,
-    end_addr  : L2Port1NonInterlBase + L2MemSize/2}
+    end_addr  : L2Port1NonInterlBase + InstanceWindowSize/2}
 };
 
 dyn_mem_top #(
@@ -211,7 +211,7 @@ dyn_mem_top #(
   .AXI_ID_WIDTH        ( AxiInIdWidth    ),
   .AXI_USER_WIDTH      ( AxiUserWidth    ),
   .NUM_MAP_RULES       ( NumRules        ),
-  .L2_MEM_SIZE_IN_BYTE ( L2MemSize       ),
+  .L2_MEM_SIZE_IN_BYTE ( InstanceWindowSize       ),
   .map_rule_t          ( map_rule_t      ),
   .ATM_MAX_READ_TXN    ( AxiMaxReadTxns  ),
   .ATM_MAX_WRIT_TXN    ( AxiMaxWriteTxns ),

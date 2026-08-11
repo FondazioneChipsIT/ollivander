@@ -58,16 +58,16 @@ The package name follows the **top-level module name**, not the bare project nam
 
 ### 2.5 Memory Mapping Parameters
 For topology-agnostic memory wrappers (e.g., L2 memory wrapper `l2_isle.sv`), the wrapper should expose standard configurable parameters defining its size and base address:
-*   `L2BaseAddr` (`parameter logic [63:0]`): Base address of the memory mapping range. Defaults to a standard constant (e.g., `64'h88000000`).
-*   `L2MemSize` (`parameter int unsigned`): Size of the memory block in bytes. Defaults to a standard constant (e.g., `32'h00200000` / 2 MB).
+*   `InstanceBaseAddr` (`parameter logic [63:0]` or `longint unsigned`): Base address of the memory mapping range.
+*   `InstanceWindowSize` (`parameter int unsigned` or `longint unsigned`): Size of the memory block in bytes.
 
-These parameters are dynamically overridden at instantiation time by the generator based on the YAML configuration interfaces mapping, ensuring that the local address decoding and interleaving rules computed within the Isle scale correctly.
+These are the **instance identity parameters** (section 2.6 of the subtile standardization owns the full definition): the generator fills them from the component's `axi_slave` window whenever the header declares them, so the local address decoding and interleaving rules computed within the Isle scale correctly. They replaced the historical `L2BaseAddr`/`L2MemSize` pair on 2026-08-11.
 
 The same mechanism serves compute components that decode part of their own slave region internally:
 
-*   `ClusterBaseAddr` (`parameter logic [63:0]`): base of the SoC region mapped to the component, driven from the `base_addr` of the first `axi_slave` entry. `pulp_cluster_isle` exposes it to align the cluster's internal decode (TCDM, peripherals, external escape) with the region the SoC description maps it at — an internal decode left at the IP default would silently route every external access to the wrong rule.
+*   `InstanceBaseAddr` also serves the compute clusters: `pulp_cluster_isle` exposes it (it was `ClusterBaseAddr` until 2026-08-11) to align the cluster's internal decode (TCDM, peripherals, external escape) with the region the SoC description maps it at — an internal decode left at the IP default would silently route every external access to the wrong rule.
 
-Like every entry of the standard parameter vocabulary, these are matched **by parameter name, per instance**: each component that exposes the parameter receives the base of its own `axi_slave` mapping, so a design may instantiate any number of such components, each decoding its own region. When the SoC is built as a macro (`build_mode: "macro"`), both `L2BaseAddr` and `ClusterBaseAddr` are emitted as `MACRO_BASE_ADDR + <base>`, so the decode relocates with the macro wherever the parent maps it.
+Like every entry of the standard parameter vocabulary, these are matched **by parameter name, per instance**: each component that exposes the parameter receives the base of its own `axi_slave` mapping, so a design may instantiate any number of such components, each decoding its own region. When a **crossbar-family** SoC is built as a macro (`build_mode: "macro"`), `InstanceBaseAddr` is emitted as `MACRO_BASE_ADDR + <base>`: this family keeps global addresses inside the macro, so the decode relocates with it wherever the parent maps it. The **NoC family** does the opposite — its border adapters rebase incoming traffic to project-local addresses, so its identity values stay local (see the subtile standardization).
 
 ---
 

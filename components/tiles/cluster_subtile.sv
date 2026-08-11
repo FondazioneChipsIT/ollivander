@@ -28,8 +28,8 @@ module cluster_subtile
   // Ollivander fills it PER INSTANCE at tile instantiation (rtl_ir_builder.py):
   // base_addr + index * size_per_instance for the base, size_per_instance for the
   // size - the same x-major enumeration the FlooGen address map and the auto control
-  // group bit-selects use, and the same declared-parameter route as L2BaseAddr /
-  // L2MemSize on the memory isles. Values are PROJECT-LOCAL in macro builds too: the
+  // group bit-selects use - the declared-parameter route every self-mapping
+  // component shares (memory isles and clusters alike). Values are PROJECT-LOCAL in macro builds too: the
   // border adapters rebase incoming traffic before it reaches any tile.
   // -------------------------------------------------------------------------------
   parameter longint unsigned InstanceBaseAddr   = 64'h0,
