@@ -32,7 +32,11 @@ FAST_CHECK_TOOLS ?= questa
 # build-sim/run-sim, 'verilator' the license-free twins. A list, exactly like
 # FAST_CHECK_TOOLS - naming both compares the two backends against the SAME generated
 # tree, and leaves a single summary attesting both, which is what 'check-tested' reads.
-# The pass criterion is identical ('[UART]:' in the captured run log).
+# The pass criterion is identical for every backend: the captured run log must show
+# '[UART]:' output AND 'EOT received'. Both halves are load-bearing: UART-only let a
+# run that died mid-firmware pass as green (the offload prints its greeting long
+# before its verdict - first false positive caught on 2026-08-12, a Verilator run
+# that timed out after the greeting was recorded SUCCESS).
 SIM_TOOLS ?= questa
 
 # "tool:module" pairs for ensure-tools (defined in ollivander.mk): a tool already
@@ -237,6 +241,10 @@ test-all:
 							echo "[ERROR] Simulation run ($$stool) completed but no UART output was detected for project $$proj_name! Check $$rlog"; \
 							log_step "Simulation Run ($$stool)" "FAILED [$$step_dur] (No UART output detected)"; \
 							failed_tests="$$failed_tests $$p(run-sim-$$stool-no-uart)"; \
+						elif ! grep -q "EOT received" $$rlog; then \
+							echo "[ERROR] Simulation run ($$stool) produced UART output but never reached EOT for project $$proj_name! Check $$rlog"; \
+							log_step "Simulation Run ($$stool)" "FAILED [$$step_dur] (UART output but no EOT)"; \
+							failed_tests="$$failed_tests $$p(run-sim-$$stool-no-eot)"; \
 						else \
 							log_step "Simulation Run ($$stool)" "SUCCESS [$$step_dur]"; \
 						fi; \
