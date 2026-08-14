@@ -573,19 +573,37 @@ ${fast_boots_str}
   # The forces are deliberately never released: they stand in for that external
   # agent holding the system up for the whole run. Releasing them would leave the
   # fields at whatever value the last force wrote, which only works by accident.
-  bringup_lines = []
+  #
+  # TWO PHASES, CLOCKS STRICTLY BEFORE RESETS. The gated domains' state elements
+  # are async-reset flops (common_cells `FFAR`), and an async reset takes effect
+  # on a reset EDGE or when its level is sampled at a clock EDGE. A domain that
+  # powers on gated gives them neither: the reset is born asserted (no edge) and
+  # the clock is off. Releasing clock and reset in the same instant - what this
+  # block did until 2026-08-14 - therefore leaves the whole domain UNRESET.
+  # Four-state simulators mask this (the X->1 transition of the reset wire at
+  # time zero counts as a posedge, so every FFAR loads its reset value anyway);
+  # under Verilator's two-state semantics there is no X->1, the flops keep their
+  # zero-init, and every snitch core in the noc example woke up with pc_q=0 -
+  # an Illegal Instruction storm at PC 0 (root-caused 2026-08-14 by bisection:
+  # the same tile boots cleanly with 300 ns between clock and reset release).
+  # The firmware's own bring-up helpers already order it this way; the testbench
+  # must too. The inter-phase delay is generous to cover divided domain clocks.
+  bringup_clk_lines = []
+  bringup_rst_lines = []
   if config.gated_at_power_on:
       for dom in managed_domains:
           reg_name = dom.name.replace("_clk", "")
-          bringup_lines.append(f'  force {sys_ctrl_path}.field_storage.{reg_name}_rst.{reg_name}_rst.value = \'0;')
           if dom.has_divider:
-              bringup_lines.append(f'  force {sys_ctrl_path}.field_storage.{reg_name}_clk_en.{reg_name}_clk_en.value = \'1;')
+              bringup_clk_lines.append(f'  force {sys_ctrl_path}.field_storage.{reg_name}_clk_en.{reg_name}_clk_en.value = \'1;')
+          bringup_rst_lines.append(f'  force {sys_ctrl_path}.field_storage.{reg_name}_rst.{reg_name}_rst.value = \'0;')
       if config.system_controller and config.system_controller.auto_control_groups:
           for g in config.system_controller.auto_control_groups:
               gn = g.name.lower()
-              bringup_lines.append(f'  force {sys_ctrl_path}.field_storage.{gn}_clk_en.{gn}_clk_en.value = \'1;')
-              bringup_lines.append(f'  force {sys_ctrl_path}.field_storage.{gn}_rst.{gn}_rst.value = \'0;')
-  bringup_str = "\n".join(bringup_lines)
+              bringup_clk_lines.append(f'  force {sys_ctrl_path}.field_storage.{gn}_clk_en.{gn}_clk_en.value = \'1;')
+              bringup_rst_lines.append(f'  force {sys_ctrl_path}.field_storage.{gn}_rst.{gn}_rst.value = \'0;')
+  bringup_clk_str = "\n".join(bringup_clk_lines)
+  bringup_rst_str = "\n".join(bringup_rst_lines)
+  bringup_str = bringup_clk_str + bringup_rst_str
 %>
   // Release CPU from passive boot loop by pointing scratch registers to preloaded memory (0x${f"{entry_point:08x}"})
   #1200;
@@ -597,8 +615,20 @@ ${fast_boots_str}
     // Enable the clocks and release the software resets of every managed clock
     // domain and every controlled tile, standing in for the external agent that
     // would do this on silicon. Runs before the host fetches its first instruction.
-    $display("[TB] Bringing up gated clock domains and tiles...");
-${bringup_str}
+    // Clocks come up FIRST, resets are released a full microsecond LATER: the
+    // gated domains' async-reset flops (`FFAR`) only load their reset value on a
+    // reset edge or on a clock edge sampling the asserted level, and a domain
+    // born gated sees neither if both signals move in the same instant. See the
+    // rationale block above; the firmware bring-up helpers use the same order.
+    $display("[TB] Bringing up gated clock domains and tiles (clocks first)...");
+% if bringup_clk_str:
+${bringup_clk_str}
+% endif
+    #1000;
+% if bringup_rst_str:
+${bringup_rst_str}
+% endif
+    $display("[TB] Gated domains reset released after a clocked reset window.");
 % endif
   #10;
   force dut.${host_instance_name}.${host_fixed.get("ForceBootPath").strip('"\'')} = 32'h${f"{entry_point:08x}"};
