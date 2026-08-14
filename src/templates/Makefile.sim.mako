@@ -79,6 +79,14 @@ VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer -
 #   opcode from raw flit bits; upstream PR candidate);
 # - assertions are structurally off: no --assert, plus ASSERTS_OFF for the common_cells
 #   macros - the superset of the ASSERTIONS=0 vsim knob, matching the test suite's default;
+# - HCI_ASSERT_DELAY is defined empty for the same reason, one step further: hci_interfaces.sv
+#   builds a 1 ps-skewed copy of the clock to sample its three protocol assertions, and a
+#   delay of any kind inside a hierarchically verilated block is what Verilator refuses
+#   ("Unsupported: --lib-create with --timing and delays"). It killed the nested macro tile of
+#   super_noc after 35 minutes of build, and nowhere else: the same RTL is fine when it is the
+#   top, which is why the crossbar family never saw it. With assertions off nothing reads that
+#   skewed copy, so emptying the hook the IP itself provides removes the delay and no
+#   behaviour with it - and the define is inert in the projects that do not pull hci in;
 # - --relative-includes replicates vlog's include resolution (relative to the including
 #   file): without it every IP whose manifest omits its own include dir parses under vlog
 #   and dies under Verilator - softex and vendored ibex on the crossbar family;
@@ -88,6 +96,7 @@ VERILATOR_SIM_FLAGS ?= --cc --main --build --hierarchical -j $(VERILATOR_JOBS) \
 	--MAKEFLAGS "CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2" \
 	--timing --timescale 1ns/1ps -Wno-fatal -Wno-TIMESCALEMOD -Wno-ASCRANGE \
 	-Wno-SYMRSVDWORD -Wno-ENUMVALUE --error-limit 200 +define+ASSERTS_OFF \
+	+define+HCI_ASSERT_DELAY= \
 	--relative-includes${(" " + " ".join(["+define+" + d for d in global_defines])) if global_defines else ""}
 VERILATOR_RUN_FLAGS ?= +fast_boot
 VERILATOR_WORK ?= verilator_work

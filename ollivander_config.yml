@@ -227,20 +227,29 @@ dependencies:
   # to any entry whose checkout exists, and an entry with no git source contributes
   # nothing to the generated manifests.
   #
-  # hier-icache: a raw SVA property block guarded by SYNTHESIS alone, so every simulator
-  # sees it; Verilator cannot parse the ##[0:1] cycle-delay range (upstream PR candidate:
-  # extend the guard). The added VERILATOR guard nests inside the SYNTHESIS one.
-  # hwpe-ctrl: hwpe_ctrl_slave drives its packed flags_o struct with mixed styles - start,
-  # evt, is_working and sw_evt non-blocking in always_ff processes, done and enable
-  # combinationally - which is legal SV that QuestaSim accepts but Verilator rejects as
-  # unsupported (BLKANDNBLK) at the redmule and datamover instantiations. The repair moves
-  # the sequential fields to intermediate registers exposed through continuous assigns,
-  # semantics identical. Order matters: the four renames run on the pristine file first,
-  # then the declaration block (already using the final names) is anchored on the untouched
-  # 'flags_o.done' assign. Possible Verilator-compatibility PR upstream, to verify at HEAD.
+  # hier-icache: a raw SVA property block guarded by SYNTHESIS alone, so every simulator sees
+  # it, and its ##[0:1] cycle-delay range is a TIMING construct. Verilator refuses to build a
+  # hierarchically verilated block ('--lib-create') out of a subtree that uses timing, so the
+  # block is what stopped super_noc's nested Crux macro tile - hier-icache reaching the design
+  # through pulp_cluster, which lives inside that macro and nowhere else. The same RTL is fine
+  # when it is the top, which is why the crossbar family never saw it and why the paragraph
+  # below could go stale unnoticed. The added VERILATOR guard nests inside the SYNTHESIS one;
+  # the Verilator flow keeps assertions off anyway, so the only loss is two $display
+  # diagnostics. Upstream PR candidate: extend the guard.
+  # This entry had gone MISSING while this paragraph survived (found 2026-08-13, restored the
+  # same day): a documented repair that no longer ran, invisible because the only project it
+  # mattered for could not be built under Verilator for other reasons.
   # hwpe-ctrl: hwpe_ctrl_slave drives its packed flags_o with mixed styles, which
   # Verilator refuses (BLKANDNBLK); the five ORDERED replacements moved to the script
   # per the three-patch rule above. Full rationale in the script header.
+  hier-icache:
+    patches:
+      - file: "{bender_work}/hier-icache/RTL/L1.5_CACHE/share_icache.sv"
+        search: "   `ifndef SYNTHESIS\n   property valid_2_ready;"
+        replace: "   `ifndef SYNTHESIS\n   `ifndef VERILATOR\n   property valid_2_ready;"
+      - file: "{bender_work}/hier-icache/RTL/L1.5_CACHE/share_icache.sv"
+        search: "       $display(\"@%0dns shared icache ready_2_valid assertion Failed\", $time);\n   `endif"
+        replace: "       $display(\"@%0dns shared icache ready_2_valid assertion Failed\", $time);\n   `endif\n   `endif"
   hwpe-ctrl:
     pre_build_cmds:
       - "$(PYTHON) {ollivander_dir}/scripts/patch_hwpe_ctrl.py {bender_work}"
@@ -273,6 +282,22 @@ dependencies:
       # Two axi-fork literal completions and the removal of a dead verification
       # cluster from the manifest; see the script header.
       - "$(PYTHON) {ollivander_dir}/scripts/patch_opentitan.py {bender_work}"
+    # `ASSERT_IF exists twice with DIFFERENT arity: common_cells declares six
+    # parameters (the last one a description), opentitan's prim_assert.sv five.
+    # In Verilator's single compilation unit that is fatal to whoever calls the
+    # six-parameter form (snitch_sequencer.sv): its `include of the common_cells
+    # header is a no-op once another file has already set that header's include
+    # guard, so the five-parameter definition is the one still standing and the
+    # preprocessor rejects the call ("Define passed too many arguments", then an
+    # internal error - both supers died 10 s into their Verilator build,
+    # 2026-08-12). QuestaSim compiles file by file and never sees it. Adding the
+    # trailing parameter with a default makes the two definitions
+    # call-compatible whichever one wins; opentitan's body ignores it. Upstream
+    # fix candidate, recorded in docs/developer/wip/upstream_pr_candidates.md.
+    patches:
+      - file: "{bender_work}/opentitan/hw/ip/prim/rtl/prim_assert.sv"
+        search: "`define ASSERT_IF(__name, __prop, __enable, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST) \\"
+        replace: "`define ASSERT_IF(__name, __prop, __enable, __clk = `ASSERT_DEFAULT_CLK, __rst = `ASSERT_DEFAULT_RST, __desc = \"\") \\"
   pulp-ethernet:
     git: "https://github.com/pulp-platform/pulp-ethernet.git"
     rev: "db9a90dd27fa85ddbe9b7cd22e03bf43b2c14838"

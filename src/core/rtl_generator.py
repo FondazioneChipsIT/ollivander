@@ -54,6 +54,13 @@ class RTLGenerator:
         # scanned, and joined with the project's own 'defines' in extract_wiring_metadata.
         self.def_pattern = re.compile(r'(?://|##)\s*DEFINE:\s*name="([^"]+)"')
         self.imported_defines = set()
+        # Components that declare, via '// OLLIVANDER: exclude_hier_block="reason"', that they
+        # carry a construct Verilator refuses inside a '--lib-create' child library. Collected
+        # exactly like the defines above - from the parsed component AND from the staged isle
+        # source, because the tile wrapper rendered around an isle does not carry its pragmas -
+        # and consumed by generate_verilator_config. Maps component name to the declared reason.
+        self.hier_pattern = re.compile(r'(?://|##)\s*OLLIVANDER:\s*exclude_hier_block="([^"]*)"')
+        self.hier_block_marks = {}
 
     def require_file_helper(self, filename):
         """Mako helper passed to templates to inject a local file dependency pragma."""
@@ -273,7 +280,14 @@ class RTLGenerator:
                         # pragmas, so they are collected here, at the only point where the isle
                         # source itself is read.
                         self.imported_defines.update(self.def_pattern.findall(content))
-                        
+                        # Same reasoning for the hierarchical-block restriction: an exported macro
+                        # declares here that something inside it cannot be verilated as a child
+                        # library, and the tile built around it inherits that restriction.
+                        hier_mark = self.hier_pattern.search(content)
+                        if hier_mark:
+                            self.hier_block_marks[c.name] = re.sub(
+                                r'\s*(?://|##)?\s+', " ", hier_mark.group(1)).strip() or "unspecified"
+
                         # Extract PEAKRDL pragma to pass to the wrapper
                         peakrdl_match = re.search(r'(?://|##)\s*PEAKRDL:\s*source="([^"]+)"(?:.*?map="([^"]+)")?', content)
                         if peakrdl_match:
@@ -454,6 +468,14 @@ class RTLGenerator:
             for d in (getattr(c, 'defines', None) or []):
                 merged[d.split('=', 1)[0]] = d
         global_defines = set(merged.values())
+
+        # Hierarchical-block restrictions declared by the components themselves (the crossbar
+        # path, where the isle is parsed directly; the NoC isle-to-tile path fills the same map
+        # while staging the isle source, above).
+        for c in all_comps:
+            reason = (comp_info.get(c.name) or {}).get("verilator_exclude_hier_block")
+            if reason:
+                self.hier_block_marks[c.name] = reason
 
         return comp_info, wiring_matrix, global_defines
 
@@ -1337,6 +1359,16 @@ class RTLGenerator:
                 for define in sorted(global_defines):
                     macro_pragmas.append(f'// DEFINE: name="{define}"')
 
+                # A macro must equally carry forward the hierarchical-block restrictions of its
+                # internals: the consuming project sees one isle, and has no other way to know
+                # that something inside it cannot become a Verilator child library. The reasons
+                # are merged into one declaration because the consumer's decision is binary - the
+                # tile built around this macro is excluded - while the text has to stay readable.
+                if self.hier_block_marks:
+                    merged_reason = "; ".join(
+                        f"{name}: {reason}" for name, reason in sorted(self.hier_block_marks.items()))
+                    macro_pragmas.append(f'// OLLIVANDER: exclude_hier_block="{merged_reason}"')
+
                 if self.soc_config.topology.type == "noc":
                     macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.noc_pkg_name}.sv"')
                 macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.soc_pkg_name}.sv"')
@@ -1496,6 +1528,16 @@ class RTLGenerator:
                             except ValueError:
                                 pass
 
+            # Exclusion 3: tiles carrying a component that declares it cannot be verilated as a
+            # child library. The declaration travels with the component (and with a macro that
+            # nests it), so a tile is excluded BECAUSE of what it contains - which is why this
+            # rule survives a change of block granularity, where a rule phrased over the
+            # structure ("a tile nesting a macro") would have to be rewritten. See section 5.3 of
+            # docs/developer/wip/future_evolution_tasks.md for the measurement behind it.
+            for comp_name, reason in sorted(self.hier_block_marks.items()):
+                excluded.add(comp_name)
+                print(f"  [INFO] hier_block: '{comp_name}' excluded - {reason}")
+
             prefix = self.soc_config.project.module_prefix
             for comp_name, count in sorted(counts.items()):
                 if comp_name in excluded:
@@ -1519,6 +1561,14 @@ class RTLGenerator:
                 for part in inst.split('.'):
                     if part.startswith("i_"):
                         excluded.add(part[2:])
+            # The declared restriction, exactly as on the mesh above. It matters here even though
+            # the crossbar family builds today: hyperbus is out of the block set only because its
+            # wrapper carries a `parameter type`, a workaround for a Verilator internal error that
+            # section 5.1 plans to retire - and the day it is retired, the restriction has to be
+            # the thing keeping the isle out, not a coincidence.
+            for comp_name, reason in sorted(self.hier_block_marks.items()):
+                excluded.add(comp_name)
+                print(f"  [INFO] hier_block: '{comp_name}' excluded - {reason}")
             prefix = self.soc_config.project.module_prefix
             by_module = {}
             for c in (self.soc_config.components or []):

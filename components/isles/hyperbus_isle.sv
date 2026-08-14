@@ -8,6 +8,18 @@
 // BENDER: name="axi"
 // BENDER: name="common_cells"
 // BENDER: name="register_interface"
+//
+// Hierarchical verilation cannot build a child library ('--lib-create') out of a subtree that
+// contains a timing construct, and hyperbus's delay-line model carries one:
+// models/configurable_delay.behav.sv models the 32-tap line with an intra-assignment delay
+// (clk_o <= #(real'(delay_i)*78ps + 10ps) clk). The model is simulation-only - the IP declares it
+// under Bender's 'test' target alone, next to an FPGA variant that is a bare Xilinx IBUF ignoring
+// delay_i - so there is nothing to repair in the RTL: the isle simply stays in the top unit, where
+// timing is legal and where the crossbar family has been compiling it all along.
+// (Note for whoever edits this block: a comment line must never START with the word that names
+// the simulator, because its pragma scanner reads such a line as one of its own metacomments and
+// fails with BADVLTPRAGMA on the next word - which is exactly how this note came to exist.)
+// OLLIVANDER: exclude_hier_block="behavioural timing: hyperbus configurable_delay models a 32-tap delay line with an intra-assignment delay"
 
 `include "register_interface/typedef.svh"
 

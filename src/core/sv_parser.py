@@ -127,7 +127,11 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
         # Compilation macros (+define+) the component's sources are meant to be compiled with,
         # declared via '// DEFINE: name="..."' pragmas. Macro wrappers carry them so that a
         # consuming project inherits the defines the macro's internals were generated with.
-        "defines": []
+        "defines": [],
+        # Reason, if any, why this component cannot be verilated as a hierarchical block,
+        # declared via '// OLLIVANDER: exclude_hier_block="..."'. Empty string means no
+        # restriction. See generate_verilator_config for what the generator does with it.
+        "verilator_exclude_hier_block": ""
     }
     
     # Unify header extraction: isolate the module declaration to prevent
@@ -281,6 +285,21 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     for match in def_pattern.finditer(content):
         if match.group(1) not in info["defines"]:
             info["defines"].append(match.group(1))
+
+    # Extract the hierarchical-block restriction (e.g.
+    # // OLLIVANDER: exclude_hier_block="behavioural timing: ..."). A component declares here that
+    # it carries a construct Verilator refuses inside a '--lib-create' child library - a delay, an
+    # intra-assignment delay, a fork/join_none in a package class - so that the generator can keep
+    # it, and every candidate containing it, out of cfg/<top>.vlt. The reason is part of the
+    # pragma on purpose: the message Verilator emits carries no source location, so without a
+    # written reason the exclusion looks arbitrary to whoever reads the config later.
+    # The value may span continuation comment lines, hence the DOTALL-free multi-line pattern.
+    hier_match = re.search(r'(?://|##)\s*OLLIVANDER:\s*exclude_hier_block="([^"]*)"', content)
+    if hier_match:
+        # Collapse the continuation lines' comment markers and whitespace into single spaces,
+        # so the reason reads as one sentence wherever it is printed.
+        info["verilator_exclude_hier_block"] = re.sub(
+            r'\s*(?://|##)?\s+', " ", hier_match.group(1)).strip() or "unspecified"
 
     # Extract PeakRDL mapping information (e.g. // PEAKRDL: source="my_ip.rdl" map="my_map")
     peakrdl_match = re.search(r'(?://|##)\s*PEAKRDL:\s*source="([^"]+)"(?:.*?map="([^"]+)")?', content)

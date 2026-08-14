@@ -42,6 +42,23 @@ on two independent counts, both found by the offload bring-up (wip 2.2 phase 2b)
    and shifts the line by the byte offset, making the ROM correct for ANY reader
    width. Upstream candidate: same shift, or a width assertion at the boundary.
 
+3. spatz_cc's tracer opens its trace file from an 'initial' block that first waits
+   for a clock edge, so that 'hart_id_i' has a value before it lands in the file
+   name. That event control is a TIMING construct, and Verilator refuses to build a
+   hierarchically verilated block ('--lib-create') out of a subtree that uses
+   timing: it is what killed super_noc's nested Crux macro tile after 35 minutes of
+   build, and only there - the same RTL is fine when it is the top, which is why the
+   crossbar family never saw it. snitch_cluster already carries the repair upstream
+   (its own tracer wraps the equivalent '#0' in 'ifndef VERILATOR'); spatz is an
+   older fork and lacks it, so we apply the same guard. Note the pragma above the
+   block is 'pragma translate_off', which Verilator does NOT honour - that is
+   precisely why upstream needed the explicit guard rather than relying on it.
+   Declared consequence: without the wait, 'hart_id_i' reads as 0 in the two-state
+   world at time 0, so the per-hart trace file names can collapse onto hart 0 under
+   Verilator. A diagnostic loss, no effect on the simulated behaviour, and the same
+   one upstream accepted. Upstream candidate: the guard, or a name built from a
+   parameter instead of a port.
+
 The mechanics match the in-registry patch engine: replacements apply on freshly
 ledger-restored sources, every touched file is recorded in the checkout's
 .ollivander_patched, and a search string that no longer matches is reported as a
@@ -55,6 +72,7 @@ from pathlib import Path
 
 MANIFEST = "Bender.yml"
 BOOTROM = "hw/system/spatz_cluster/src/generated/bootrom.sv"
+SPATZ_CC = "hw/ip/spatz_cc/src/spatz_cc.sv"
 
 PATCHES = [
     # Bootrom repair 1: PC-relative entry sequence (see module docstring).
@@ -76,6 +94,11 @@ PATCHES = [
     (BOOTROM,
      "  assign rdata_o = (addr_q < RomSize) ? mem[addr_q] : '0;",
      "  assign rdata_o = (addr_q < RomSize) ? (mem[addr_q] >> (addr_low_q * 8)) : '0;"),
+    # Tracer repair: keep the timing construct out of Verilator's way (see docstring).
+    # The line occurs once in the whole spatz checkout, so a one-line search is unambiguous.
+    (SPATZ_CC,
+     "    @(posedge clk_i);",
+     "`ifndef VERILATOR\n    @(posedge clk_i);\n`endif"),
     (MANIFEST,
      "    - target: simulation\n      files:\n"
      "        - hw/ip/tcdm_interface/src/tcdm_test.sv\n"
