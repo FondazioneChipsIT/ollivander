@@ -16,7 +16,17 @@ from core.wiring import build_connection_matrix
 from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_import_sv_packages, write_if_changed, strip_comments, simplify_port_ranges, get_ollivander_version, get_ollivander_git_hash
 from core.sv_ir import SVArchitectureIR, PortConnection
 from core.rtl_helpers import get_base_name, extract_dims, get_suffixes, norm_type, sv_dependency_sort, PORT_PATTERN
-from core.rtl_ir_builder import build_crossbar_ir, build_noc_ir
+from core.rtl_ir_builder import build_crossbar_ir, build_noc_ir, get_type_param_fill
+
+# The de-typing pass of the isle staging (_detype_staged_isle) does its header
+# surgery on pyslang's syntax tree; without pyslang the pass degrades to a no-op
+# and the typed isles simply stay out of the hierarchical block set, mirroring
+# sv_parser's own optional-import discipline.
+try:
+    import pyslang
+    HAS_PYSLANG = True
+except ImportError:
+    HAS_PYSLANG = False
 from core.macro_boundary import resolve_noc_id_widths, resolve_noc_user_widths
 
 
@@ -38,6 +48,17 @@ class RTLGenerator:
         self.original_isle_types = {}
         # Tracks all generated module paths to inject them into the Bender manifest.
         self.generated_module_files = []
+        # Per-isle types packages emitted by the de-typing pass of the isle staging
+        # (see _detype_staged_isle): listed separately because they must compile
+        # BEFORE the component wrappers, while generated_module_files is emitted
+        # alphabetically - which would put '<isle>.sv' ahead of '<isle>_types_pkg.sv'.
+        self.generated_types_pkg_files = []
+        # Per staged module, the parameter names the de-typing removed. Consumed by
+        # the IR builders through comp_info: an override for one of these names -
+        # arch_optimizer injects four reg types into the HOST's custom parameters,
+        # outside the supported_params loop - must be dropped, or it dangles on a
+        # header that no longer declares the parameter.
+        self._detyped_params = {}
         self.required_local_files = set()
         self.project_dependencies = {}
         
@@ -88,6 +109,117 @@ class RTLGenerator:
                     return candidate
         return None
 
+    def _detype_staged_isle(self, content, comp, module_name, hw_dir):
+        """Replace a staged isle's `parameter type` header entries with a generated
+        per-isle types package (the hier-block admission work, wip 5.1).
+
+        A wrapper whose header carries `parameter type` cannot be a Verilator
+        hierarchical block (the hier-parameters wrapper cannot serialize a type),
+        and the parameters exist only because the shared component cannot name the
+        project's SoC package. The STAGED copy is project-specific by construction,
+        so it can: this pass emits `<module>_types_pkg.sv` with one typedef per
+        former parameter - same names, resolved through the same role-based helper
+        the instantiation site uses (get_type_param_fill) - deletes the parameters
+        from the header and injects the package import. Ports and body keep the
+        very same identifiers, now supplied by the import, and the instantiation
+        site stops emitting the overrides automatically: extract_wiring_metadata
+        parses the transformed copy, so the names simply leave supported_params.
+
+        The header surgery is done on pyslang's syntax tree, not with regexes: the
+        parameter list exposes declarations and separator commas interleaved, each
+        carrying its exact source text (trivia included), so the survivors are
+        reassembled verbatim and the spliced spans come from real token offsets.
+        The first, regex-based version of this pass produced three distinct
+        defects in one evening - a swallowed newline, catastrophic backtracking
+        and a lazy capture stopping after one character - which is exactly the
+        class of fragility a parser removes. Unresolved `include directives are
+        harmless here: the surgery is purely syntactic and the components carry
+        no preprocessor conditionals in their headers.
+
+        On any structural surprise - pyslang unavailable, no module of the
+        expected name, no type parameters - the content is returned untouched:
+        the staged copy then behaves exactly as before this pass existed, and the
+        isle merely stays out of the hierarchical block set as it always was.
+        """
+        if not HAS_PYSLANG:
+            print("  [INFO] pyslang unavailable: staged isles keep their type parameters"
+                  " (not hier-block eligible)")
+            return content
+        tree = pyslang.syntax.SyntaxTree.fromText(content)
+        root = tree.root
+        mod = None
+        if str(root.kind) == "SyntaxKind.ModuleDeclaration":
+            mod = root
+        elif hasattr(root, "members"):
+            for m in root.members:
+                if (str(m.kind) == "SyntaxKind.ModuleDeclaration"
+                        and m.header.name.valueText == module_name):
+                    mod = m
+                    break
+        if (mod is None or mod.header.name.valueText != module_name
+                or mod.header.parameters is None):
+            return content
+
+        plist = mod.header.parameters
+        entries = []  # (former parameter name, its declared default)
+        kept = []     # surviving declaration nodes, in order, commas dropped
+        for it in plist.declarations:
+            kind = str(getattr(it, "kind", ""))
+            if kind == "SyntaxKind.TypeParameterDeclaration":
+                # One declaration may carry several declarators
+                # (`parameter type a = logic, b = logic`): each becomes a typedef.
+                for a in it.declarators:
+                    default = str(a.assignment.type).strip() if a.assignment else "logic"
+                    entries.append((a.name.valueText, default))
+            elif kind != "TokenKind.Comma":
+                kept.append(it)
+        if not entries:
+            return content
+
+        pkg = self.soc_config.project.soc_pkg_name
+        pkg_name = f"{module_name}_types_pkg"
+        lines = [
+            "// Copyright 2026 Fondazione Chips-IT.",
+            "// Solderpad Hardware License, Version 0.51, see LICENSE for details.",
+            "// SPDX-License-Identifier: SHL-0.51",
+            "//",
+            f"// Generated by Ollivander v{self.gen_version} ({self.git_hash})",
+            "//",
+            f"// Types the staged '{module_name}' isle used to receive as `parameter type`",
+            "// overrides, resolved here once through the same role-based mapping the",
+            "// instantiation site used (rtl_ir_builder.get_type_param_fill). Keeping the",
+            "// header free of type parameters is what admits the isle as a Verilator",
+            "// hierarchical block; the typedef names are the former parameter names, so",
+            "// the isle's ports and body compile unchanged.",
+            f"package {pkg_name};",
+        ]
+        for name, default in entries:
+            fill = get_type_param_fill(name, comp, self.soc_config, pkg) or default
+            lines.append(f"  typedef {fill} {name};")
+        lines.append(f"endpackage : {pkg_name}")
+        pkg_file = hw_dir / f"{pkg_name}.sv"
+        write_if_changed(pkg_file, "\n".join(lines) + "\n")
+        rel_pkg = os.path.relpath(pkg_file, self.env.bender_dir).replace("\\", "/")
+        if rel_pkg not in self.generated_types_pkg_files:
+            self.generated_types_pkg_files.append(rel_pkg)
+        self._detyped_params.setdefault(module_name, set()).update(n for n, _ in entries)
+
+        # Reassemble the survivors verbatim - each node's text carries its own
+        # leading trivia, so formatting and comments travel with their owner -
+        # with a bare comma between consecutive entries, exactly as the original
+        # separator tokens were. Splice by token offsets, params first, then the
+        # import after the module name (an earlier offset, untouched by the splice).
+        rebuilt = "".join(("," if i else "") + str(d) for i, d in enumerate(kept))
+        p_start = plist.openParen.range.end.offset
+        p_end = plist.closeParen.range.start.offset
+        name_end = mod.header.name.range.end.offset
+        content = content[:p_start] + rebuilt + content[p_end:]
+        content = (content[:name_end] + f"\n  import {pkg_name}::*;"
+                   + content[name_end:])
+        print(f"  -> De-typing staged isle '{module_name}': {len(entries)} type parameters"
+              f" moved to {pkg_name}")
+        return content
+
     def generate_dynamic_isles(self):
         """
         Phase 1: Generates intermediate SystemVerilog wrappers for composite blocks 
@@ -107,6 +239,19 @@ class RTLGenerator:
 
         if self.soc_config.topology.type == "crossbar":
             all_comps = [self.soc_config.host] + (self.soc_config.components if self.soc_config.components else [])
+            # De-typing precondition (see _detype_staged_isle): the type fills are
+            # ROLE-based (host / behind the LLC port / plain slave) while the staged
+            # copy is shared by every component of the same type, so the pass may
+            # only fire when all of them agree on the role. Disagreement is legal
+            # SoC description - it just keeps that isle out of the hier-block set,
+            # and says so, rather than silently giving one component the other's types.
+            roles_by_type = {}
+            for c2 in all_comps:
+                if is_external(c2):
+                    continue
+                role = (c2.name == self.soc_config.host.name,
+                        'llc_port' in (c2.interfaces or {}))
+                roles_by_type.setdefault(c2.type, set()).add(role)
             for c in all_comps:
                 if c.type == "apb_subsystem_isle":
                     apb_peripherals = []
@@ -156,6 +301,13 @@ class RTLGenerator:
                         if out_file.suffix == '.sv':
                             rendered_code = auto_import_sv_packages(rendered_code)
                         rendered_code = rendered_code.replace('\r\n', '\n')
+                        if len(roles_by_type.get(c.type, set())) == 1:
+                            rendered_code = self._detype_staged_isle(
+                                rendered_code, c,
+                                f"{self.soc_config.project.module_prefix}_{c.type}", hw_dir)
+                        else:
+                            print(f"  [INFO] '{c.type}' instances disagree on role: type"
+                                  f" parameters kept, isle not hier-block eligible")
                         write_if_changed(out_file, rendered_code)
                     except Exception as e:
                         print(f"\n[ERROR] Failed to render {tpl_path.name}:\n{e}")
@@ -187,6 +339,13 @@ class RTLGenerator:
                             content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'{self.soc_config.project.noc_pkg_name}', content)
                             content = re.sub(rf'\bmodule\s+{c.type}\b', f'module {self.soc_config.project.module_prefix}_{c.type}', content)
                             content = re.sub(rf'\bendmodule\s*:\s*{c.type}\b', f'endmodule : {self.soc_config.project.module_prefix}_{c.type}', content)
+                            if len(roles_by_type.get(c.type, set())) == 1:
+                                content = self._detype_staged_isle(
+                                    content, c,
+                                    f"{self.soc_config.project.module_prefix}_{c.type}", hw_dir)
+                            else:
+                                print(f"  [INFO] '{c.type}' instances disagree on role: type"
+                                      f" parameters kept, isle not hier-block eligible")
                             write_if_changed(out_file, content)
                         except Exception as e:
                             print(f"\n[ERROR] Failed to stage {existing_isle.name}:\n{e}")
@@ -357,6 +516,10 @@ class RTLGenerator:
                 info = get_isle_info(c.type, self.env.search_paths, self.env.exclude_dir)
             if not info:
                 info = {}
+            # Names the de-typing pass removed from this module's header: the IR
+            # builders drop any custom-parameter override carrying one of them.
+            info["detyped_params"] = self._detyped_params.get(
+                f"{self.soc_config.project.module_prefix}_{c.type}", set())
             comp_info[c.name] = info
 
             # Check for PEAKRDL pragma in the SystemVerilog source.
@@ -1065,6 +1228,7 @@ class RTLGenerator:
             "camel_case": camel_case,
             "is_external": is_external,
             "generated_module_files": sorted(self.generated_module_files),
+            "generated_types_pkg_files": sorted(self.generated_types_pkg_files),
             "require_file": self.require_file_helper,
             "require_bender": self.require_bender_helper,
             "rel_hw_dir": os.path.relpath(hw_dir, self.env.bender_dir).replace('\\', '/'),
@@ -1380,6 +1544,12 @@ class RTLGenerator:
                     if fname not in [f"{self.soc_config.project.noc_pkg_name}.sv", f"{self.soc_config.project.soc_pkg_name}.sv", f"{top_level_module_name}_sys_regs_pkg.sv"]:
                         macro_pragmas.append(f'// OLLIVANDER: require="{fname}"')
     
+                # The per-isle types packages travel with the macro like every other
+                # generated file; they precede the module list so a parent that keeps
+                # the require order compiles each package before its importing isle.
+                for f in sorted(self.generated_types_pkg_files):
+                    macro_pragmas.append(f'// OLLIVANDER: require="{Path(f).name}"')
+
                 for f in sorted(self.generated_module_files):
                     fname = Path(f).name
                     macro_pragmas.append(f'// OLLIVANDER: require="{fname}"')

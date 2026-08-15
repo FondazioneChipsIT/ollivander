@@ -37,6 +37,50 @@ def get_instance_window(comp, inst_idx=0):
     return f"64'h{base_addr:X}", str(size_val)
 
 
+def get_type_param_fill(p, comp, soc_config, pkg):
+    """Package-qualified type a component's TYPE parameter is filled with, or None.
+
+    Extracted verbatim from build_crossbar_ir's dispatch (2026-08-14) so that the
+    isle-staging pass can ask the same question the instantiation site answers: the
+    hier-block work (wip 5.1) replaces `parameter type` in the staged isle copies
+    with a generated per-isle types package, and its typedefs must be exactly these
+    fills. The answer is ROLE-based - host, behind the LLC port, or plain slave -
+    which is a per-component property: the staging transform may therefore only
+    fire when every component of an isle type agrees on the role.
+    """
+    is_host = comp.name == soc_config.host.name
+    is_llc = 'llc_port' in (comp.interfaces or {})
+
+    def in_side(base):
+        if is_host:
+            return f"{pkg}::soc_axi_{base}"
+        if is_llc:
+            return f"{pkg}::soc_axi_llc_{base}"
+        return f"{pkg}::soc_axi_slv_{base}"
+
+    def out_side(base):
+        return f"{pkg}::soc_axi_slv_{base}" if is_host else f"{pkg}::soc_axi_{base}"
+
+    if p in ['axi_req_t', 'axi_in_req_t', 'sync_axi_in_req_t', 'axi_slave_req_t']:
+        return in_side("req_t")
+    if p in ['axi_resp_t', 'axi_in_resp_t', 'sync_axi_in_rsp_t', 'axi_slave_resp_t']:
+        return in_side("resp_t")
+    if p in ['axi_out_req_t', 'sync_axi_out_req_t', 'axi_master_req_t']:
+        return out_side("req_t")
+    if p in ['axi_out_resp_t', 'sync_axi_out_rsp_t', 'axi_master_resp_t']:
+        return out_side("resp_t")
+    for ch in ['aw', 'w', 'b', 'ar', 'r']:
+        if p in [f'axi_{ch}_chan_t', f'axi_in_{ch}_chan_t']:
+            return in_side(f"{ch}_chan_t")
+        if p == f'axi_out_{ch}_chan_t':
+            return out_side(f"{ch}_chan_t")
+    if p in ['reg_req_t', 'sync_reg_in_req_t', 'sync_reg_out_req_t', 'async_reg_out_req_t']:
+        return f"{pkg}::soc_reg_req_t"
+    if p in ['reg_rsp_t', 'sync_reg_in_rsp_t', 'sync_reg_out_rsp_t', 'async_reg_out_rsp_t']:
+        return f"{pkg}::soc_reg_rsp_t"
+    return None
+
+
 def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns):
     """
     Populate *ir* with instances and connections for a Crossbar topology.
@@ -81,59 +125,10 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                     inst.parameters[p] = 'AxiSlvIdWidth'
                 else:
                     inst.parameters[p] = 'AxiIdWidth'
-            elif p in ['axi_req_t', 'axi_in_req_t', 'sync_axi_in_req_t', 'axi_slave_req_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_req_t"
-                elif 'llc_port' in (comp.interfaces or {}): inst.parameters[p] = f"{pkg}::soc_axi_llc_req_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_slv_req_t"
-            elif p in ['axi_resp_t', 'axi_in_resp_t', 'sync_axi_in_rsp_t', 'axi_slave_resp_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_resp_t"
-                elif 'llc_port' in (comp.interfaces or {}): inst.parameters[p] = f"{pkg}::soc_axi_llc_resp_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_slv_resp_t"
-            elif p in ['axi_aw_chan_t', 'axi_in_aw_chan_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_aw_chan_t"
-                elif 'llc_port' in (comp.interfaces or {}): inst.parameters[p] = f"{pkg}::soc_axi_llc_aw_chan_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_slv_aw_chan_t"
-            elif p in ['axi_w_chan_t', 'axi_in_w_chan_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_w_chan_t"
-                elif 'llc_port' in (comp.interfaces or {}): inst.parameters[p] = f"{pkg}::soc_axi_llc_w_chan_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_slv_w_chan_t"
-            elif p in ['axi_b_chan_t', 'axi_in_b_chan_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_b_chan_t"
-                elif 'llc_port' in (comp.interfaces or {}): inst.parameters[p] = f"{pkg}::soc_axi_llc_b_chan_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_slv_b_chan_t"
-            elif p in ['axi_ar_chan_t', 'axi_in_ar_chan_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_ar_chan_t"
-                elif 'llc_port' in (comp.interfaces or {}): inst.parameters[p] = f"{pkg}::soc_axi_llc_ar_chan_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_slv_ar_chan_t"
-            elif p in ['axi_r_chan_t', 'axi_in_r_chan_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_r_chan_t"
-                elif 'llc_port' in (comp.interfaces or {}): inst.parameters[p] = f"{pkg}::soc_axi_llc_r_chan_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_slv_r_chan_t"
-            elif p in ['axi_out_req_t', 'sync_axi_out_req_t', 'axi_master_req_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_slv_req_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_req_t"
-            elif p in ['axi_out_resp_t', 'sync_axi_out_rsp_t', 'axi_master_resp_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_slv_resp_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_resp_t"
-            elif p in ['axi_out_aw_chan_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_slv_aw_chan_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_aw_chan_t"
-            elif p in ['axi_out_w_chan_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_slv_w_chan_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_w_chan_t"
-            elif p in ['axi_out_b_chan_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_slv_b_chan_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_b_chan_t"
-            elif p in ['axi_out_ar_chan_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_slv_ar_chan_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_ar_chan_t"
-            elif p in ['axi_out_r_chan_t']:
-                if comp.name == soc_config.host.name: inst.parameters[p] = f"{pkg}::soc_axi_slv_r_chan_t"
-                else: inst.parameters[p] = f"{pkg}::soc_axi_r_chan_t"
-            elif p in ['reg_req_t', 'sync_reg_in_req_t', 'sync_reg_out_req_t', 'async_reg_out_req_t']:
-                inst.parameters[p] = f"{pkg}::soc_reg_req_t"
-            elif p in ['reg_rsp_t', 'sync_reg_in_rsp_t', 'sync_reg_out_rsp_t', 'async_reg_out_rsp_t']:
-                inst.parameters[p] = f"{pkg}::soc_reg_rsp_t"
+            # TYPE parameters: filled by the shared role-based helper above, so the
+            # isle-staging pass (wip 5.1 hier-block work) computes the same answer.
+            elif (type_fill := get_type_param_fill(p, comp, soc_config, pkg)) is not None:
+                inst.parameters[p] = type_fill
             elif p == 'MACRO_BASE_ADDR':
                 b_addr = 0
                 if comp.interfaces and 'axi_slave' in comp.interfaces:
@@ -194,7 +189,14 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
 
         # Custom parameters from YAML
         if comp.parameters:
+            detyped = c_info.get("detyped_params", ())
             for p_k, p_v in comp.parameters.items():
+                # A name the de-typing pass moved into the isle's types package no
+                # longer exists as a header parameter: overriding it would dangle
+                # (vopt-2732). These entries are generator-injected (arch_optimizer's
+                # reg types on the host), never user YAML, so dropping is silent.
+                if p_k in detyped:
+                    continue
                 if isinstance(p_v, bool):
                     inst.parameters[p_k] = "1'b1" if p_v else "1'b0"
                 elif isinstance(p_v, int) and p_v > 0x7FFFFFFF:
