@@ -248,6 +248,8 @@ For standard `.sv` files, declare dependencies using special comments anywhere i
     // OLLIVANDER: require="tc_clk_gating.sv"
     ```
 
+*   **Hierarchical-Verilation Pragmas**: `// OLLIVANDER: exclude_hier_block="<reason>"` and `// OLLIVANDER: hier_block="<module>"` apply to subtiles exactly as to isles — the full contract is documented once, in the isle standardization's dependency-pragmas section.
+
 ### 6.2 Dynamic Dependencies (Mako Templates)
 If your Subtile is dynamically generated (a `.sv.mako` file), avoid hardcoding dependency comments if the underlying hardware instantiation is conditional.
 

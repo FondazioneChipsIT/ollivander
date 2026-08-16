@@ -59,6 +59,21 @@ class RTLGenerator:
         # outside the supported_params loop - must be dropped, or it dangles on a
         # header that no longer declares the parameter.
         self._detyped_params = {}
+        # The module names this project's own cfg/<top>.vlt declares as hierarchical
+        # blocks, captured by generate_verilator_config. A macro export re-emits them
+        # as '// OLLIVANDER: hier_block="..."' pragmas so a PARENT project knows,
+        # by declaration rather than inference, which of the macro's internals are
+        # block-eligible - the single source of truth being the child's own .vlt.
+        self.hier_block_modules = []
+        # And the parent-side view: per component, the hier_block declarations its
+        # staged source carries (collected in both staging branches). A component
+        # with a non-empty list is an Ollivander macro with block-eligible internals:
+        # the uniform rule promotes the DECLARED modules into this project's .vlt and
+        # never makes the macro's own wrapper (or its tile) a block itself - blocks
+        # inside an enclosing block would nest, which is territory Verilator's
+        # hierarchical mode has not been probed on.
+        self.hier_pragma_pattern = re.compile(r'(?://|##)\s*OLLIVANDER:\s*hier_block="([^"]+)"')
+        self.macro_hier_blocks = {}
         self.required_local_files = set()
         self.project_dependencies = {}
         
@@ -335,6 +350,13 @@ class RTLGenerator:
                         try:
                             content = existing_isle.read_text(encoding='utf-8')
                             self.required_local_files.update(self.req_pattern.findall(content))
+                            # A macro wrapper declares its block-eligible internals;
+                            # collected here for the .vlt promotion (uniform rule).
+                            declared = self.hier_pragma_pattern.findall(content)
+                            if declared:
+                                # Idempotent: staging and re-render both pass here.
+                                cur = self.macro_hier_blocks.setdefault(c.name, [])
+                                cur.extend(m for m in declared if m not in cur)
                             content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', content)
                             content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'{self.soc_config.project.noc_pkg_name}', content)
                             content = re.sub(rf'\bmodule\s+{c.type}\b', f'module {self.soc_config.project.module_prefix}_{c.type}', content)
@@ -446,6 +468,13 @@ class RTLGenerator:
                         if hier_mark:
                             self.hier_block_marks[c.name] = re.sub(
                                 r'\s*(?://|##)?\s+', " ", hier_mark.group(1)).strip() or "unspecified"
+                        # And the positive declaration: the macro's own block-eligible
+                        # internals, promoted into this project's .vlt (uniform rule).
+                        declared = self.hier_pragma_pattern.findall(content)
+                        if declared:
+                            # Idempotent: staging and re-render both pass here.
+                            cur = self.macro_hier_blocks.setdefault(c.name, [])
+                            cur.extend(m for m in declared if m not in cur)
 
                         # Extract PEAKRDL pragma to pass to the wrapper
                         peakrdl_match = re.search(r'(?://|##)\s*PEAKRDL:\s*source="([^"]+)"(?:.*?map="([^"]+)")?', content)
@@ -1533,6 +1562,13 @@ class RTLGenerator:
                         f"{name}: {reason}" for name, reason in sorted(self.hier_block_marks.items()))
                     macro_pragmas.append(f'// OLLIVANDER: exclude_hier_block="{merged_reason}"')
 
+                # The positive counterpart of the mark: the modules this macro's own
+                # .vlt declares as hierarchical blocks, re-emitted so the parent can
+                # promote them by declaration instead of inferring them from file
+                # names. What the child excluded is simply absent from the list.
+                for m in self.hier_block_modules:
+                    macro_pragmas.append(f'// OLLIVANDER: hier_block="{m}"')
+
                 if self.soc_config.topology.type == "noc":
                     macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.noc_pkg_name}.sv"')
                 macro_pragmas.append(f'// OLLIVANDER: require="{self.soc_config.project.soc_pkg_name}.sv"')
@@ -1707,6 +1743,11 @@ class RTLGenerator:
             for comp_name, reason in sorted(self.hier_block_marks.items()):
                 excluded.add(comp_name)
                 print(f"  [INFO] hier_block: '{comp_name}' excluded - {reason}")
+            # UNIFORM MACRO RULE (see the crossbar branch): the tile around a macro
+            # that declares internal blocks is never a block itself - the declared
+            # internals are promoted after the branches, wrapper and tile inlined.
+            for comp_name in sorted(self.macro_hier_blocks):
+                excluded.add(comp_name)
 
             prefix = self.soc_config.project.module_prefix
             for comp_name, count in sorted(counts.items()):
@@ -1739,6 +1780,12 @@ class RTLGenerator:
             for comp_name, reason in sorted(self.hier_block_marks.items()):
                 excluded.add(comp_name)
                 print(f"  [INFO] hier_block: '{comp_name}' excluded - {reason}")
+            # UNIFORM MACRO RULE: a component whose staged source declares
+            # '// OLLIVANDER: hier_block=' internals is an Ollivander macro. Its
+            # declared modules are promoted below and its own wrapper never becomes
+            # a block (blocks inside a block would nest, unprobed territory).
+            for comp_name in sorted(self.macro_hier_blocks):
+                excluded.add(comp_name)
             prefix = self.soc_config.project.module_prefix
             by_module = {}
             for c in (self.soc_config.components or []):
@@ -1750,7 +1797,28 @@ class RTLGenerator:
                     continue
                 lines.append(f'hier_block -module "{module}"')
 
+        # THE MACRO DESCENT (both topologies): promote the internals every macro
+        # declared. The declarations are the child's own .vlt lines - the child
+        # already ran the eligibility rules on them in its build, and its excluded
+        # modules (preload targets, marked isles) are simply absent, so they stay
+        # inlined here, conservatively: the parent cannot know why the child left
+        # them out and must not guess. hier_block is a per-module declaration at
+        # any depth, so Verilator carves these out of the enclosing (inlined or
+        # excluded) macro content by name alone.
+        promoted = set()
+        for comp_name, modules in sorted(self.macro_hier_blocks.items()):
+            for m in modules:
+                if m not in promoted:
+                    promoted.add(m)
+                    lines.append(f'hier_block -module "{m}"')
+            if modules:
+                print(f"  [INFO] hier_block: '{comp_name}' is a macro declaring"
+                      f" {len(modules)} internal blocks - promoted, wrapper inlined")
+
         write_if_changed(vlt_path, "\n".join(lines) + "\n")
+        # The list a macro export re-emits as pragmas: everything this .vlt declares.
+        self.hier_block_modules = [
+            l.split('"')[1] for l in lines if l.startswith('hier_block')]
         print(f"  -> Rendering verilator hierarchical config into {vlt_path.name} "
               f"({len(lines) - 1} hier blocks)")
 
