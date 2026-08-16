@@ -424,7 +424,7 @@ Requirements for `"jtag"`, both checked or supplied by the generator:
 *   The host must list `"jtag"` in `export_interfaces`, otherwise its TAP pins never reach the SoC top-level. This is validated at generation time with an explicit error, because the failure mode is otherwise perfectly silent: every DMI read returns X, and X falls open through every liveness check a testbench agent can make.
 *   The host component must declare the JTAG boot contract in its header: `HasJtagBoot`, `JtagIdCode` (the expected IDCODE) and `JtagScratchOffset` (the scratch-register offset inside the host's address window). `cheshire_isle` declares all three.
 
-Among the example projects, `noc` runs `boot_mode: "jtag"` as its standard configuration, so the architectural boot path stays under permanent regression next to the force-based examples.
+Among the example projects, five run `boot_mode: "jtag"` as their standard configuration (`noc`, `crossbar_isle`, `noc_isle`, `noc_subtile`, `super_crossbar`), keeping the architectural boot path under permanent regression. `crossbar` and `super_noc` deliberately stay on `"force"`: it is the schema default and a supported feature, and it would lose regression coverage if no example exercised it.
 
 ---
 

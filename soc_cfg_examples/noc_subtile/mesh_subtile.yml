@@ -150,7 +150,7 @@ host:
   cmodel: "medany"            # Host Code Model for software compiler
   placement:
     logical: { x: 9, y: 3 } # Physical 2D coordinate on the FlooNoC mesh
-  export_interfaces: ["gpio", "slink", "uart", "spi", "i2c"]
+  export_interfaces: ["jtag", "gpio", "slink", "uart", "spi", "i2c"]
   interfaces:
     axi_master: true
     noc_networks:
@@ -282,6 +282,8 @@ components:
 # ------------------------------------------------------------------------------
 # Instructions for the simulation environment.
 testbench:
+  # Boot through the VIP's JTAG agent instead of hierarchical forces (wip 2.1).
+  boot_mode: jtag
   # Duration in ns to hold scratchpad register force values during boot.
   # This must be long enough to survive internal Host reset sequences.
   boot_force_delay_ns: 5000000

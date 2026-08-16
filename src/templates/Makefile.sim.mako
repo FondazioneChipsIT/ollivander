@@ -413,6 +413,12 @@ run-sim:
 	@#
 	@# Deliberately NOT suppressed any more: 3999 (incompatible port type) and 8602
 	@# (zero replication multiplier) produced no message at all on either crux or mesh.
+	@# Clear cached optimized designs before every simulation launch: vsim's
+	@# auto-vopt staleness check is unreliable - it reloaded pre-recompile
+	@# images repeatedly on 2026-08-16 ("Loading existing optimized design"),
+	@# silently simulating code that no longer existed. Re-optimizing on every
+	@# run costs minutes; trusting a stale image costs a debugging day.
+	@rm -rf work/_opt* 2>/dev/null || true
 	@mkdir -p logs/stdout
 	@ln -snf ../generated logs/generated
 	@$(call ensure-tools,vsim:questa); \
@@ -429,6 +435,12 @@ gui:
 	@# the point of opening the GUI in the first place.
 	@mkdir -p logs/stdout
 	@ln -snf ../generated logs/generated
+	@# Clear cached optimized designs before every simulation launch: vsim's
+	@# auto-vopt staleness check is unreliable - it reloaded pre-recompile
+	@# images repeatedly on 2026-08-16 ("Loading existing optimized design"),
+	@# silently simulating code that no longer existed. Re-optimizing on every
+	@# run costs minutes; trusting a stale image costs a debugging day.
+	@rm -rf work/_opt* 2>/dev/null || true
 	@$(call ensure-tools,vsim:questa); \
 	cd logs && $(VSIM) -gui -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -voptargs=+acc -suppress 13314,3009,8386 -warning 2732
 

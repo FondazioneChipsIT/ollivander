@@ -384,6 +384,8 @@ config = OllivanderConfig(
     ],
     
     testbench={
+        # Boot through the VIP's JTAG agent instead of hierarchical forces (wip 2.1).
+        "boot_mode": "jtag",
         "boot_force_delay_ns": 5000000,
         "boot_force_fast_delay_ns": 1000000,
         "boot_timeout_ns": 10000000,

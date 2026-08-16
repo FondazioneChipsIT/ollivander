@@ -220,6 +220,9 @@ module ${top_level_module_name}
 % endif
   input  logic pwr_on_rst_ni,
   input  logic test_mode_i,
+  // Simulation/bring-up bypass of the clocking infrastructure (RT dividers),
+  // name-uniform with the NoC top. Tie low in silicon use.
+  input  logic clk_rst_bypass_i,
 <%
   has_rt_clk = any(dom.is_real_time and (dom.source_gen is None or config.clock_tree.generators == 0) for dom in config.clock_tree.domains)
 %>\

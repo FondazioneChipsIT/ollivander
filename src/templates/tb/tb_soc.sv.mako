@@ -93,9 +93,7 @@ module tb_${top_level_module_name}();
   logic clk_i;
   logic rst_ni;
 % endif
-% if config.topology.type == "noc":
   logic clk_rst_bypass_i;
-% endif
 
   // ===========================================================================
   // Top-Level Stub Declarations (TFMPC Missing Connection Fix)
@@ -187,6 +185,12 @@ ${stubs_str}
 ${reset_initials_str}
 % if config.topology.type == "noc":
     clk_rst_bypass_i = 1'b0;
+% else:
+    // Crossbar: the pin bypasses the RT static dividers in simulation. This
+    // replaces the old +fast_boot FORCE on their test_mode_en_i ports, which
+    // dominated the whole collapsed test_mode net and put the JTAG TAP in
+    // test mode (TDO on the wrong edge, one-bit-late IDCODE).
+    clk_rst_bypass_i = $test$plusargs("fast_boot");
 % endif
   end
 
@@ -208,8 +212,7 @@ ${reset_initials_str}
   else:
       dut_ports.append("    .clk_i         (clk_i)")
       dut_ports.append("    .rst_ni        (rst_ni)")
-  if config.topology.type == "noc":
-      dut_ports.append("    .clk_rst_bypass_i (clk_rst_bypass_i)")
+  dut_ports.append("    .clk_rst_bypass_i (clk_rst_bypass_i)")
       
   # Automatically mapped top-level ports
   for p_name in top_level_ports.keys():
@@ -502,19 +505,11 @@ if not uart_base:
   // ===========================================================================
   // Bypasses the real-time clock dividers in simulation to speed up the 
   // bootrom's core frequency measurement phase.
+  // The RT-divider bypass is now the clk_rst_bypass_i pin (driven at the tie
+  // block above): no force remains in any boot mode.
   initial begin
     if ($test$plusargs("fast_boot")) begin
       $display("[TB] Fast boot mode enabled: bypassing real-time clock divider.");
-<%
-  fast_boots = []
-  for dom in config.clock_tree.domains:
-      if dom.is_real_time and dom.static_div is not None and dom.static_div > 1:
-          fast_boots.append(f"      force dut.i_{dom.name}_static_div.test_mode_en_i = 1'b1;")
-  fast_boots_str = "\n".join(fast_boots)
-%>\
-% if fast_boots_str:
-${fast_boots_str}
-% endif
     end
   end
 

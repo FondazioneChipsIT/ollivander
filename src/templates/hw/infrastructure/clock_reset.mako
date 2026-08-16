@@ -64,7 +64,11 @@
     .clk_i          ( ${dom.name}_source ),
     .rst_ni         ( host_pwr_on_rst_n ),
     .en_i           ( 1'b1 ),
-    .test_mode_en_i ( test_mode_i ),
+    // Bypassed under DFT test mode OR the dedicated clk_rst_bypass_i pin: the
+    // testbench used to FORCE this port under +fast_boot, and a force on a
+    // collapsed port dominates the whole net it is wired to - test_mode_i,
+    // global - putting every TAP and clock gate of the SoC in test mode.
+    .test_mode_en_i ( test_mode_i | clk_rst_bypass_i ),
     .div_i          ( 24'd${dom.static_div} ),
     .div_valid_i    ( 1'b0 ),
     .div_ready_o    ( ),
