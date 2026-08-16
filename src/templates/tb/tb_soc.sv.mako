@@ -178,11 +178,33 @@ ${stubs_str}
     test_mode_i   = 1'b0;
     boot_mode_i   = 2'b0;
 <%
+  # wip 2.1 boot-mode resolution, hoisted here because both the reset-initials
+  # block and the DUT-adjacent VIP instantiation consume it long before the
+  # boot-sequence python block runs. 'force' keeps the hierarchical forces
+  # verbatim; 'jtag' drives the architected bring-up through the debug module.
+  host_info = comp_info.get(config.host.name) or {}
+  host_fixed = host_info.get("fixed_params", {})
+  has_force_boot = host_fixed.get("HasForceBoot", "0").strip('"\'') == "1"
+  testbench_cfg = config.testbench or {}
+  boot_mode = testbench_cfg.get("boot_mode", "force")
+  has_jtag_boot = host_fixed.get("HasJtagBoot", "0").strip('"\'') == "1"
+  if boot_mode == "jtag" and not has_jtag_boot:
+      boot_mode = "force"
+  jtag_idcode = int(host_fixed.get("JtagIdCode", "1").strip('"\''))
+  jtag_scratch_off = int(host_fixed.get("JtagScratchOffset", "0").strip('"\''))
+  _host_slaves = (config.host.interfaces or {}).get("axi_slave", [])
+  _hb = _host_slaves[0].get("base_addr", 0) if _host_slaves else 0
+  host_base = int(_hb, 16) if isinstance(_hb, str) else int(_hb)
+  scratch_addr = lambda i: f"64'h{host_base + jtag_scratch_off + 4*i:X}"
+%>\
+<%
     reset_initials = []
     for p_name, p_info in top_level_ports.items():
         if p_name in ['clk_i', 'rst_ni', 'pwr_on_rst_ni', 'test_mode_i', 'boot_mode_i', 'domain_clk_i', 'clk_gen_lock_i', 'fll_lock_i', 'clk_rst_bypass_i', 'rt_clk_i']:
             continue
         if p_info["dir"] == 'input':
+            if boot_mode == "jtag" and p_name.startswith("jtag_"):
+                continue  # driven continuously by vip_ollivander_soc's ports
             if p_name == 'uart_rx_i':
                 reset_initials.append("    uart_rx_i = 1'b1; // UART RX idle-high")
             else:
@@ -255,6 +277,30 @@ ${reset_initials_str}
   dut (
 ${dut_ports_str}
   );
+% if boot_mode == "jtag":
+
+  // ===========================================================================
+  // Verification IP (wip 2.1): architected bring-up through the debug module
+  // ===========================================================================
+  // The VIP owns the mechanism (TCK, TAP driver, Debug-Spec operations); this
+  // testbench owns the policy (which registers, in what order, at addresses the
+  // generator computed). Its ports drive the DUT's JTAG nets continuously, so
+  // the reset-initials block above deliberately skips them.
+  // OLLIVANDER: require="vip_ollivander_soc.sv"
+  vip_ollivander_soc #(
+    .DbgIdCode (32'h${f"{jtag_idcode:08x}"})
+  ) i_vip (
+    .jtag_tck_o   (jtag_tck_i),
+    .jtag_trst_no (jtag_trst_ni),
+    .jtag_tms_o   (jtag_tms_i),
+    .jtag_tdi_o   (jtag_tdi_i),
+    .jtag_tdo_i   (jtag_tdo_o)
+  );
+
+  // The generated raw-address twin of the firmware headers: one source of truth
+  // (the memory-map RDL) for every `SYS_CTRL_* register the sequence touches.
+  `include "../hw/${config.project.top_level_module_name}_regs.svh"
+% endif
 
   // ===========================================================================
   // Memory Preload ($readmemh)
@@ -527,10 +573,6 @@ ${fast_boots_str}
     // Use the PeakRDL macros (e.g., `${config.project.name.upper()}_SYS_CTRL_BASE_ADDR`) 
     // to drive AXI VIPs or directly peek into the design.
 <%
-  host_info = comp_info.get(config.host.name) or {}
-  host_fixed = host_info.get("fixed_params", {})
-  has_force_boot = host_fixed.get("HasForceBoot", "0").strip('"\'') == "1"
-  testbench_cfg = config.testbench or {}
   sim_timeout_ns = testbench_cfg.get("sim_timeout_ns", 10000000)
   if config.topology.type == "noc":
       host_instance_name = f"i_tile_{config.host.placement['logical']['x']}_{config.host.placement['logical']['y']}"
@@ -601,10 +643,55 @@ ${fast_boots_str}
               gn = g.name.lower()
               bringup_clk_lines.append(f'  force {sys_ctrl_path}.field_storage.{gn}_clk_en.{gn}_clk_en.value = \'1;')
               bringup_rst_lines.append(f'  force {sys_ctrl_path}.field_storage.{gn}_rst.{gn}_rst.value = \'0;')
+  # The JTAG twins of the force lines: same registers, same order, but real
+  # system-bus writes through the generated `SYS_CTRL_* address macros of
+  # <top>_regs.svh - one source of truth (the memory-map RDL) with the firmware.
+  jtag_clk_lines = []
+  jtag_rst_lines = []
+  if config.gated_at_power_on:
+      for dom in managed_domains:
+          rn = dom.name.replace("_clk", "").upper()
+          if dom.has_divider:
+              jtag_clk_lines.append(f"  i_vip.sba_write32(`SYS_CTRL_{rn}_CLK_EN_BASE_ADDR, 32'hFFFF_FFFF);")
+          jtag_rst_lines.append(f"  i_vip.sba_write32(`SYS_CTRL_{rn}_RST_BASE_ADDR, 32'h0);")
+      if config.system_controller and config.system_controller.auto_control_groups:
+          for g in config.system_controller.auto_control_groups:
+              gn = g.name.upper()
+              jtag_clk_lines.append(f"  i_vip.sba_write32(`SYS_CTRL_{gn}_CLK_EN_BASE_ADDR, 32'hFFFF_FFFF);")
+              jtag_rst_lines.append(f"  i_vip.sba_write32(`SYS_CTRL_{gn}_RST_BASE_ADDR, 32'h0);")
+  jtag_clk_str = "\n".join(jtag_clk_lines)
+  jtag_rst_str = "\n".join(jtag_rst_lines)
   bringup_clk_str = "\n".join(bringup_clk_lines)
   bringup_rst_str = "\n".join(bringup_rst_lines)
   bringup_str = bringup_clk_str + bringup_rst_str
 %>
+% if boot_mode == "jtag":
+  // ==========================================================================
+  // JTAG bring-up and boot (wip 2.1): the architected, force-free path.
+  // ==========================================================================
+  #1200;
+  i_vip.jtag_init();
+% if jtag_clk_str or jtag_rst_str:
+  $display("[TB] Bringing up gated domains via JTAG (clocks first)...");
+${jtag_clk_str}
+  // The same two-phase contract as the force path: a gated domain's FFAR flops
+  // need a clocked window with reset asserted (see the rationale block above).
+  #1000;
+${jtag_rst_str}
+  $display("[TB] Gated domains reset released after a clocked reset window.");
+% endif
+% if is_cheshire:
+  // Host boot handoff: entry pointer and argc first, the boot-mode register
+  // LAST as the 'go' - the passive preboot loop polls it, so write ordering
+  // replaces the force-and-release dance; nothing is forced, nothing released.
+  // Verified write: the entry pointer is read-only for the boot flow, so the
+  // readback is race-free - unlike scratch[2], which the bootrom clears on use.
+  i_vip.sba_write32_verify(${scratch_addr(0)}, 32'h${f"{entry_point:08x}"});
+  i_vip.sba_write32(${scratch_addr(1)}, 32'h00000000);
+  i_vip.sba_write32(${scratch_addr(2)}, 32'h00000002);
+  $display("[TB] JTAG boot handoff complete (entry 0x${f"{entry_point:08x}"}).");
+% endif
+% else:
   // Release CPU from passive boot loop by pointing scratch registers to preloaded memory (0x${f"{entry_point:08x}"})
   #1200;
 % if bringup_str:
@@ -688,6 +775,7 @@ ${bringup_rst_str}
   % endif
   // The power-on bring-up forces are intentionally not released here: they model the
   // external agent that keeps the clock domains and tiles enabled for the whole run.
+% endif
 % endif
 
     #${sim_timeout_ns};

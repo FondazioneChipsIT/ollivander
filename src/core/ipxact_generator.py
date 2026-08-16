@@ -202,14 +202,10 @@ def get_top_level_ports(config, generator, comp_info):
     ports.append({"name": "rt_clk_i", "dir": "in", "left": None, "right": None})
     ports.append({"name": "clk_rst_bypass_i", "dir": "in", "left": None, "right": None})
     
-    # 2. JTAG
-    ports.append({"name": "jtag_tck_i", "dir": "in", "left": None, "right": None})
-    ports.append({"name": "jtag_trst_ni", "dir": "in", "left": None, "right": None})
-    ports.append({"name": "jtag_tms_i", "dir": "in", "left": None, "right": None})
-    ports.append({"name": "jtag_tdi_i", "dir": "in", "left": None, "right": None})
-    ports.append({"name": "jtag_tdo_o", "dir": "out", "left": None, "right": None})
-    ports.append({"name": "jtag_tdo_oe_o", "dir": "out", "left": None, "right": None})
-    
+    # 2. Dynamic exported ports. JTAG is deliberately NOT listed statically:
+    # the pins exist on the top only when the host exports the "jtag"
+    # interface, and the macro-import path trusts this list to name real
+    # ports of the child - a static entry would lie for non-jtag projects.
     # 3. Dynamic exported ports
     grid = {}
     max_x = 0

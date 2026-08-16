@@ -780,6 +780,18 @@ def validate_cross_references(config: OllivanderConfig):
             errors.append(f"[software_stack] boot_memory '{boot_memory}' is not a component of this SoC."
                           f"{_suggest(boot_memory, comp_names)}")
 
+    # A JTAG boot needs the host's TAP to be reachable from the top-level pins, and the only
+    # thing that routes it there is the host exporting the 'jtag' interface. Without the export
+    # the tile layer ties the isle's jtag inputs to '0, and the failure is then perfectly
+    # silent: every DMI read returns X, and X falls OPEN through every liveness check the
+    # testbench agent can make (an 'if (idcode != expected)' with X compares to X, which is not
+    # true). This check turns hours of waveform archaeology into one generation-time message.
+    if (config.testbench or {}).get('boot_mode') == 'jtag':
+        if 'jtag' not in (config.host.export_interfaces or []):
+            errors.append(f"[testbench] boot_mode 'jtag' requires the host ('{config.host.name}')"
+                          f" to list 'jtag' in export_interfaces: without it the TAP pins never"
+                          f" reach the top level and the JTAG agent reads only X.")
+
     if errors:
         raise ValueError("\n".join(f"\n{e}" for e in errors))
 
@@ -828,6 +840,10 @@ _COMPONENT_BLOCK_SPEC = {
 _ROOT_BLOCK_SPEC = {
     "testbench": {"boot_force_delay_ns": int, "boot_force_fast_delay_ns": int,
                   "boot_timeout_ns": int, "boot_timeout_fast_ns": int, "sim_timeout_ns": int,
+                  # How the testbench brings the SoC up and boots the host (wip 2.1):
+                  # 'force' (default) keeps the hierarchical forces; 'jtag' drives the
+                  # architected bring-up through the debug module via vip_ollivander_soc.
+                  "boot_mode": str,
                   "preload_memories": [{"instance": str, "file": str}]},
     "software_stack": {"toolchain": str, "boot_memory": str,
                        "test_app": {"name": str, "auto_generate_c": bool, "baudrate": int,

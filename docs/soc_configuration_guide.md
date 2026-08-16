@@ -388,6 +388,7 @@ Instructs the simulation environment on how to initialize the SoC. Since Ollivan
 | Field                       | Type    | Description                                                    |
 | :-------------------------- | :------ | :------------------------------------------------------------- |
 | `preload_memories`          | List    | Memory arrays to initialize in the testbench via `$readmemh`.   |
+| `boot_mode`                 | String  | How the testbench boots the host: `"force"` (default) or `"jtag"`. See section 4.1. |
 | `boot_force_delay_ns`       | Integer | How long the testbench holds the boot-mode and scratchpad force |
 |                             |         | values, in ns. Must outlast the host's internal reset sequence. |
 | `boot_force_fast_delay_ns`  | Integer | The same, for the shorter `fast` variant of the run.            |
@@ -408,6 +409,20 @@ testbench:
     - instance: "l2_shared_memory.sram_array"
       file: "generated/sw/hello_world.hex"
 ```
+
+### 4.1 Boot modes: `force` and `jtag`
+
+`boot_mode` selects how the generated testbench brings the SoC out of reset and starts the firmware. Memory preload is `$readmemh` in both modes (it is the fast regression path); what changes is everything after it.
+
+*   `"force"` (the default) drives the host's boot-mode and scratch registers, and the system controller's clock-enable and reset registers, through hierarchical `force` statements. It is fast and needs nothing from the design, but it exercises no architectural path: silicon has no `force`.
+*   `"jtag"` boots the SoC exactly the way silicon would, through an external JTAG debugger, and the testbench contains **no forces at all**. The testbench instantiates the JTAG verification IP (`components/infrastructure/vip_ollivander_soc.sv`, built on riscv-dbg's `jtag_test` driver stack) and drives the SoC's `jtag_*` pins with the full sequence: TAP reset and IDCODE liveness check, debug-module activation, power-on bring-up of the gated domains via system-bus writes to the system controller (every `*_clk_en` register first, a settling pause, then every `*_rst` release), and finally the boot handoff to the host's scratch registers, with the entry pointer written read-back-verified. Any system-bus error (`sberror`) is fatal, not silent.
+
+Requirements for `"jtag"`, both checked or supplied by the generator:
+
+*   The host must list `"jtag"` in `export_interfaces`, otherwise its TAP pins never reach the SoC top-level. This is validated at generation time with an explicit error, because the failure mode is otherwise perfectly silent: every DMI read returns X, and X falls open through every liveness check a testbench agent can make.
+*   The host component must declare the JTAG boot contract in its header: `HasJtagBoot`, `JtagIdCode` (the expected IDCODE) and `JtagScratchOffset` (the scratch-register offset inside the host's address window). `cheshire_isle` declares all three.
+
+Among the example projects, `noc` runs `boot_mode: "jtag"` as its standard configuration, so the architectural boot path stays under permanent regression next to the force-based examples.
 
 ---
 

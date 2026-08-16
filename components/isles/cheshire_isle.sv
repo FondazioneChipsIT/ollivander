@@ -71,6 +71,16 @@ module cheshire_isle
   // Ollivander Host Force-Boot configuration parameters
   // HasForceBoot: 1 indicates this host supports software force-booting in simulation
   localparam bit HasForceBoot = 1,
+  // JTAG boot support (wip 2.1): this host carries a riscv-dbg debug module whose
+  // system-bus master reaches the boot scratch registers at the HOST-INTERNAL
+  // offset below (Cheshire's own register block; scratch[i] at +4*i). The offset
+  // is host-owned knowledge, declared here exactly as ForceBootPath is, so the
+  // generated testbench composes bus addresses without knowing any host internals.
+  localparam bit HasJtagBoot = 1,
+  localparam longint unsigned JtagScratchOffset = 64'h0300_0000,
+  // Expected TAP IDCODE, checked by the VIP's jtag_init liveness handshake:
+  // Cheshire's own '{version: 4'h1, part_num: 16'hc5e5, manufacturer: 11'h6d9, _one: 1}.
+  localparam longint unsigned JtagIdCode = 64'h1c5e_5db3,
   // ForceBootPath: Hierarchical path from host wrapper top to the entry point scratch register
   localparam string ForceBootPath = "i_cheshire_soc.i_regs.field_storage.scratch[0].scratch.value",
   // ForceBootVal: Force value template (32-bit hex)

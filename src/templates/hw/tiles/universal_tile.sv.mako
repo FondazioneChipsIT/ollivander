@@ -334,7 +334,11 @@ module ${p_name}_${c_type}
   fixed_params_to_expose = []
   if isle_info and "fixed_params" in isle_info:
       for param_name, p_val in isle_info["fixed_params"].items():
-          if param_name.startswith("Preload") or param_name.startswith("ForceBoot") or param_name in ["HasEcc", "EccType", "HasForceBoot"]:
+          # The Jtag* family joins the pass-through (wip 2.1): the testbench reads the
+          # host's boot capabilities from the TILE wrapper on the NoC family, so the
+          # isle-declared JTAG boot contract must survive the isle-to-tile conversion
+          # exactly as the ForceBoot* one does.
+          if param_name.startswith("Preload") or param_name.startswith("ForceBoot") or param_name.startswith("Jtag") or param_name in ["HasEcc", "EccType", "HasForceBoot", "HasJtagBoot"]:
               if param_name in ["PreloadTemplate", "ForceBootPath"]:
                   clean_val = p_val.strip("\"'")
                   p_val = f'"i_isle.{clean_val}"'

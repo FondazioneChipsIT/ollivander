@@ -345,7 +345,14 @@ for mem in preload_mems:
 
 prep-sim: update-hw
 	@printf "\n[MAKE] Extracting SystemVerilog compilation script via Bender...\n"
-	$(BENDER) script vsim $(BENDER_TARGETS) > $(OUT_DIR)/compile_vsim.tcl
+	@# -timescale gives a DEFAULT to compilation units that declare none (the
+	@# warning-3009 class): without it Questa maps their delays to the simulator
+	@# resolution, and a "#(20ns/2)" clock generator or a "#TT" sampling delay
+	@# silently runs a thousand times too fast. Found the hard way in wip 2.1:
+	@# the JTAG VIP's TCK ran at 20 ps and the riscv-dbg jtag_test driver
+	@# sampled TDO at +15 ps, reading every DMI bit one cycle early. Units that
+	@# declare their own timescale are unaffected.
+	$(BENDER) script vsim $(BENDER_TARGETS) --vlog-arg="-timescale 1ns/1ps" > $(OUT_DIR)/compile_vsim.tcl
 % if global_defines:
 	@printf "\n[MAKE] Injecting compilation macros (+define+) into compilation script...\n"
 	@python3 -c "$$INJECT_MACROS_SCRIPT" $(OUT_DIR)/compile_vsim.tcl

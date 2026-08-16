@@ -222,6 +222,13 @@ dependencies:
   obi:
     git: "https://github.com/pulp-platform/obi.git"
     version: "0.1.7"
+  # Declared for vip_ollivander_soc's '// BENDER:' pragma (the JTAG bring-up agent,
+  # wip 2.1). Every graph already resolves this IP transitively through its host;
+  # pinning the same version here only makes the requirement explicit and keeps a
+  # jtag-boot testbench buildable even for a host that stops pulling it in itself.
+  riscv-dbg:
+    git: "https://github.com/pulp-platform/riscv-dbg.git"
+    version: "0.8.1"
   # Transitive dependencies (pulled in by pulp_cluster / redmule / hci): never declared
   # by a pragma, listed here only to carry patches - run_pre_build_steps applies patches
   # to any entry whose checkout exists, and an entry with no git source contributes

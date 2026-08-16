@@ -178,15 +178,7 @@ module ${top_level_module_name}
 % if has_rt_clk:
   input  logic rt_clk_i,
 % endif
-  input  logic clk_rst_bypass_i,
-  
-  // JTAG and Debug (Host)
-  input  logic jtag_tck_i,
-  input  logic jtag_trst_ni,
-  input  logic jtag_tms_i,
-  input  logic jtag_tdi_i,
-  output logic jtag_tdo_o,
-  output logic jtag_tdo_oe_o\
+  input  logic clk_rst_bypass_i\
 <%
   all_extra_ports_list = list(all_extra_ports)
   if config.project.build_mode == "macro" and config.project.macro_settings:
