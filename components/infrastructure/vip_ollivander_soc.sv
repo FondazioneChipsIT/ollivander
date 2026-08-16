@@ -43,8 +43,39 @@ module vip_ollivander_soc #(
   parameter realtime ClkPeriodJtag = 20ns,
   // Expected IDCODE, passed by the generated testbench (the generator knows
   // the debug module's identity from the host component's configuration).
-  parameter logic [31:0] DbgIdCode = 32'h1
+  parameter logic [31:0] DbgIdCode = 32'h1,
+  // --------------------------------------------------------------------------
+  // Clock agent. Every period below arrives PRE-RESOLVED from the generated
+  // testbench (the generator's formulas are the single source of truth); the
+  // only runtime decision the agent keeps is the +fast_boot override of the
+  // first generator clock, exactly as the inline testbench used to do.
+  // --------------------------------------------------------------------------
+  parameter real MainClkPeriodNs = 10.0,           // clk_o, used when NumGenClocks == 0
+  parameter int unsigned NumGenClocks = 0,         // domain clock generators (max 8)
+  parameter real GenPeriodsNs [8] = '{default: 10.0},
+  parameter real GenPeriod0FastNs = 20.0,          // +fast_boot period of generator 0
+  parameter bit HasRtClk = 1'b0,
+  parameter real RtClkPeriodNs = 1000.0,           // already fast-variant-resolved
+  // Reset agent: POR low for PorDelayNs, then released together with rst_no;
+  // the lock indicator (clock-generator SoCs) follows LockDelayNs later.
+  parameter real PorDelayNs = 100.0,
+  parameter bit HasClkGenLock = 1'b0,
+  parameter real LockDelayNs = 1000.0,
+  // UART RX agent: bit period pre-computed on the divisor the firmware
+  // actually programs (integer divisor, so the real rate differs from the
+  // nominal baud by percents at high speed - enough to mis-sample a frame).
+  parameter bit HasUart = 1'b0,
+  parameter real UartBitPeriodNs = 8680.0
 ) (
+  // Clocks and resets, driven for the testbench from time zero.
+  output logic       clk_o,
+  output logic [7:0] gen_clk_o,
+  output logic       rt_clk_o,
+  output logic       pwr_on_rst_no,
+  output logic       rst_no,
+  output logic       clk_gen_lock_o,
+  // The SoC's UART TX line, observed by the RX agent.
+  input  logic       uart_tx_i,
   // JTAG side, wired by the testbench straight onto the SoC top's pins.
   output logic jtag_tck_o,
   output logic jtag_trst_no,
@@ -54,6 +85,105 @@ module vip_ollivander_soc #(
 );
 
   import jtag_test::*;
+
+  // --------------------------------------------------------------------------
+  // Clock agent
+  // --------------------------------------------------------------------------
+  initial begin
+    clk_o = 1'b0;
+    forever #(MainClkPeriodNs / 2.0) clk_o = ~clk_o;
+  end
+
+  // Generator clocks: generator 0 honors +fast_boot at runtime (a slower TCK
+  // keeps CDCs lockable during the bootrom's frequency measurement); the
+  // same-period siblings get a small phase offset to avoid simulation races,
+  // both behaviours inherited verbatim from the inline testbench they replace.
+  for (genvar i = 0; i < 8; i++) begin : gen_domain_clocks
+    if (i < NumGenClocks) begin : gen_active
+      initial begin
+        automatic real period = GenPeriodsNs[i];
+        gen_clk_o[i] = 1'b0;
+        if (i == 0) begin
+          if ($test$plusargs("fast_boot")) period = GenPeriod0FastNs;
+          #0.1; // Small initial phase alignment delay
+        end else if (GenPeriodsNs[i] == 10.0) begin
+          #(1.1 * i); // Phase offset to prevent simulation clock races
+        end
+        forever #(period / 2.0) gen_clk_o[i] = ~gen_clk_o[i];
+      end
+    end else begin : gen_tied
+      initial gen_clk_o[i] = 1'b0;
+    end
+  end
+
+  if (HasRtClk) begin : gen_rt_clk
+    initial begin
+      rt_clk_o = 1'b0;
+      forever #(RtClkPeriodNs / 2.0) rt_clk_o = ~rt_clk_o;
+    end
+  end else begin : gen_no_rt_clk
+    initial rt_clk_o = 1'b0;
+  end
+
+  // --------------------------------------------------------------------------
+  // Reset agent: the standard power-on sequence the inline testbench used to
+  // drive - POR held for PorDelayNs with clocks running, then released along
+  // with the functional reset; the generator-lock indicator follows later.
+  // --------------------------------------------------------------------------
+  initial begin
+    pwr_on_rst_no  = 1'b0;
+    rst_no         = 1'b0;
+    clk_gen_lock_o = 1'b0;
+    #(PorDelayNs);
+    pwr_on_rst_no = 1'b1;
+    rst_no        = 1'b1;
+    if (HasClkGenLock) begin
+      #(LockDelayNs);
+      clk_gen_lock_o = 1'b1; // Assert FLL lock after reset is stable
+    end
+  end
+
+  // --------------------------------------------------------------------------
+  // UART RX agent. The transcript strings are the regression suite's pass
+  // criterion and MUST stay byte-identical to the inline monitor's.
+  // --------------------------------------------------------------------------
+  if (HasUart) begin : gen_uart_rx
+    logic [7:0] rx_char;
+    string rx_string;
+    int rx_char_num = 0;
+
+    initial begin
+      rx_string = "";
+    end
+
+    always begin
+      // 1. Wait for falling edge on the TX line (Start bit)
+      @(negedge uart_tx_i);
+
+      // 2. Wait 1.5 bit periods to align sampling at the center of the first data bit
+      #(UartBitPeriodNs * 1.5);
+
+      // 3. Sample 8 data bits at 1.0 bit period intervals
+      for (int i = 0; i < 8; i++) begin
+        rx_char[i] = uart_tx_i;
+        #(UartBitPeriodNs);
+      end
+
+      // 4. Print the character or accumulate the line of text
+      if (rx_char == 8'h04) begin // EOT (End of Transmission)
+        $display("[TB] EOT received. Simulation finished.");
+        $finish;
+      end else if (rx_char == 8'h0A) begin // Newline (\n)
+        $write("[UART]: \"%s\"\n", rx_string);
+        $fflush(32'h8000_0001); // Flush stdout to see character immediately
+        rx_string = "";
+        rx_char_num = 0;
+      end else if (rx_char >= 32 && rx_char <= 126) begin // Printable ASCII
+        rx_string = {rx_string, rx_char};
+        rx_char_num = rx_char_num + 1;
+      end
+    end
+  end
 
   // --------------------------------------------------------------------------
   // JTAG clock and driver stack

@@ -111,70 +111,43 @@ module tb_${top_level_module_name}();
 ${stubs_str}
 
   // ===========================================================================
-  // Clock Generation
+  // Clock Generation - migrated into the VIP's clock agent (wip 2.1)
   // ===========================================================================
+  // The periods are resolved HERE at generation time, with the same formulas
+  // the inline clock blocks used, and reach the VIP as elaboration parameters;
+  // the VIP keeps only the +fast_boot runtime override of generator 0.
+<%
+  if config.clock_tree.generators > 0:
+      periods = config.clock_tree.generator_periods_ns or [10.0] * config.clock_tree.generators
+      if len(periods) < config.clock_tree.generators:
+          periods += [10.0] * (config.clock_tree.generators - len(periods))
+  else:
+      periods = []
+  if has_rt_clk:
+      if fast_boot:
+          rt_period = getattr(config.clock_tree, 'clk_period_ns', 10.0) * 2.0
+      else:
+          rt_period = getattr(config.clock_tree, 'rt_clk_period_ns', 1000.0)
+      if rt_period is None:
+          rt_period = 1000.0
+  else:
+      rt_period = 1000.0
+  _gen_fill = list(periods) + [10.0] * (8 - len(periods))
+  gen_periods_lit = "'{" + ", ".join(str(float(p)) for p in _gen_fill) + "}"
+%>\
 % if config.clock_tree.generators > 0:
-  // Dynamically generates the required number of clock sources (FLLs) 
-  // based on the SoC's clock tree configuration.
-  <%
-    periods = config.clock_tree.generator_periods_ns or [10.0] * config.clock_tree.generators
-    if len(periods) < config.clock_tree.generators:
-        periods += [10.0] * (config.clock_tree.generators - len(periods))
-  %>
-  real gen_period_0;
-  initial begin
-    if ($test$plusargs("fast_boot")) begin
-      gen_period_0 = 20.0; // 50 MHz for fast boot to avoid CDC lock
-    end else begin
-      gen_period_0 = ${periods[0]}; // Default period from configuration
-    end
-  end
-
-
-  % for i in range(config.clock_tree.generators):
-  initial begin
-    domain_clk_i[${i}] = 1'b0;
-    // Set clock period: ${periods[i]} ns
-    % if i == 0:
-    #0.1; // Small initial phase alignment delay
-    forever #(gen_period_0 / 2.0) domain_clk_i[0] = ~domain_clk_i[0];
-    % else:
-      % if i > 0 and periods[i] == 10.0:
-    #${round(1.1 * i, 1)}; // Phase offset to prevent simulation clock races
-      % endif
-    forever #${periods[i] / 2.0} domain_clk_i[${i}] = ~domain_clk_i[${i}];
-    % endif
-  end
-  % endfor
-% else:
-  initial begin
-    clk_i = 1'b0;
-    forever #5 clk_i = ~clk_i;
-  end
-% endif
-% if has_rt_clk:
-  <%
-    if fast_boot:
-        rt_period = getattr(config.clock_tree, 'clk_period_ns', 10.0) * 2.0
-    else:
-        rt_period = getattr(config.clock_tree, 'rt_clk_period_ns', 1000.0)
-    if rt_period is None:
-        rt_period = 1000.0
-    rt_half_period = rt_period / 2.0
-  %>\
-  initial begin
-    rt_clk_i = 1'b0;
-    forever #${rt_half_period} rt_clk_i = ~rt_clk_i;
-  end
+  logic [7:0] vip_gen_clk;
+  logic       vip_clk_gen_lock;
+  assign domain_clk_i   = vip_gen_clk[${config.clock_tree.generators - 1}:0];
+  assign clk_gen_lock_i = {${config.clock_tree.generators}{vip_clk_gen_lock}};
 % endif
 
   // ===========================================================================
   // Reset Generation
   // ===========================================================================
-  // Standard Power-On Reset (POR) sequence.
-  // It holds the reset low, applies clocks, and then releases it.
+  // The VIP's reset agent drives the POR sequence; this block only ties, at
+  // time zero and with no delays, the DUT inputs that no agent owns.
   initial begin
-    pwr_on_rst_ni = 1'b0;
     test_mode_i   = 1'b0;
     boot_mode_i   = 2'b0;
 <%
@@ -212,21 +185,8 @@ ${stubs_str}
     reset_initials_str = "\n".join(reset_initials)
 %>\
 ${reset_initials_str}
-% if config.clock_tree.generators > 0:
-    clk_gen_lock_i = '0;
-% else:
-    rst_ni        = 1'b0;
-% endif
 % if config.topology.type == "noc":
     clk_rst_bypass_i = 1'b0;
-% endif
-    #100;
-    pwr_on_rst_ni = 1'b1;
-% if config.clock_tree.generators > 0:
-    #1000;
-    clk_gen_lock_i = '1; // Assert FLL lock after reset is stable
-% else:
-    rst_ni        = 1'b1;
 % endif
   end
 
@@ -278,24 +238,6 @@ ${reset_initials_str}
 ${dut_ports_str}
   );
 % if boot_mode == "jtag":
-
-  // ===========================================================================
-  // Verification IP (wip 2.1): architected bring-up through the debug module
-  // ===========================================================================
-  // The VIP owns the mechanism (TCK, TAP driver, Debug-Spec operations); this
-  // testbench owns the policy (which registers, in what order, at addresses the
-  // generator computed). Its ports drive the DUT's JTAG nets continuously, so
-  // the reset-initials block above deliberately skips them.
-  // OLLIVANDER: require="vip_ollivander_soc.sv"
-  vip_ollivander_soc #(
-    .DbgIdCode (32'h${f"{jtag_idcode:08x}"})
-  ) i_vip (
-    .jtag_tck_o   (jtag_tck_i),
-    .jtag_trst_no (jtag_trst_ni),
-    .jtag_tms_o   (jtag_tms_i),
-    .jtag_tdi_o   (jtag_tdi_i),
-    .jtag_tdo_i   (jtag_tdo_o)
-  );
 
   // The generated raw-address twin of the firmware headers: one source of truth
   // (the memory-map RDL) for every `SYS_CTRL_* register the sequence touches.
@@ -488,52 +430,72 @@ if not uart_base:
   % endfor
 % endif
 
-% if uart_base:
   // ===========================================================================
-  // UART TX Monitor (Self-contained serial receiver dynamically bound to top-level UART port)
+  // Verification IP (wip 2.1): every testbench agent in one bench
   // ===========================================================================
-  // Timed on the divisor the firmware actually programs, not on a nominal baud: the
-  // divisor is an integer, so the real rate is uart_freq/(16*divisor) and the two would
-  // disagree by percents at high speed - enough to mis-sample a frame's last bits.
-  localparam real BitPeriodNs = 16.0 * ${uart_divisor} * (1_000_000_000.0 / ${uart_freq}.0);
-  localparam real BaudRate = 1_000_000_000.0 / BitPeriodNs;
-
-  logic [7:0] rx_char;
-  string rx_string;
-  int rx_char_num = 0;
-
-  initial begin
-    rx_string = "";
-  end
-
-  always begin
-    // 1. Wait for falling edge on uart_tx_o (Start bit)
-    @(negedge dut.${uart_tx_port});
-    
-    // 2. Wait 1.5 bit periods to align sampling at the center of the first data bit
-    #(BitPeriodNs * 1.5);
-    
-    // 3. Sample 8 data bits at 1.0 bit period intervals
-    for (int i = 0; i < 8; i++) begin
-      rx_char[i] = dut.${uart_tx_port};
-      #(BitPeriodNs);
-    end
-    
-    // 4. Print the character or accumulate the line of text
-    if (rx_char == 8'h04) begin // EOT (End of Transmission)
-      $display("[TB] EOT received. Simulation finished.");
-      $finish;
-    end else if (rx_char == 8'h0A) begin // Newline (\n)
-      $write("[UART]: \"%s\"\n", rx_string);
-      $fflush(32'h8000_0001); // Flush stdout to see character immediately
-      rx_string = "";
-      rx_char_num = 0;
-    end else if (rx_char >= 32 && rx_char <= 126) begin // Printable ASCII
-      rx_string = {rx_string, rx_char};
-      rx_char_num = rx_char_num + 1;
-    end
-  end
+  // The VIP owns the mechanisms - clocks, resets, the UART RX agent and, under
+  // boot_mode "jtag", the TAP driver with its Debug-Spec operations. This
+  // testbench owns the policy: which registers, in what order, at addresses
+  // the generator computed. All periods were resolved at generation time by
+  // the same formulas the inline blocks used; the UART transcript strings are
+  // the regression suite's pass criterion and stay byte-identical in the VIP.
+  // OLLIVANDER: require="vip_ollivander_soc.sv"
+  vip_ollivander_soc #(
+    .DbgIdCode        (32'h${f"{jtag_idcode:08x}"}),
+    .MainClkPeriodNs  (10.0),
+    .NumGenClocks     (${config.clock_tree.generators}),
+    .GenPeriodsNs     (${gen_periods_lit}),
+    .GenPeriod0FastNs (20.0),
+    .HasRtClk         (1'b${1 if has_rt_clk else 0}),
+    .RtClkPeriodNs    (${rt_period}),
+    .PorDelayNs       (100.0),
+    .HasClkGenLock    (1'b${1 if config.clock_tree.generators > 0 else 0}),
+    .LockDelayNs      (1000.0),
+% if uart_base and uart_tx_port:
+    .HasUart          (1'b1),
+    .UartBitPeriodNs  (16.0 * ${uart_divisor} * (1_000_000_000.0 / ${uart_freq}.0))
+% else:
+    .HasUart          (1'b0),
+    .UartBitPeriodNs  (8680.0)
 % endif
+  ) i_vip (
+% if config.clock_tree.generators > 0:
+    .clk_o            (),
+    .gen_clk_o        (vip_gen_clk),
+    .rst_no           (),
+    .clk_gen_lock_o   (vip_clk_gen_lock),
+% else:
+    .clk_o            (clk_i),
+    .gen_clk_o        (),
+    .rst_no           (rst_ni),
+    .clk_gen_lock_o   (),
+% endif
+% if has_rt_clk:
+    .rt_clk_o         (rt_clk_i),
+% else:
+    .rt_clk_o         (),
+% endif
+    .pwr_on_rst_no    (pwr_on_rst_ni),
+% if uart_base and uart_tx_port:
+    .uart_tx_i        (${uart_tx_port}),
+% else:
+    .uart_tx_i        (1'b1),
+% endif
+% if boot_mode == "jtag":
+    .jtag_tck_o       (jtag_tck_i),
+    .jtag_trst_no     (jtag_trst_ni),
+    .jtag_tms_o       (jtag_tms_i),
+    .jtag_tdi_o       (jtag_tdi_i),
+    .jtag_tdo_i       (jtag_tdo_o)
+% else:
+    // Force mode: the TAP is unused; outputs stay open, TDO reads 0.
+    .jtag_tck_o       (),
+    .jtag_trst_no     (),
+    .jtag_tms_o       (),
+    .jtag_tdi_o       (),
+    .jtag_tdo_i       (1'b0)
+% endif
+  );
 
   // ===========================================================================
   // Fast Simulation Boot Mode (+fast_boot)
