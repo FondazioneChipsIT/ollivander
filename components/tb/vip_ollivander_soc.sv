@@ -16,15 +16,16 @@
 // ============================================================================
 // vip_ollivander_soc - the generic, IP-agnostic verification IP (wip 2.1)
 // ============================================================================
-// Simulation-only. Instantiated by the GENERATED testbench, never by the SoC:
-// it lives in the Verilator top unit by construction, where the class-based
-// jtag_test stack it reuses is legal (the --lib-create restrictions govern the
-// hierarchical children, not the top).
+// Simulation-only. Instantiated by the GENERATED testbench, never by the SoC.
+// The JTAG transport is a self-contained procedural driver (see below): it
+// replicates riscv-dbg's jtag_test semantics task by task, but without class
+// constructs or queue-typed arguments - Verilator 5.050 crashes on those, and
+// a testbench that only one simulator can build is half a testbench. Only the
+// dm:: package (types and register offsets) is still imported from riscv-dbg.
 //
 // MECHANISM vs POLICY: this module owns the mechanism only - the JTAG clock,
-// the TAP driver stack (riscv-dbg's jtag_test, proven upstream against the
-// same Cheshire this generator integrates) and generic Debug-Spec operations
-// (init, 32-bit system-bus reads and writes). Everything project-specific -
+// the TAP transport and generic Debug-Spec operations (init, 32-bit
+// system-bus reads and writes). Everything project-specific -
 // WHICH registers to write, in WHAT order, at WHICH addresses - stays in the
 // generated testbench, which receives the addresses from the generator the
 // same way the firmware headers do. This is the IP-agnostic constraint of
@@ -51,8 +52,8 @@ module vip_ollivander_soc #(
   // first generator clock, exactly as the inline testbench used to do.
   // --------------------------------------------------------------------------
   parameter real MainClkPeriodNs = 10.0,           // clk_o, used when NumGenClocks == 0
-  parameter int unsigned NumGenClocks = 0,         // domain clock generators (max 8)
-  parameter real GenPeriodsNs [8] = '{default: 10.0},
+  parameter int unsigned NumGenClocks = 0,         // domain clock generators (max 64)
+  parameter real GenPeriodsNs [64] = '{default: 10.0},
   parameter real GenPeriod0FastNs = 20.0,          // +fast_boot period of generator 0
   parameter bit HasRtClk = 1'b0,
   parameter real RtClkPeriodNs = 1000.0,           // already fast-variant-resolved
@@ -69,7 +70,7 @@ module vip_ollivander_soc #(
 ) (
   // Clocks and resets, driven for the testbench from time zero.
   output logic       clk_o,
-  output logic [7:0] gen_clk_o,
+  output logic [63:0] gen_clk_o,
   output logic       rt_clk_o,
   output logic       pwr_on_rst_no,
   output logic       rst_no,
@@ -84,7 +85,6 @@ module vip_ollivander_soc #(
   input  logic jtag_tdo_i
 );
 
-  import jtag_test::*;
 
   // --------------------------------------------------------------------------
   // Clock agent
@@ -98,7 +98,15 @@ module vip_ollivander_soc #(
   // keeps CDCs lockable during the bootrom's frequency measurement); the
   // same-period siblings get a small phase offset to avoid simulation races,
   // both behaviours inherited verbatim from the inline testbench they replace.
-  for (genvar i = 0; i < 8; i++) begin : gen_domain_clocks
+  // The 64-clock capacity is arbitrary but free (unused indices elaborate to
+  // a single tie) and far above any plausible number of EXTERNAL clock
+  // generators; the guard turns a future overflow into a speaking error
+  // instead of a mystery.
+  if (NumGenClocks > 64) begin : gen_clock_capacity_check
+    initial $fatal(1, "[VIP] NumGenClocks=%0d exceeds the clock agent's capacity (64)", NumGenClocks);
+  end
+
+  for (genvar i = 0; i < 64; i++) begin : gen_domain_clocks
     if (i < NumGenClocks) begin : gen_active
       initial begin
         automatic real period = GenPeriodsNs[i];
@@ -192,29 +200,198 @@ module vip_ollivander_soc #(
   always #(ClkPeriodJtag / 2) tck = ~tck;
   assign jtag_tck_o = tck;
 
-  JTAG_DV jtag_dv (tck);
+  // --------------------------------------------------------------------------
+  // Procedural JTAG driver (module-level tasks, packed vectors, no classes).
+  //
+  // This replicates riscv-dbg's jtag_test driver stack task by task - each
+  // task below names its jtag_test counterpart - but with two deliberate
+  // departures, both learned the hard way:
+  //  * NO class constructs and NO queue-typed arguments: Verilator 5.050
+  //    crashes (Internal Error) on fixed arrays passed to class-task queue
+  //    args through a virtual interface; packed vectors + an explicit length
+  //    are bread-and-butter for every simulator. The transported words are
+  //    all <= 64 bits (DMI 41, IDCODE/DTMCS 32, IR 5).
+  //  * The sample point is 0.75 of the TCK period, not upstream's 0.9: with
+  //    apply at 0.1 and sample at 0.9 the sampling delay lands EXACTLY on the
+  //    next posedge (0.1 + 0.9 = one period) and the read becomes a
+  //    delta-cycle race against the clock generator - this instantiation
+  //    lost it and read the whole TDO stream one bit early. 0.75 lands after
+  //    the TDO-driving negedge with a quarter-period guard band on each side.
+  // --------------------------------------------------------------------------
+  localparam int unsigned IrLength = 5;
+  localparam logic [IrLength-1:0] JtagIrIdcode = 'h01;  // selected by TAP reset
+  localparam logic [IrLength-1:0] JtagIrDtmcs  = 'h10;
+  localparam logic [IrLength-1:0] JtagIrDmi    = 'h11;
+  localparam int unsigned DmiWidth = $bits(dm::dmi_req_t);  // {addr, data, op} = 41
+  localparam realtime JtagTA = ClkPeriodJtag * 0.10;  // stimuli application time
+  localparam realtime JtagTT = ClkPeriodJtag * 0.75;  // TDO sample time
 
-  // TT is deliberately NOT the upstream 0.9: with TA=0.1 and TT=0.9 the
-  // driver's sampling delay lands EXACTLY on the next TCK posedge (TA+TT =
-  // one full period), and whether the sample precedes or follows the edge
-  // becomes a delta-cycle race against the clock generator - upstream wins
-  // that race by scheduling luck, this instantiation lost it and read the
-  // whole TDO stream one cycle early (IDCODE arrived as (idcode<<1)|1).
-  // Sampling at 0.75 lands after the TDO-driving negedge (+0.5) with a
-  // quarter-period guard band on both sides: deterministic at any ratio.
-  typedef jtag_test::riscv_dbg #(
-    .IrLength (5),
-    .TA       (ClkPeriodJtag * 0.1),
-    .TT       (ClkPeriodJtag * 0.75)
-  ) riscv_dbg_t;
+  logic jtag_tms_q  = 1'b0;
+  logic jtag_tdi_q  = 1'b0;
+  logic jtag_trst_q = 1'b1;
+  assign jtag_tms_o   = jtag_tms_q;
+  assign jtag_tdi_o   = jtag_tdi_q;
+  assign jtag_trst_no = jtag_trst_q;
 
-  riscv_dbg_t::jtag_driver_t jtag_driver = new (jtag_dv);
-  riscv_dbg_t                jtag_dbg    = new (jtag_driver);
+  // IR cache, exactly as jtag_test::jtag_driver keeps it: a scan is skipped
+  // when the IR already holds the wanted opcode; TAP resets restore IDCODE.
+  logic [IrLength-1:0] drv_ir_cache = 'h1;
 
-  assign jtag_trst_no = jtag_dv.trst_n;
-  assign jtag_tms_o   = jtag_dv.tms;
-  assign jtag_tdi_o   = jtag_dv.tdi;
-  assign jtag_dv.tdo  = jtag_tdo_i;
+  // jtag_test: clock() - one full TCK cycle, stimuli already applied at +TA.
+  task automatic drv_clock();
+    #(JtagTT);
+    @(posedge tck);
+  endtask
+
+  // jtag_test: write_tms()
+  task automatic drv_tms(input logic val);
+    jtag_tms_q <= #(JtagTA) val;
+    drv_clock();
+  endtask
+
+  // jtag_test: write_bits() - LSB-first shift, TMS raised with the last bit.
+  task automatic drv_write_bits(input logic [63:0] wdata, input int unsigned len,
+                                input logic tms_last);
+    for (int unsigned i = 0; i < len; i++) begin
+      jtag_tdi_q <= #(JtagTA) wdata[i];
+      if (i == len - 1) jtag_tms_q <= #(JtagTA) tms_last;
+      drv_clock();
+    end
+    jtag_tms_q <= #(JtagTA) 1'b0;
+  endtask
+
+  // jtag_test: readwrite_bits() - same shift, TDO sampled at +TT each cycle.
+  task automatic drv_readwrite_bits(output logic [63:0] rdata,
+                                    input logic [63:0] wdata,
+                                    input int unsigned len, input logic tms_last);
+    rdata = '0;
+    for (int unsigned i = 0; i < len; i++) begin
+      jtag_tdi_q <= #(JtagTA) wdata[i];
+      if (i == len - 1) jtag_tms_q <= #(JtagTA) tms_last;
+      #(JtagTT);
+      rdata[i] = jtag_tdo_i;
+      @(posedge tck);
+    end
+    jtag_tms_q <= #(JtagTA) 1'b0;
+  endtask
+
+  // jtag_test: set_ir() - IR scan, skipped when cached.
+  task automatic drv_set_ir(input logic [IrLength-1:0] opcode);
+    if (drv_ir_cache == opcode) return;
+    drv_tms(1);  // select DR scan
+    drv_tms(1);  // select IR scan
+    drv_tms(0);  // capture IR
+    drv_tms(0);  // shift IR
+    drv_write_bits(64'(opcode), IrLength, 1'b1);
+    drv_tms(1);  // update IR
+    drv_tms(0);  // run test idle
+    drv_ir_cache = opcode;
+  endtask
+
+  // jtag_test: shift_dr() / update_dr()
+  task automatic drv_shift_dr();
+    drv_tms(1);  // select DR scan
+    drv_tms(0);  // capture DR
+    drv_tms(0);  // shift DR
+  endtask
+
+  task automatic drv_update_dr(input logic exit_1_dr);
+    if (exit_1_dr) drv_tms(1);  // exit 1 DR
+    drv_tms(1);  // update DR
+    drv_tms(0);  // run test idle
+  endtask
+
+  // jtag_test: wait_idle() - park in Run-Test/Idle.
+  task automatic drv_wait_idle(input int unsigned cycles);
+    repeat (cycles) drv_clock();
+  endtask
+
+  // jtag_test: riscv_dbg::reset_master() = hard trst pulse + soft reset walk.
+  task automatic drv_reset_master();
+    jtag_tms_q  <= #(JtagTA) 1'b1;
+    jtag_tdi_q  <= #(JtagTA) 1'b0;
+    jtag_trst_q <= #(JtagTA) 1'b0;
+    repeat (2) drv_clock();
+    jtag_trst_q <= #(JtagTA) 1'b1;
+    drv_ir_cache = 'h1;
+    drv_clock();
+    jtag_tms_q <= #(JtagTA) 1'b1;
+    jtag_tdi_q <= #(JtagTA) 1'b0;
+    repeat (6) drv_clock();  // 5+ TMS-high cycles: Test-Logic-Reset from anywhere
+    jtag_tms_q <= #(JtagTA) 1'b0;
+    drv_clock();             // Run-Test/Idle
+    drv_ir_cache = 'h1;      // TAP reset selects IDCODE
+  endtask
+
+  // jtag_test: get_idcode()
+  task automatic drv_get_idcode(output logic [31:0] idcode);
+    logic [63:0] rd;
+    drv_set_ir(JtagIrIdcode);
+    drv_shift_dr();
+    drv_readwrite_bits(rd, 64'h0, 32, 1'b0);
+    drv_update_dr(1'b1);
+    idcode = rd[31:0];
+  endtask
+
+  // jtag_test: write_dtmcs() / reset_dmi() - dmireset clears the DTM's sticky
+  // busy error (set when an op is issued while the previous one is in flight).
+  task automatic drv_write_dtmcs(input logic [31:0] data);
+    drv_set_ir(JtagIrDtmcs);
+    drv_shift_dr();
+    drv_write_bits(64'(data), 32, 1'b1);
+    drv_update_dr(1'b0);
+  endtask
+
+  task automatic drv_reset_dmi();
+    drv_write_dtmcs(32'h1 << 16);
+  endtask
+
+  // jtag_test: write_dmi() - one DMI write scan: {addr, data, op} LSB-first.
+  task automatic drv_write_dmi(input dm::dm_csr_e address, input logic [31:0] data);
+    logic [DmiWidth-1:0] req;
+    req = {address, data, dm::DTM_WRITE};
+    drv_set_ir(JtagIrDmi);
+    drv_shift_dr();
+    drv_write_bits(64'(req), DmiWidth, 1'b1);
+    drv_update_dr(1'b0);
+  endtask
+
+  // jtag_test: read_dmi() - read command scan, idle window for the CDC round
+  // trip, then a NOP scan that shifts the response out; op status in [1:0].
+  task automatic drv_read_dmi(input dm::dm_csr_e address, output logic [31:0] data,
+                              input int unsigned wait_cycles,
+                              output dm::dtm_op_status_e op);
+    logic [DmiWidth-1:0] req;
+    logic [63:0] rsp;
+    req = {address, 32'b0, dm::DTM_READ};
+    drv_set_ir(JtagIrDmi);
+    drv_shift_dr();
+    drv_write_bits(64'(req), DmiWidth, 1'b1);
+    drv_update_dr(1'b0);
+    drv_wait_idle(wait_cycles);
+    drv_shift_dr();
+    req = {address, 32'b0, dm::DTM_NOP};
+    drv_readwrite_bits(rsp, 64'(req), DmiWidth, 1'b1);
+    drv_update_dr(1'b0);
+    op   = dm::dtm_op_status_e'(rsp[1:0]);
+    data = rsp[33:2];
+  endtask
+
+  // jtag_test: read_dmi_exp_backoff() - retry on DTM busy with exponentially
+  // growing idle windows, clearing the sticky error between attempts.
+  task automatic drv_read_dmi_exp_backoff(input dm::dm_csr_e address,
+                                          output logic [31:0] data);
+    dm::dtm_op_status_e op;
+    int unsigned trial_idx = 0;
+    int unsigned wait_cycles = 8;
+    op = dm::DTM_SUCCESS;
+    do begin
+      if (trial_idx != 0) drv_reset_dmi();
+      drv_read_dmi(address, data, wait_cycles, op);
+      wait_cycles *= 2;
+      trial_idx++;
+    end while (op == dm::DTM_BUSY);
+  endtask
 
   // --------------------------------------------------------------------------
   // Generic Debug-Spec operations (the testbench composes the sequence)
@@ -228,8 +405,8 @@ module vip_ollivander_soc #(
   // shift gives the op time to drain for any plausible TCK/system-clock
   // ratio; the read path needs no twin because read_dmi idles internally.
   task automatic write_dmi_safe(input dm::dm_csr_e csr, input logic [31:0] data);
-    jtag_dbg.write_dmi(csr, data);
-    jtag_dbg.wait_idle(10);
+    drv_write_dmi(csr, data);
+    drv_wait_idle(10);
   endtask
 
   // TAP liveness and debug-module activation: reset, IDCODE check against the
@@ -242,18 +419,18 @@ module vip_ollivander_soc #(
                                             sbreadondata:    1'b0,
                                             sbaccess:        3'h2,
                                             default:         '0};
-    jtag_dbg.reset_master();
+    drv_reset_master();
     repeat (100) @(posedge tck);
-    jtag_dbg.get_idcode(idcode);
+    drv_get_idcode(idcode);
     if (idcode != DbgIdCode)
       $fatal(1, "[VIP-JTAG] Unexpected IDCODE: expected 0x%h, got 0x%h", DbgIdCode, idcode);
     write_dmi_safe(dm::DMControl, dmcontrol);
-    do jtag_dbg.read_dmi_exp_backoff(dm::DMControl, dmcontrol);
+    do drv_read_dmi_exp_backoff(dm::DMControl, dmcontrol);
     while (~dmcontrol.dmactive);
     write_dmi_safe(dm::SBCS, sbcs);
     // Read the capability fields back: sbasize=0 with no sbaccess32 means the
     // debug module has NO system bus - every later op would no-op silently.
-    jtag_dbg.read_dmi_exp_backoff(dm::SBCS, sbcs);
+    drv_read_dmi_exp_backoff(dm::SBCS, sbcs);
     if (sbcs.sbasize == 0 && !sbcs.sbaccess32)
       $fatal(1, "[VIP-JTAG] debug module reports NO system bus access");
     $display("[VIP-JTAG] TAP alive, debug module active, system bus ready");
@@ -266,7 +443,7 @@ module vip_ollivander_soc #(
     write_dmi_safe(dm::SBAddress1, addr[63:32]);
     write_dmi_safe(dm::SBAddress0, addr[31:0]);
     write_dmi_safe(dm::SBData0, data);
-    do jtag_dbg.read_dmi_exp_backoff(dm::SBCS, sbcs);
+    do drv_read_dmi_exp_backoff(dm::SBCS, sbcs);
     while (sbcs.sbbusy);
     // A routing or size failure is NOT silent: sberror latches until cleared,
     // and a bring-up that half-landed is the worst possible state to debug from.
@@ -281,9 +458,9 @@ module vip_ollivander_soc #(
     write_dmi_safe(dm::SBCS, sbcs);
     write_dmi_safe(dm::SBAddress1, addr[63:32]);
     write_dmi_safe(dm::SBAddress0, addr[31:0]);
-    do jtag_dbg.read_dmi_exp_backoff(dm::SBCS, sbcs);
+    do drv_read_dmi_exp_backoff(dm::SBCS, sbcs);
     while (sbcs.sbbusy);
-    jtag_dbg.read_dmi_exp_backoff(dm::SBData0, data);
+    drv_read_dmi_exp_backoff(dm::SBData0, data);
     if (sbcs.sberror != 3'h0) begin
       $fatal(1, "[VIP-JTAG] SBA READ FAILED at 0x%h (sberror=%0d)", addr, sbcs.sberror);
     end

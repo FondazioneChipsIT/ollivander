@@ -1276,7 +1276,7 @@ class RTLGenerator:
                 "hw/crossbar_soc_top.sv.mako": hw_dir / top_level_filename,
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
                 "doc/crossbar_map.csv.mako": doc_dir / f"{self.soc_config.project.name}_map.csv",
-                "Makefile.sim.mako": self.env.outdir_path / "Makefile.sim",
+                "sim.mk.mako": self.env.outdir_path / "sim" / "sim.mk",
                 "tb/tb_soc.sv.mako": tb_dir / f"tb_{self.soc_config.project.name}.sv"
             }
         else:
@@ -1289,7 +1289,7 @@ class RTLGenerator:
                 "sw/soc_map.h.mako": sw_dir / f"{self.soc_config.project.name}_map.h",
                 "cfg/floogen_cfg.yml.mako": cfg_dir / f"{self.soc_config.project.name}_floogen.yml",
                 "doc/noc_map.csv.mako": doc_dir / f"{self.soc_config.project.name}_noc_map.csv",
-                "Makefile.sim.mako": self.env.outdir_path / "Makefile.sim",
+                "sim.mk.mako": self.env.outdir_path / "sim" / "sim.mk",
                 "tb/tb_soc.sv.mako": tb_dir / f"tb_{self.soc_config.project.name}.sv"
             }
 
@@ -1376,7 +1376,7 @@ class RTLGenerator:
                 sys.exit(1)
 
         # Emit the Verilator hierarchical configuration next to the other cfg/ artifacts:
-        # the Makefile.sim verilator targets reference it unconditionally.
+        # the sim.mk verilator targets reference it unconditionally.
         self.generate_verilator_config(cfg_dir, hw_dir, top_level_module_name)
 
         # Explicitly require the Clock Generator for the Phase 8 Chip Wrapper
@@ -1642,7 +1642,9 @@ class RTLGenerator:
         A config with no hier_block entries remains valid input and simply degenerates
         to a flat build.
         """
-        vlt_path = cfg_dir / f"{top_level_module_name}.vlt"
+        vlt_dir = self.env.outdir_path / "sim" / "verilator"
+        vlt_dir.mkdir(parents=True, exist_ok=True)
+        vlt_path = vlt_dir / f"{top_level_module_name}.vlt"
         lines = ["`verilator_config"]
 
         def _wrapper_params_ok(module):

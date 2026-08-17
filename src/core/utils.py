@@ -118,6 +118,9 @@ def write_if_changed(file_path: Path, content: str):
     """
     if file_path.is_file() and file_path.read_text(encoding="utf-8", errors="ignore") == content:
         return
+    # Nested output targets (e.g. sim/sim.mk) are legitimate: create the
+    # destination directory instead of requiring every caller to remember it.
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(content, encoding="utf-8", newline="\n")
 
 def simplify_port_ranges(decl: str) -> str:

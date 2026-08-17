@@ -237,7 +237,7 @@ The output will be cleanly organized into subdirectories inside `<outdir>` (e.g.
 ├── <sub_tb>/                     # Auto-generated SystemVerilog testbench with memory preloading (*.sv)
 ├── <sub_cfg>/                    # Generated configuration files for tools like FlooGen (*.yml)
 ├── <sub_doc>/                    # Output documentation and mapping tables (*.csv)
-└── Makefile.sim                 # Auto-generated targets for QuestaSim simulation
+└── sim/sim.mk                   # Auto-generated simulation targets (QuestaSim, Verilator)
 
 <bender_manifest>                 # Main compilation manifest linking external IPs and generated RTL
 ```

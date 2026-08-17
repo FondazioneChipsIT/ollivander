@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: SHL-0.51
 """Emit SystemVerilog stubs for the VHDL entities of a Bender source list.
 
-Invoked by the generated Makefile.sim (prep-sim-verilator) as:
+Invoked by the generated sim/sim.mk (prep-sim-verilator) as:
 
     gen_vhdl_stubs.py <vhdl_list_file> <output_dir>
 

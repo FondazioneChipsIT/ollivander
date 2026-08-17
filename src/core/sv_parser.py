@@ -290,7 +290,7 @@ def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_
     # // OLLIVANDER: exclude_hier_block="behavioural timing: ..."). A component declares here that
     # it carries a construct Verilator refuses inside a '--lib-create' child library - a delay, an
     # intra-assignment delay, a fork/join_none in a package class - so that the generator can keep
-    # it, and every candidate containing it, out of cfg/<top>.vlt. The reason is part of the
+    # it, and every candidate containing it, out of sim/verilator/<top>.vlt. The reason is part of the
     # pragma on purpose: the message Verilator emits carries no source location, so without a
     # written reason the exclusion looks arbitrary to whoever reads the config later.
     # The value may span continuation comment lines, hence the DOTALL-free multi-line pattern.

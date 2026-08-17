@@ -130,11 +130,11 @@ ${stubs_str}
           rt_period = 1000.0
   else:
       rt_period = 1000.0
-  _gen_fill = list(periods) + [10.0] * (8 - len(periods))
+  _gen_fill = list(periods) + [10.0] * (64 - len(periods))
   gen_periods_lit = "'{" + ", ".join(str(float(p)) for p in _gen_fill) + "}"
 %>\
 % if config.clock_tree.generators > 0:
-  logic [7:0] vip_gen_clk;
+  logic [63:0] vip_gen_clk;
   logic       vip_clk_gen_lock;
   assign domain_clk_i   = vip_gen_clk[${config.clock_tree.generators - 1}:0];
   assign clk_gen_lock_i = {${config.clock_tree.generators}{vip_clk_gen_lock}};

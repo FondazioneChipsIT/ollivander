@@ -42,7 +42,11 @@ endif
 # a QuestaSim run of the same tree); the other example projects are covered by
 # fast-check only so far.
 # ==============================================================================
-VERILATOR_JOBS ?= 48
+# Capped at 32: three hierarchical builds at -j48 produced TRUNCATED generated
+# C++ (a hier-block .cpp cut mid-expression, g++ 'expected )' at end of input;
+# spatz_cc and the mesh cluster tile, 2026-08-1x). Never observed at or below
+# -j32; the build-time cost of the cap is minutes, a corrupt build costs a run.
+VERILATOR_JOBS ?= 32
 # bender's 'script verilator' format implicitly defines TARGET_SYNTHESIS, which turns the
 # olli_* simulation placeholders (the reset generator above all) into empty shells and
 # silently holds the whole SoC in reset under two-state semantics: prep-sim-verilator
@@ -68,7 +72,7 @@ VERILATOR_FLIST_EXCLUDE ?= behavioral/tc_pad\.sv
 VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer -t scm_use_latch_scm
 # Flag rationale, all measured on the mesh example:
 # - hierarchical verilation is the only build mode: repeated tiles verilate once as child
-#   libraries (declared in the generated cfg/$(TOP_MOD).vlt) and the monolithic build costs
+#   libraries (declared in the generated sim/verilator/$(TOP_MOD).vlt) and the monolithic build costs
 #   hours and tens of GB instead of minutes and ~3 GB per unit;
 # - --threads is deliberately absent: it inflated verilation from minutes to hours per unit;
 # - OPT_FAST=-O2 (vs the verilated.mk default -Os) is a run-time win whose compile cost
@@ -352,17 +356,18 @@ prep-sim: update-hw
 	@# the JTAG VIP's TCK ran at 20 ps and the riscv-dbg jtag_test driver
 	@# sampled TDO at +15 ps, reading every DMI bit one cycle early. Units that
 	@# declare their own timescale are unaffected.
-	$(BENDER) script vsim $(BENDER_TARGETS) --vlog-arg="-timescale 1ns/1ps" > $(OUT_DIR)/compile_vsim.tcl
+	@mkdir -p $(OUT_DIR)/sim/questa
+	$(BENDER) script vsim $(BENDER_TARGETS) --vlog-arg="-timescale 1ns/1ps" > $(OUT_DIR)/sim/questa/compile_vsim.tcl
 % if global_defines:
 	@printf "\n[MAKE] Injecting compilation macros (+define+) into compilation script...\n"
-	@python3 -c "$$INJECT_MACROS_SCRIPT" $(OUT_DIR)/compile_vsim.tcl
+	@python3 -c "$$INJECT_MACROS_SCRIPT" $(OUT_DIR)/sim/questa/compile_vsim.tcl
 % endif
 
 build-sim: prep-sim build-sw
 	@printf "\n[MAKE] Compiling RTL with QuestaSim (vlog)...\n"
 	@mkdir -p logs
 	@$(call ensure-tools,vsim:questa); \
-	$(VSIM) -c -l logs/compile.log -suppress 13233 -do "set err [source $(OUT_DIR)/compile_vsim.tcl]; if {\$$err == 1} {quit -code 1}; quit"
+	$(VSIM) -c -l logs/compile.log -suppress 13233 -do "set err [source $(OUT_DIR)/sim/questa/compile_vsim.tcl]; if {\$$err == 1} {quit -code 1}; quit"
 
 fast-check: prep-sim
 	@printf "\n[MAKE] Generating exact stubs for external IPs...\n"
@@ -370,11 +375,11 @@ fast-check: prep-sim
 	@$(call ensure-tools,$(if $(filter verilator,$(FAST_CHECK_TOOL)),verilator:verilator,vsim:questa)); \
 	if [ "$(FAST_CHECK_TOOL)" = "verilator" ]; then \
 		printf "\n[MAKE] Linting/Checking fast RTL with Verilator...\n"; \
-		$(VERILATOR) -Wno-TIMESCALEMOD -Wno-ASCRANGE -Wno-SYMRSVDWORD -f $(OUT_DIR)/compile_verilator_fast.f --top-module $(TOP_MOD); \
+		$(VERILATOR) -Wno-TIMESCALEMOD -Wno-ASCRANGE -Wno-SYMRSVDWORD -f $(OUT_DIR)/sim/verilator/compile_verilator_fast.f --top-module $(TOP_MOD); \
 	else \
 		printf "\n[MAKE] Compiling fast RTL (packages and stubs) with QuestaSim...\n"; \
 		mkdir -p logs; \
-		$(VSIM) -c -l logs/fast_compile.log -suppress 13233 -do "source $(OUT_DIR)/compile_vsim_fast.tcl; quit"; \
+		$(VSIM) -c -l logs/fast_compile.log -suppress 13233 -do "source $(OUT_DIR)/sim/questa/compile_vsim_fast.tcl; quit"; \
 		printf "\n[MAKE] Elaborating top-level with Unresolved Blackboxes...\n"; \
 		: '13314 and 13233 are noise: relaxed SV input port kind, and a design unit'; \
 		: 'overwriting an earlier one in the library, which is normal with Bender.'; \
@@ -449,9 +454,10 @@ prep-sim-verilator: update-hw
 	@# TARGET_SYNTHESIS is stripped (see VERILATOR_FLIST_EXCLUDE comment above), and the
 	@# +incdir entries are separated out: bender interleaves them per package, but the
 	@# hierarchical child invocations only inherit include paths passed on the command line.
-	$(BENDER) script verilator $(VERILATOR_TARGETS) | grep -vE "$(VERILATOR_FLIST_EXCLUDE)" | grep -v '^+define+TARGET_SYNTHESIS' > $(OUT_DIR)/compile_verilator.f
-	@grep '^+incdir+' $(OUT_DIR)/compile_verilator.f | sort -u > $(OUT_DIR)/verilator_incdirs.f
-	@grep -v '^+incdir+' $(OUT_DIR)/compile_verilator.f > $(OUT_DIR)/compile_verilator_src.f
+	@mkdir -p $(OUT_DIR)/sim/verilator
+	$(BENDER) script verilator $(VERILATOR_TARGETS) | grep -vE "$(VERILATOR_FLIST_EXCLUDE)" | grep -v '^+define+TARGET_SYNTHESIS' > $(OUT_DIR)/sim/verilator/compile_verilator.f
+	@grep '^+incdir+' $(OUT_DIR)/sim/verilator/compile_verilator.f | sort -u > $(OUT_DIR)/sim/verilator/verilator_incdirs.f
+	@grep -v '^+incdir+' $(OUT_DIR)/sim/verilator/compile_verilator.f > $(OUT_DIR)/sim/verilator/compile_verilator_src.f
 	@# The license-free flow has no VHDL front-end, and bender's verilator script
 	@# silently drops .vhd sources: every VHDL entity of the graph (the CTU CAN FD
 	@# APB wrapper is the only one today) is replaced by an auto-generated SV stub
@@ -462,7 +468,7 @@ prep-sim-verilator: update-hw
 	@$(BENDER) script flist $(VERILATOR_TARGETS) | grep -iE '\.vhdl?$$' > $(OUT_DIR)/vhdl_sources.f || true
 	@if [ -s $(OUT_DIR)/vhdl_sources.f ]; then \
 		$(PYTHON) $(OLLIVANDER_ROOT)/scripts/gen_vhdl_stubs.py $(OUT_DIR)/vhdl_sources.f $(OUT_DIR)/vhdl_stubs && \
-		ls $(OUT_DIR)/vhdl_stubs/*.sv 2>/dev/null >> $(OUT_DIR)/compile_verilator_src.f || true; \
+		ls $(OUT_DIR)/vhdl_stubs/*.sv 2>/dev/null >> $(OUT_DIR)/sim/verilator/compile_verilator_src.f || true; \
 	fi
 
 build-sim-verilator: prep-sim-verilator build-sw
@@ -474,8 +480,8 @@ build-sim-verilator: prep-sim-verilator build-sw
 	@$(call ensure-tools,verilator:verilator); \
 	if [ -n "$(GCC_TOOLSET)" ] && ! echo '#include <coroutine>' | g++ -std=gnu++20 -x c++ -fsyntax-only - >/dev/null 2>&1; then . $(GCC_TOOLSET)/enable; fi; \
 	$(VERILATOR) $(VERILATOR_SIM_FLAGS) --top-module tb_$(TOP_MOD) --Mdir $(VERILATOR_WORK) \
-		$(OUT_DIR)/cfg/$(TOP_MOD).vlt $$(cat $(OUT_DIR)/verilator_incdirs.f) +incdir+$(abspath $(OUT_DIR)/hw) \
-		-f $(OUT_DIR)/compile_verilator_src.f && \
+		$(OUT_DIR)/sim/verilator/$(TOP_MOD).vlt $$(cat $(OUT_DIR)/sim/verilator/verilator_incdirs.f) +incdir+$(abspath $(OUT_DIR)/hw) \
+		-f $(OUT_DIR)/sim/verilator/compile_verilator_src.f && \
 	$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD).mk CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2 -j $(VERILATOR_JOBS) && \
 	cd $(VERILATOR_WORK) && g++ -o Vtb_$(TOP_MOD) Vtb_$(TOP_MOD)__main.o \
 		-Wl,--start-group libVtb_$(TOP_MOD).a Vtb_$(TOP_MOD)__ALL.a libverilated.a $$(ls V*/lib*.a 2>/dev/null) -Wl,--end-group \

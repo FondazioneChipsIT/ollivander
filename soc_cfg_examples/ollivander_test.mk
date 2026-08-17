@@ -134,9 +134,9 @@ test-all:
 	echo "Suite Start Epoch  : $$suite_start" >> soc_cfg_examples/test_summary.log; \
 	echo "======================================================================" >> soc_cfg_examples/test_summary.log; \
 	echo "Project Directories Tested : $(TEST_PROJECTS)" >> soc_cfg_examples/test_summary.log; \
-	echo "Tools Checked   : $(FAST_CHECK_TOOLS)" >> soc_cfg_examples/test_summary.log; \
-	echo "Run Simulation  : $(TEST_SIM)" >> soc_cfg_examples/test_summary.log; \
-	echo "Sim Tools       : $(SIM_TOOLS)" >> soc_cfg_examples/test_summary.log; \
+	echo "Fast-check Tools           : $(FAST_CHECK_TOOLS)" >> soc_cfg_examples/test_summary.log; \
+	echo "Run Simulation             : $(TEST_SIM)" >> soc_cfg_examples/test_summary.log; \
+	echo "Sim Tools                  : $(SIM_TOOLS)" >> soc_cfg_examples/test_summary.log; \
 	echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; \
 	failed_tests=""; \
 	for p in $(TEST_PROJECTS); do \
@@ -207,7 +207,7 @@ test-all:
 			fi; \
 		done; \
 		if [ "$(TEST_SIM)" = "1" ]; then \
-			if [ -f "soc_cfg_examples/$$p/generated/Makefile.sim" ]; then \
+			if [ -f "soc_cfg_examples/$$p/generated/sim/sim.mk" ]; then \
 				for stool in $(SIM_TOOLS); do \
 					if [ "$$stool" = "verilator" ]; then \
 						sim_bt=build-sim-verilator; sim_rt=run-sim-verilator; sim_ra=""; \
@@ -252,7 +252,7 @@ test-all:
 				done; \
 			else \
 				echo "  [INFO] No simulation Makefile found for project $$p. Skipping simulation."; \
-				log_step "Simulation" "SKIPPED (no generated/Makefile.sim)"; \
+				log_step "Simulation" "SKIPPED (no generated/sim/sim.mk)"; \
 			fi; \
 		fi; \
 		close_project $$proj_start; \
@@ -320,7 +320,7 @@ check-tested:
 			if [ -f "$$f" ] && [ "$$(stat -c %Y "$$f")" -gt "$$start" ]; then echo "    $$f"; fi; \
 		done); \
 	echo "[CHECK] Scope of the last suite:"; \
-	grep -E "^Project Directories Tested|^Tools Checked|^Run Simulation|^Sim Tools" "$$summary" | sed 's/^/    /'; \
+	grep -E "^Project Directories Tested|^Fast-check Tools|^Run Simulation|^Sim Tools" "$$summary" | sed 's/^/    /'; \
 	if [ -n "$$newer" ]; then \
 		echo "[CHECK] These sources changed after that suite started:"; \
 		echo "$$newer"; \
