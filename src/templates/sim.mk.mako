@@ -107,6 +107,10 @@ VERILATOR_SIM_FLAGS ?= --cc --main --build --hierarchical -j $(VERILATOR_JOBS) \
 	-Wno-SYMRSVDWORD -Wno-ENUMVALUE --error-limit 200 +define+ASSERTS_OFF \
 	+define+HCI_ASSERT_DELAY= \
 	--relative-includes${(" " + " ".join(["+define+" + d for d in global_defines])) if global_defines else ""}
+# The same flags without --build: the hierarchical build is driven in two explicit
+# phases below (emission of every child, THEN compilation), which is what keeps a
+# child's sources from being compiled while they are still being written.
+VERILATOR_EMIT_FLAGS = $(filter-out --build,$(VERILATOR_SIM_FLAGS))
 VERILATOR_RUN_FLAGS ?= +fast_boot
 VERILATOR_WORK ?= verilator_work
 # The C++20 coroutines require a modern compiler; RHEL hosts ship them as gcc-toolset SCLs.
@@ -501,16 +505,43 @@ build-sim-verilator: prep-sim-verilator build-sw
 		rm -rf $(VERILATOR_WORK); \
 	fi
 	@rm -f $(VERILATOR_WORK)/.build_ok
+	@# EMISSION AND COMPILATION ARE TWO EXPLICIT PHASES, and that is a fix, not a style
+	@# choice. In the generated hierarchical makefile a child's verilation rule declares
+	@# only '<child>.sv' and '<child>.mk' as its outputs, while the verilation writes
+	@# dozens of .cpp files: as soon as the .mk appears, make considers the dependency
+	@# satisfied and (under -j) starts compiling sources that are still being written.
+	@# gcc then stops mid-file at "expected primary-expression at end of input" on a file
+	@# that is complete and well-formed on disk a moment later - met 2026-08-19 on
+	@# spatz_cc inside crux_isle in a build started from an empty tree, and most likely
+	@# the true cause of the "unterminated #ifndef" blamed on cache staleness the day
+	@# before. Asking for every child .mk first and only then for 'hier_build' removes
+	@# the overlap by construction; the retry around phase 2 stays as a cheap backstop,
+	@# and announces itself so a systematic failure is still visible.
 	@# Three steps, because in hierarchical mode verilator's own --build stops at the child
 	@# libraries and the model archive: the top makefile's default target is the library, so
 	@# the executable link is issued explicitly. The link avoids -latomic (absent from the
 	@# gcc-toolset SCLs, unnecessary on x86_64).
 	@$(call ensure-tools,verilator:verilator); \
 	if [ -n "$(GCC_TOOLSET)" ] && ! echo '#include <coroutine>' | g++ -std=gnu++20 -x c++ -fsyntax-only - >/dev/null 2>&1; then . $(GCC_TOOLSET)/enable; fi; \
-	$(VERILATOR) $(VERILATOR_SIM_FLAGS) --top-module tb_$(TOP_MOD) --Mdir $(VERILATOR_WORK) \
+	$(VERILATOR) $(VERILATOR_EMIT_FLAGS) --top-module tb_$(TOP_MOD) --Mdir $(VERILATOR_WORK) \
 		$(OUT_DIR)/sim/verilator/$(TOP_MOD).vlt $$(cat $(OUT_DIR)/sim/verilator/verilator_incdirs.f) +incdir+$(abspath $(OUT_DIR)/hw) \
 		-f $(OUT_DIR)/sim/verilator/compile_verilator_src.f && \
-	$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD).mk CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2 -j $(VERILATOR_JOBS) && \
+	HIER_MK=$(VERILATOR_WORK)/Vtb_$(TOP_MOD)_hier.mk; \
+	if [ -f $$HIER_MK ]; then \
+		CHILD_MKS=$$(grep -oE '^V[A-Za-z_0-9]+/V[A-Za-z_0-9]+\.mk' $$HIER_MK | sort -u | tr '\n' ' '); \
+		if [ -n "$$CHILD_MKS" ]; then \
+			printf "\n[MAKE] Phase 1/2: verilating %s hierarchical children...\n" "$$(echo $$CHILD_MKS | wc -w)"; \
+			$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD)_hier.mk -j $(VERILATOR_JOBS) $$CHILD_MKS || exit 1; \
+		fi; \
+		printf "\n[MAKE] Phase 2/2: compiling children and top unit...\n"; \
+		$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD)_hier.mk -j $(VERILATOR_JOBS) \
+			CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2 hier_build \
+		|| { printf "\n[MAKE] Compilation failed; retrying once (belt and braces, see the note above).\n"; \
+		     $(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD)_hier.mk -j $(VERILATOR_JOBS) \
+			CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2 hier_build; }; \
+	else \
+		$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD).mk CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2 -j $(VERILATOR_JOBS); \
+	fi && \
 	cd $(VERILATOR_WORK) && g++ -o Vtb_$(TOP_MOD) Vtb_$(TOP_MOD)__main.o \
 		-Wl,--start-group libVtb_$(TOP_MOD).a Vtb_$(TOP_MOD)__ALL.a libverilated.a $$(ls V*/lib*.a 2>/dev/null) -Wl,--end-group \
 		-lpthread -lm

@@ -75,6 +75,9 @@ class RTLGenerator:
         self.hier_pragma_pattern = re.compile(r'(?://|##)\s*OLLIVANDER:\s*hier_block="([^"]+)"')
         self.macro_hier_blocks = {}
         self.required_local_files = set()
+        # Simulation-only requirements, kept apart from the RTL ones: they belong to
+        # the manifest's 'simulation' target and never to a macro's export list.
+        self.tb_required_local_files = set()
         self.project_dependencies = {}
         
         # Compute top_level_module_name once to be used across all generations
@@ -1360,8 +1363,18 @@ class RTLGenerator:
                                            rf'import {self.soc_config.project.soc_pkg_name}::*;\n  import {top_level_module_name}_sys_regs_pkg::*;', 
                                            rendered_code)
 
-                # Extract dynamic pragmas from the fully rendered code.
-                self.required_local_files.update(self.req_pattern.findall(rendered_code))
+                # Extract dynamic pragmas from the fully rendered code. THE TESTBENCH'S
+                # REQUIREMENTS ARE NOT THE PROJECT'S: the VIP is a simulation-only
+                # bench (classes, timing), so pooling its 'require' with the RTL ones
+                # put it among the manifest's RTL sources and - worse - into the list a
+                # MACRO EXPORTS, making a parent compile another project's bench as if
+                # it were hardware (found 2026-08-19 in crux_isle.sv's export header).
+                # Same principle as the local/exported split in generate_verilator_config:
+                # an artifact of MY bench is not a property of MY hardware.
+                if tpl_name == "tb/tb_soc.sv.mako":
+                    self.tb_required_local_files.update(self.req_pattern.findall(rendered_code))
+                else:
+                    self.required_local_files.update(self.req_pattern.findall(rendered_code))
                 for match in self.dep_pattern.finditer(rendered_code):
                     dep_name = match.group(1)
                     self.project_dependencies.setdefault(dep_name, {})
@@ -1431,6 +1444,50 @@ class RTLGenerator:
                 staged_local_files.add(req_file)
 
         template_kwargs["external_local_files"] = sv_dependency_sort(external_local_files)
+
+        # THE SIMULATION-ONLY CLOSURE, resolved the same way but kept in its own list:
+        # the manifest template puts it under the 'simulation' target next to the
+        # testbench, and the macro export ignores it (see the collection site above).
+        # A file already staged as RTL is not repeated here - if some component really
+        # needs it, it is hardware by that fact alone.
+        tb_external_local_files = []
+        tb_pending = sorted(self.tb_required_local_files)
+        while tb_pending:
+            req_file = tb_pending.pop(0)
+            if req_file in staged_local_files:
+                continue
+            src_path = None
+            for cp in self.env.component_paths:
+                if cp.is_dir():
+                    try:
+                        src_path = next(cp.rglob(req_file))
+                        break
+                    except StopIteration:
+                        pass
+                elif cp.is_file() and cp.name == req_file:
+                    src_path = cp
+                    break
+            if src_path:
+                print(f"  -> Linking simulation dependency {src_path.name} from {src_path.parent}")
+                content = src_path.read_text(encoding='utf-8')
+                for new_req in self.req_pattern.findall(content):
+                    if new_req not in staged_local_files and new_req not in tb_pending:
+                        tb_pending.append(new_req)
+                for match in self.dep_pattern.finditer(content):
+                    dep_name = match.group(1)
+                    self.project_dependencies.setdefault(dep_name, {})
+                    if match.group(2): self.project_dependencies[dep_name]['git'] = match.group(2)
+                    if match.group(3): self.project_dependencies[dep_name]['rev'] = match.group(3)
+                    if match.group(4): self.project_dependencies[dep_name]['version'] = match.group(4)
+                rel_path = os.path.relpath(src_path, self.env.bender_dir).replace('\\', '/')
+                if rel_path not in tb_external_local_files:
+                    tb_external_local_files.append(rel_path)
+                staged_local_files.add(src_path.name)
+            else:
+                print(f"[WARNING] Required simulation file '{req_file}' not found in component paths.")
+                staged_local_files.add(req_file)
+
+        template_kwargs["tb_external_local_files"] = sv_dependency_sort(tb_external_local_files)
 
         # Resolve all collected Bender dependencies against the environment registry.
         # If a dependency was declared in a pragma without git/rev/version details,
@@ -1658,6 +1715,31 @@ class RTLGenerator:
         host_boot_mode = (self.soc_config.testbench or {}).get("boot_mode", "force")
         host_reachable_by_tb = (host_boot_mode != "jtag")
 
+        # LOCAL EXCLUSIONS VS EXPORTED DECLARATIONS (wip 2.1 residual 2, second half).
+        # Two kinds of exclusion end up in the same set below, and they do NOT have
+        # the same scope:
+        #   - TESTBENCH-driven (this host under force boot, this project's $readmemh
+        #     targets): they hold only for a simulation of THIS project, because they
+        #     describe what MY testbench reaches into with dotted paths.
+        #   - STRUCTURAL (a declared hier_block restriction, the macro wrapper rule,
+        #     the type-parameter rule): properties of the module itself, true for any
+        #     consumer.
+        # A macro build still generates its own testbench and simulates standalone
+        # (build_mode only skips the chip wrapper), so the local .vlt must keep BOTH.
+        # But the list this project EXPORTS - the pragmas a parent re-emits into its
+        # own .vlt - is read by a different testbench, with its own boot mode and its
+        # own preload list: propagating my testbench's exclusions there would let a
+        # force-mode donor silently cost its parent a promoted block (super_noc
+        # promotes mesh_subtile_manager_tile today only because the donor happens to
+        # boot by jtag). So the export carries the structural exclusions alone, and
+        # the PARENT decides what its own testbench forbids. Tested by construction
+        # from 2026-08-19: mesh_subtile boots by force while super_noc boots by jtag,
+        # so a regression here shows up as a drop in the parent's block count.
+        tb_excluded = set()
+        if host_reachable_by_tb:
+            tb_excluded.add(self.soc_config.host.name)
+        exported_modules = []
+
         def _wrapper_params_ok(module):
             """Parameter rule shared by both topologies: a wrapper carrying a TYPE in
             its parameterization cannot be a hier_block, because Verilator 5.050
@@ -1725,8 +1807,9 @@ class RTLGenerator:
             dummy_count = sum(1 for x in range(max_x + 1) for y in range(max_y + 1)
                               if (x, y) not in grid_owner)
 
-            # Exclusion 1: tiles the testbench references hierarchically.
-            excluded = {self.soc_config.host.name} if host_reachable_by_tb else set()
+            # Exclusion 1: tiles the testbench references hierarchically. TB-driven,
+            # so it stays out of the exported declarations (see the split above).
+            excluded = set()
             tb_cfg = self.soc_config.testbench or {}
 
             for mem in tb_cfg.get("preload_memories", []):
@@ -1744,7 +1827,8 @@ class RTLGenerator:
                             try:
                                 owner = grid_owner.get((int(coords[0]), int(coords[1])))
                                 if owner:
-                                    excluded.add(owner)
+                                    # TB-driven as well: the $readmemh path is mine.
+                                    tb_excluded.add(owner)
                             except ValueError:
                                 pass
 
@@ -1770,8 +1854,13 @@ class RTLGenerator:
                 module = f"{prefix}_{comp_name}_tile"
                 if not _wrapper_params_ok(module):
                     continue
-                lines.append(f'hier_block -module "{module}"')
+                # Structurally eligible: exported to a parent in every case, declared
+                # locally only if my own testbench keeps its hands off it.
+                exported_modules.append(module)
+                if comp_name not in tb_excluded:
+                    lines.append(f'hier_block -module "{module}"')
             if dummy_count >= 1:
+                exported_modules.append(f"{prefix}_dummy_tile")
                 lines.append(f'hier_block -module "{prefix}_dummy_tile"')
         else:
             # Crossbar: the host isle stays in the top unit (the testbench's bring-up
@@ -1785,7 +1874,8 @@ class RTLGenerator:
                 inst = mem.get("instance", mem.get("name", ""))
                 for part in inst.split('.'):
                     if part.startswith("i_"):
-                        excluded.add(part[2:])
+                        # TB-driven: my $readmemh path, not a property of the memory.
+                        tb_excluded.add(part[2:])
             # The declared restriction, exactly as on the mesh above. It matters here even though
             # the crossbar family builds today: hyperbus is out of the block set only because its
             # wrapper carries a `parameter type`, a workaround for a Verilator internal error that
@@ -1805,9 +1895,7 @@ class RTLGenerator:
             # The host is a candidate on the same terms as any other isle, unless
             # the testbench still reaches into it (force boot); it lives outside
             # 'components', which is why it used to be excluded by enumeration.
-            candidates = list(self.soc_config.components or [])
-            if not host_reachable_by_tb:
-                candidates.append(self.soc_config.host)
+            candidates = list(self.soc_config.components or []) + [self.soc_config.host]
             for c in candidates:
                 if is_external(c) or c.name in excluded:
                     continue
@@ -1815,32 +1903,50 @@ class RTLGenerator:
             for module in sorted(by_module):
                 if not _wrapper_params_ok(module):
                     continue
-                lines.append(f'hier_block -module "{module}"')
+                exported_modules.append(module)
+                # A module is declared locally only if NO component behind it is one
+                # my testbench reaches into: several isles may share a wrapper type.
+                if not any(n in tb_excluded for n in by_module[module]):
+                    lines.append(f'hier_block -module "{module}"')
 
         # THE MACRO DESCENT (both topologies): promote the internals every macro
-        # declared. The declarations are the child's own .vlt lines - the child
-        # already ran the eligibility rules on them in its build, and its excluded
-        # modules (preload targets, marked isles) are simply absent, so they stay
-        # inlined here, conservatively: the parent cannot know why the child left
-        # them out and must not guess. hier_block is a per-module declaration at
-        # any depth, so Verilator carves these out of the enclosing (inlined or
-        # excluded) macro content by name alone.
+        # declared. Since the local/exported split (2026-08-19) those declarations are
+        # everything STRUCTURALLY eligible in the child, including the modules the
+        # child's own testbench keeps inlined - the child's boot mode and preload list
+        # are its business, mine are mine. What the child still withholds are the
+        # structural refusals (a marked isle, a wrapper carrying a type parameter):
+        # those the parent must respect, and their absence from the declarations is
+        # how it does. hier_block is a per-module declaration at any depth, so
+        # Verilator carves these out of the enclosing macro content by name alone.
+        # OPEN CASE: a parent whose OWN testbench reaches into a promoted macro
+        # internal with a dotted path (a $readmemh into a nested memory - not done
+        # today, and the nested-boot design deliberately loads through the window
+        # instead) would need this loop to honour its own tb_excluded set. It fails
+        # loudly at build time ("Cannot access non-port symbols inside hierarchical
+        # block"), not silently, so the filter can wait for a case that needs it.
         promoted = set()
         for comp_name, modules in sorted(self.macro_hier_blocks.items()):
             for m in modules:
                 if m not in promoted:
                     promoted.add(m)
+                    exported_modules.append(m)
                     lines.append(f'hier_block -module "{m}"')
             if modules:
                 print(f"  [INFO] hier_block: '{comp_name}' is a macro declaring"
                       f" {len(modules)} internal blocks - promoted, wrapper inlined")
 
         write_if_changed(vlt_path, "\n".join(lines) + "\n")
-        # The list a macro export re-emits as pragmas: everything this .vlt declares.
-        self.hier_block_modules = [
-            l.split('"')[1] for l in lines if l.startswith('hier_block')]
+        # THE EXPORTED LIST IS NOT THE LOCAL ONE (see the split at the top of this
+        # method): a macro re-emits as pragmas everything STRUCTURALLY eligible, so a
+        # parent inherits the full set and applies its own testbench's restrictions.
+        # Deduplicated while preserving order - a wrapper type shared by several
+        # components is one declaration.
+        self.hier_block_modules = list(dict.fromkeys(exported_modules))
+        local_count = len(lines) - 1
+        extra = len(self.hier_block_modules) - local_count
         print(f"  -> Rendering verilator hierarchical config into {vlt_path.name} "
-              f"({len(lines) - 1} hier blocks)")
+              f"({local_count} hier blocks locally"
+              + (f", {len(self.hier_block_modules)} exported to a parent)" if extra > 0 else ")"))
 
         # STUB OF rand_verif_pkg, VERILATOR FLOW ONLY. common_verification's
         # rand_verif_pkg::rand_wait contains an event control ('repeat (cycles)

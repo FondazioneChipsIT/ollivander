@@ -613,18 +613,35 @@ if not uart_base:
   # nearly nothing to simulate: no clock edges, no fetch, no trap loop.
   bring_up = testbench_cfg.get("bring_up", "all")
   boot_mem_name = (config.software_stack or {}).get("boot_memory")
-  boot_mem_type = None
+  # THE BOOT MEMORY'S TYPE, BOTH SPELLINGS. On the NoC family the generator rewrites
+  # each component's 'type' to its generated TILE type before this template renders
+  # (rtl_generator.py, tile-wrapper staging), while a control group's
+  # target_component_type keeps the ISLE type the description wrote. Comparing only
+  # the current type therefore never matched on a NoC, so a 'minimal' bring-up left
+  # the group owning the boot memory gated and the host hung on its first fetch
+  # (noc_isle, 2026-08-19). original_isle_types is the map the generator keeps for
+  # exactly this reason - rtl_ir_builder resolves control groups through it too.
+  boot_mem_types = set()
   for _c in ([config.host] + (config.components or [])):
       if _c.name == boot_mem_name:
-          boot_mem_type = _c.type
+          boot_mem_types.add(_c.type)
+          _orig = original_isle_types.get(_c.name)
+          if _orig:
+              boot_mem_types.add(_orig)
+              boot_mem_types.add(_orig.replace('_isle', '_tile'))
           break
 
   def group_needed_at_bringup(g):
-      """Is this control group required before the firmware can run at all?"""
+      """Is this control group required before the firmware can run at all?
+
+      Under 'minimal' only the group that owns the boot memory is: without it the
+      memory holding the reset vector stays clock-gated and in reset, and the very
+      first fetch never completes. Everything else is the firmware's business."""
       if bring_up != "minimal":
           return True
-      target = getattr(g, "target_component_type", None)
-      return target is not None and target == boot_mem_type
+      targets = {getattr(g, "target_component_type", None),
+                 getattr(g, "target_tile_type", None)} - {None}
+      return bool(targets & boot_mem_types)
 
   jtag_clk_lines = []
   jtag_rst_lines = []

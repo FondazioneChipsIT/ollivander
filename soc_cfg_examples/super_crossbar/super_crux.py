@@ -386,6 +386,9 @@ config = OllivanderConfig(
     testbench={
         # Boot through the VIP's JTAG agent instead of hierarchical forces (wip 2.1).
         "boot_mode": "jtag",
+        # Only the boot-critical domains are enabled by the testbench; the firmware
+        # ungates each target when it needs it and powers it down afterwards.
+        "bring_up": "minimal",
         "boot_force_delay_ns": 5000000,
         "boot_force_fast_delay_ns": 1000000,
         "boot_timeout_ns": 10000000,

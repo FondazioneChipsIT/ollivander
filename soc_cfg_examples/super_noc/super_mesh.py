@@ -138,7 +138,9 @@ config = OllivanderConfig(
         abi="lp64d",                # Host Application Binary Interface for the software compiler
         cmodel="medany",            # Host Code Model for the software compiler
         placement={"logical": {"x": 9, "y": 3}},
-        export_interfaces=["gpio", "slink", "uart", "spi", "i2c"],
+        # 'jtag' is required by boot_mode "jtag": without it the TAP pins never reach
+        # the SoC top level and the VIP's debugger has nothing to drive.
+        export_interfaces=["jtag", "gpio", "slink", "uart", "spi", "i2c"],
         interfaces={
             "axi_master": True,
             "noc_networks": {"master": ["narrow"], "slave": ["narrow", "wide"], "noc_mode": "joined_narrow"},
@@ -266,6 +268,13 @@ config = OllivanderConfig(
     # --- TESTBENCH CONFIGURATION ---
     # Instructions for the simulation environment.
     testbench={
+        # Boot through the VIP's JTAG agent instead of hierarchical forces (wip 2.1):
+        # this is what lets the parent's own manager tile and memories leave the
+        # Verilator top unit.
+        "boot_mode": "jtag",
+        # Only the boot-critical domains are enabled by the testbench; the firmware
+        # ungates each target when it needs it and powers it down afterwards.
+        "bring_up": "minimal",
         # Duration in ns to hold scratchpad register force values during boot.
         # This must be long enough to survive internal Host reset sequences.
         "boot_force_delay_ns": 5000000,

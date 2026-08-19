@@ -96,7 +96,15 @@ sources:
 % endif
 
   # --- Testbench ---
-  # Target-specific files for simulation (e.g. QuestaSim).
+  # Target-specific files for simulation (e.g. QuestaSim). The verification IP and
+  # anything else the testbench requires belongs HERE, not among the RTL sources
+  # above: it is bench code, and a project that nests this one as a macro must never
+  # inherit it (the macro's export list carries the RTL requirements alone).
   - target: simulation
     files:
+% if tb_external_local_files:
+% for f in tb_external_local_files:
+      - ${f}
+% endfor
+% endif
       - ${rel_tb_dir}/tb_${config.project.name}.sv

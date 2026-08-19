@@ -282,8 +282,10 @@ components:
 # ------------------------------------------------------------------------------
 # Instructions for the simulation environment.
 testbench:
-  # Boot through the VIP's JTAG agent instead of hierarchical forces (wip 2.1).
-  boot_mode: jtag
+  # Kept on the force path deliberately: it covers force boot on the NoC family,
+  # and as super_noc's macro donor it is the case where the local exclusion must
+  # stay decoupled from the exported declarations (wip 2.1 residual 2).
+  boot_mode: force
   # Duration in ns to hold scratchpad register force values during boot.
   # This must be long enough to survive internal Host reset sequences.
   boot_force_delay_ns: 5000000
