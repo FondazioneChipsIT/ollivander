@@ -844,6 +844,12 @@ _ROOT_BLOCK_SPEC = {
                   # 'force' (default) keeps the hierarchical forces; 'jtag' drives the
                   # architected bring-up through the debug module via vip_ollivander_soc.
                   "boot_mode": str,
+                  # How much of a gated SoC the testbench brings up (wip 5.4):
+                  # 'all' (default) enables every managed domain and control
+                  # group; 'minimal' enables only the boot-critical set and lets
+                  # the firmware ungate the rest per phase. jtag boot only - the
+                  # force path has no per-phase story.
+                  "bring_up": str,
                   "preload_memories": [{"instance": str, "file": str}]},
     "software_stack": {"toolchain": str, "boot_memory": str,
                        "test_app": {"name": str, "auto_generate_c": bool, "baudrate": int,

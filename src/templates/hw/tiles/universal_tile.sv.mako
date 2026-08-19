@@ -250,6 +250,31 @@
               mst_adapt.append((net, req_t, rsp_t))
   adapted_mst_nets = {net for net, _, _ in mst_adapt}
 
+  # THE REG / LLC TYPES ARE PACKAGE TYPES, NOT TILE PARAMETERS. They used to stay
+  # in the tile's public parameter list, where the top then overrode each of them
+  # with... the very package type they already defaulted to. The round trip cost
+  # more than redundancy: a wrapper carrying a 'parameter type' cannot be a
+  # Verilator hier_block (5.050 fails rebuilding a type in __hierParameters), so
+  # six pass-through types were keeping the whole host tile inlined in the top
+  # unit - the single heaviest component of the design. Resolved here instead, at
+  # the isle instantiation, exactly like the AXI types above: same values, no
+  # public parameter, and the top's overrides disappear on their own because they
+  # are derived from the wrapper's declared parameters.
+  for _p, _fill in (
+      ('sync_reg_out_req_t',  f"{soc_pkg}::soc_reg_req_t"),
+      ('sync_reg_out_rsp_t',  f"{soc_pkg}::soc_reg_rsp_t"),
+      ('async_reg_out_req_t', f"{soc_pkg}::soc_reg_req_t"),
+      ('async_reg_out_rsp_t', f"{soc_pkg}::soc_reg_rsp_t"),
+      ('sync_reg_in_req_t',   f"{soc_pkg}::soc_reg_req_t"),
+      ('sync_reg_in_rsp_t',   f"{soc_pkg}::soc_reg_rsp_t"),
+      ('reg_req_t',           f"{soc_pkg}::soc_reg_req_t"),
+      ('reg_rsp_t',           f"{soc_pkg}::soc_reg_rsp_t"),
+      ('axi_llc_req_t',       f"{soc_pkg}::soc_axi_llc_req_t"),
+      ('axi_llc_resp_t',      f"{soc_pkg}::soc_axi_llc_resp_t"),
+  ):
+      if _p in all_params and _p not in isle_type_overrides:
+          isle_type_overrides[_p] = _fill
+
   for k in isle_type_overrides.keys():
       if k.endswith('_t') and k in all_params: del all_params[k]
 
@@ -405,8 +430,22 @@ module ${p_name}_${c_type}
 
 % if has_sysctrl_ports:
 <%
-  reg_rsp_type = isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t").strip()
-  reg_req_type = isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t").strip()
+  def resolve_port_type(decl):
+      """Map an isle port type onto what the TILE declares.
+
+      The isle names its own type PARAMETER (e.g. 'sync_reg_out_req_t'); the tile
+      resolves those parameters at the isle instantiation (isle_type_overrides)
+      and does not re-declare them, so a port that kept the parameter name would
+      reference an identifier that no longer exists in this scope. Substituting
+      the resolved value keeps the port and the instantiation on one type.
+      """
+      out = decl
+      for _k, _v in isle_type_overrides.items():
+          out = re.sub(rf"\b{re.escape(_k)}\b", _v, out)
+      return out
+
+  reg_rsp_type = resolve_port_type(isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t").strip())
+  reg_req_type = resolve_port_type(isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t").strip())
   if "::" not in reg_rsp_type: reg_rsp_type = f"{soc_pkg}::{reg_rsp_type}"
   if "::" not in reg_req_type: reg_req_type = f"{soc_pkg}::{reg_req_type}"
 %>
@@ -841,8 +880,8 @@ module ${p_name}_${c_type}
   // the PeakRDL System Controller. This allows the Host to access its 
   // core CSRs locally without a full NoC roundtrip.
   <%
-    reg_rsp_type = isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t").strip()
-    reg_req_type = isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t").strip()
+    reg_rsp_type = resolve_port_type(isle_info.get("ports", {}).get("reg_rsp_i", {}).get("type_dim", "soc_reg_rsp_t").strip())
+    reg_req_type = resolve_port_type(isle_info.get("ports", {}).get("reg_req_o", {}).get("type_dim", "soc_reg_req_t").strip())
     if "::" not in reg_rsp_type: reg_rsp_type = f"{soc_pkg}::{reg_rsp_type}"
     if "::" not in reg_req_type: reg_req_type = f"{soc_pkg}::{reg_req_type}"
     base_rsp_type = reg_rsp_type.split('[')[0].strip()

@@ -241,6 +241,13 @@ int main(void) {
         print_str(")\n");
     }
 % endif
+% if t["sys_ctrl_group"]:
+
+    /* Phase over: hand the group back to its power-on state, so the next
+     * target's phase does not pay for this one (isolate first, then reset and
+     * clock - see the helper's rationale). */
+    ${t_name}_disable();
+% endif
 
 % endfor
     print_str("[OFFLOAD] All targets passed.\n\x04");

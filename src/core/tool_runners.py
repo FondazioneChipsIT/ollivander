@@ -198,6 +198,43 @@ def _pack_regblock_storage(regs_sv: Path):
         print("  -> Packed the field_storage_t struct (verilator force compatibility).")
 
 
+def _pack_hwif_pkg(pkg_sv: Path):
+    """Turn every hwif typedef of the PeakRDL package into a packed struct, in place.
+
+    The companion of _pack_regblock_storage, one Verilator pass further down: the hwif
+    in/out structs cross the register block's boundary and, on a NoC, leave the manager
+    tile as a port. When that tile is a hierarchical block, V3ProtectLib must build the
+    DPI marshalling of every port of the child library, and on an unpacked struct port
+    it segfaults instead of erroring (Verilator 5.050, SIGSEGV in
+    V3Task::assignInternalToDpi via ProtectVisitor::handleOutput, met 2026-08-17 on
+    mesh_manager_tile). The hwif package contains hardware-only members (logic vectors
+    and nested structs of them), so the packed layout is bit-identical and every
+    consumer keeps accessing fields by name; unlike the storage transform, ALL typedefs
+    here are safe to pack, which is why this rewrites the whole package rather than one
+    isolated block. Member arrays ('} name[N];') move to a packed dimension like in the
+    storage transform.
+    """
+    import re
+    if not pkg_sv.is_file():
+        return
+    text = pkg_sv.read_text(encoding="utf-8")
+    packed = text.replace("typedef struct {", "typedef struct packed {")
+    # Unpacked member arrays are illegal inside a packed struct and must move to a
+    # packed dimension. Two shapes occur: '} name[N];' closing an anonymous nested
+    # struct (as in the storage transform), and 'some_t name[N];' on a typed member
+    # (the hwif packages declare repeated registers this way, e.g. 'version[1]').
+    # The whole file is this package's typedefs, so no other '[N];' shape exists.
+    packed = re.sub(r"\} (\w+)\[(\d+)\];",
+                    lambda mm: "} [%d:0] %s;" % (int(mm.group(2)) - 1, mm.group(1)),
+                    packed)
+    packed = re.sub(r"(\w+)\s+(\w+)\[(\d+)\];",
+                    lambda mm: "%s [%d:0] %s;" % (mm.group(1), int(mm.group(3)) - 1, mm.group(2)),
+                    packed)
+    if packed != text:
+        pkg_sv.write_text(packed, encoding="utf-8")
+        print("  -> Packed the hwif package structs (verilator protect-lib compatibility).")
+
+
 def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_dependencies: dict = None, bender_dir: Path = None, custom_rdl_paths: list = None):
     """
     Invokes PeakRDL to generate RTL and C headers from SystemRDL specifications.
@@ -277,6 +314,8 @@ def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_
             # so pick up whatever *_regs.sv the export just produced.
             for regblock_sv in hw_dir.glob("*_regs.sv"):
                 _pack_regblock_storage(regblock_sv)
+            for regblock_pkg in hw_dir.glob("*_regs_pkg.sv"):
+                _pack_hwif_pkg(regblock_pkg)
             print("  [SUCCESS] System Controller register RTL generated.")
 
             memory_map_file = reg_dir / f"{top_level_module_name}_memory_map.rdl"

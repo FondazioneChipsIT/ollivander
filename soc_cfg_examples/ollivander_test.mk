@@ -137,9 +137,13 @@ test-all:
 	echo "Fast-check Tools           : $(FAST_CHECK_TOOLS)" >> soc_cfg_examples/test_summary.log; \
 	echo "Run Simulation             : $(TEST_SIM)" >> soc_cfg_examples/test_summary.log; \
 	echo "Sim Tools                  : $(SIM_TOOLS)" >> soc_cfg_examples/test_summary.log; \
+	$(foreach _p,$(TEST_PROJECTS),$(if $(FAST_CHECK_TOOLS_$(_p)),echo "  override $(_p): fast-check = $(FAST_CHECK_TOOLS_$(_p))" >> soc_cfg_examples/test_summary.log; )$(if $(SIM_TOOLS_$(_p)),echo "  override $(_p): sim = $(SIM_TOOLS_$(_p))" >> soc_cfg_examples/test_summary.log; )) \
 	echo "----------------------------------------------------------------------" >> soc_cfg_examples/test_summary.log; \
 	failed_tests=""; \
+	$(foreach _p,$(TEST_PROJECTS),tools_fc_$(_p)="$(or $(FAST_CHECK_TOOLS_$(_p)),$(FAST_CHECK_TOOLS))"; tools_sim_$(_p)="$(or $(SIM_TOOLS_$(_p)),$(SIM_TOOLS))"; ) \
 	for p in $(TEST_PROJECTS); do \
+		eval "proj_fc_tools=\$$tools_fc_$$p"; \
+		eval "proj_sim_tools=\$$tools_sim_$$p"; \
 		if [ ! -d "soc_cfg_examples/$$p" ]; then \
 			proj_start=$$(date +%s); \
 			printf "\n----------------------------------------------------------------------\n"; \
@@ -191,7 +195,7 @@ test-all:
 			continue; \
 		fi; \
 		log_step "RTL Generation" "SUCCESS [$$step_dur]"; \
-		for tool in $(FAST_CHECK_TOOLS); do \
+		for tool in $$proj_fc_tools; do \
 			echo "  -> Running fast-check with tool: $$tool..."; \
 			mkdir -p soc_cfg_examples/$$p/logs; \
 			step_start=$$(date +%s); \
@@ -208,7 +212,7 @@ test-all:
 		done; \
 		if [ "$(TEST_SIM)" = "1" ]; then \
 			if [ -f "soc_cfg_examples/$$p/generated/sim/sim.mk" ]; then \
-				for stool in $(SIM_TOOLS); do \
+				for stool in $$proj_sim_tools; do \
 					if [ "$$stool" = "verilator" ]; then \
 						sim_bt=build-sim-verilator; sim_rt=run-sim-verilator; sim_ra=""; \
 					else \
@@ -320,7 +324,7 @@ check-tested:
 			if [ -f "$$f" ] && [ "$$(stat -c %Y "$$f")" -gt "$$start" ]; then echo "    $$f"; fi; \
 		done); \
 	echo "[CHECK] Scope of the last suite:"; \
-	grep -E "^Project Directories Tested|^Fast-check Tools|^Run Simulation|^Sim Tools" "$$summary" | sed 's/^/    /'; \
+	grep -E "^Project Directories Tested|^Fast-check Tools|^Run Simulation|^Sim Tools|^  override " "$$summary" | sed 's/^/    /'; \
 	if [ -n "$$newer" ]; then \
 		echo "[CHECK] These sources changed after that suite started:"; \
 		echo "$$newer"; \

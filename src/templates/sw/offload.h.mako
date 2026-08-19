@@ -92,6 +92,34 @@ static inline void ${t_name}_enable(void) {
     OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w = 0u;
     (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w;
 }
+
+/* Put the group back to its power-on state once this target's phase is over.
+ *
+ * The ORDER IS THE WHOLE POINT and it is the mirror image of the bring-up:
+ * isolate FIRST, then remove reset and clock. A block whose clock is stopped
+ * cannot answer anything, so a transaction that arrives after the clock is gone
+ * hangs the interconnect forever; with the fence closed first, that same
+ * transaction terminates cleanly against the isolation instead. The target is
+ * quiescent by construction at this point - its EOC has been observed and its
+ * return value read - so no traffic of its own is in flight.
+ *
+ * Beyond the simulated-cycle saving (a gated block has no clock edges to
+ * evaluate, which is what makes a 16-cluster array affordable one phase at a
+ * time), this exercises the power-down half of the domain's life cycle, which
+ * nothing in the suite used to cover. Re-enabling later goes back through
+ * ${t_name}_enable(), whose clock-then-reset order satisfies the FFAR contract
+ * (async-reset flops need a clocked window with reset asserted). */
+static inline void ${t_name}_disable(void) {
+% if t["sys_isolate"]:
+    OFFLOAD_SYS_REGS->isolate_ctrl.f.${t_name}_isolate = 1;
+    for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
+        if (OFFLOAD_SYS_REGS->isolate_status.f.${t_name}_isolated) break;
+    }
+% endif
+    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w = 0xFFFFFFFFu;
+    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w = 0u;
+    (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w;
+}
 % endif
 
 % if t["sys_isolate"]:

@@ -603,6 +603,29 @@ if not uart_base:
   # The JTAG twins of the force lines: same registers, same order, but real
   # system-bus writes through the generated `SYS_CTRL_* address macros of
   # <top>_regs.svh - one source of truth (the memory-map RDL) with the firmware.
+  # MINIMAL BRING-UP SET (wip 5.4). 'all' (the default) enables every managed
+  # domain and every control group from time zero: simple, and what the force
+  # path does. 'minimal' enables only what the SoC needs to reach its firmware -
+  # the managed domains (clock infrastructure, not a per-instance cost) and the
+  # group that owns the boot memory - and leaves the rest gated, for the firmware
+  # to bring up when its own phase needs it (the offload application already
+  # de-isolates and ungates its targets through SYS_CTRL). A gated block costs
+  # nearly nothing to simulate: no clock edges, no fetch, no trap loop.
+  bring_up = testbench_cfg.get("bring_up", "all")
+  boot_mem_name = (config.software_stack or {}).get("boot_memory")
+  boot_mem_type = None
+  for _c in ([config.host] + (config.components or [])):
+      if _c.name == boot_mem_name:
+          boot_mem_type = _c.type
+          break
+
+  def group_needed_at_bringup(g):
+      """Is this control group required before the firmware can run at all?"""
+      if bring_up != "minimal":
+          return True
+      target = getattr(g, "target_component_type", None)
+      return target is not None and target == boot_mem_type
+
   jtag_clk_lines = []
   jtag_rst_lines = []
   if config.gated_at_power_on:
@@ -614,6 +637,10 @@ if not uart_base:
       if config.system_controller and config.system_controller.auto_control_groups:
           for g in config.system_controller.auto_control_groups:
               gn = g.name.upper()
+              if not group_needed_at_bringup(g):
+                  jtag_clk_lines.append(f"  // '{g.name}' left gated (testbench.bring_up: minimal): the")
+                  jtag_clk_lines.append(f"  // firmware ungates it when its own phase needs it.")
+                  continue
               jtag_clk_lines.append(f"  i_vip.sba_write32(`SYS_CTRL_{gn}_CLK_EN_BASE_ADDR, 32'hFFFF_FFFF);")
               jtag_rst_lines.append(f"  i_vip.sba_write32(`SYS_CTRL_{gn}_RST_BASE_ADDR, 32'h0);")
   jtag_clk_str = "\n".join(jtag_clk_lines)
@@ -816,6 +843,13 @@ ctrl_groups = []
 if config.system_controller and config.system_controller.auto_control_groups:
     ctrl_groups = [g.name.lower() for g in config.system_controller.auto_control_groups]
 sys_ctrl_inst = f"dut.{host_instance_name}.i_sys_ctrl_regs" if config.topology.type == "noc" else "dut.i_sys_ctrl_regs"
+# On a NoC the register storage sits INSIDE the host tile, which under jtag boot
+# is a Verilator hierarchical block: a dotted path into it fails the build
+# ("Cannot access scope inside hierarchical block", met on mesh 2026-08-17).
+# Same rule as the AXI monitor and the boot forces - the testbench may look
+# inside the host only when the boot mode already requires it to be inlined.
+if config.topology.type == "noc" and boot_mode == "jtag":
+    ctrl_groups = []
 group_sensitivity = " or ".join([f"{sys_ctrl_inst}.field_storage.{g}_rst.{g}_rst.value" for g in ctrl_groups])
 %>
 % if sensitivity_list:

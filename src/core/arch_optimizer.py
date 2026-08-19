@@ -162,11 +162,21 @@ def autoconfigure_host(soc_config):
     soc_config.host.parameters.setdefault('RegNumSlvAsync', host_reg_slv_async)
     soc_config.host.parameters.setdefault('RegNumSlvSync', host_reg_slv_sync)
     
-    # Inject standard RegBus types to prevent SystemVerilog from flattening parameterized structs into bits.
-    soc_config.host.parameters.setdefault('sync_reg_out_req_t', f'{soc_config.project.soc_pkg_name}::soc_reg_req_t')
-    soc_config.host.parameters.setdefault('sync_reg_out_rsp_t', f'{soc_config.project.soc_pkg_name}::soc_reg_rsp_t')
-    soc_config.host.parameters.setdefault('async_reg_out_req_t', f'{soc_config.project.soc_pkg_name}::soc_reg_req_t')
-    soc_config.host.parameters.setdefault('async_reg_out_rsp_t', f'{soc_config.project.soc_pkg_name}::soc_reg_rsp_t')
+    # Inject standard RegBus types to prevent SystemVerilog from flattening
+    # parameterized structs into bits.
+    #
+    # NoC ONLY. On a NoC the host is reached through its TILE wrapper, which since
+    # 2026-08-17 resolves these package types at the isle instantiation instead of
+    # re-exposing them as `parameter type` (a typed wrapper cannot be a Verilator
+    # hier_block, and six pass-through types were keeping the host tile inlined in
+    # the top unit). Injecting them here anyway would make the top override
+    # parameters the tile no longer declares - a discarded override, reported as
+    # vopt-2732, which is precisely the defect class the suite keeps visible.
+    if soc_config.topology.type != "noc":
+        soc_config.host.parameters.setdefault('sync_reg_out_req_t', f'{soc_config.project.soc_pkg_name}::soc_reg_req_t')
+        soc_config.host.parameters.setdefault('sync_reg_out_rsp_t', f'{soc_config.project.soc_pkg_name}::soc_reg_rsp_t')
+        soc_config.host.parameters.setdefault('async_reg_out_req_t', f'{soc_config.project.soc_pkg_name}::soc_reg_req_t')
+        soc_config.host.parameters.setdefault('async_reg_out_rsp_t', f'{soc_config.project.soc_pkg_name}::soc_reg_rsp_t')
 
     # 5. Auto-configure mailbox components based on their interrupt definitions.
     for comp in comps_list:

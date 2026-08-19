@@ -389,6 +389,7 @@ Instructs the simulation environment on how to initialize the SoC. Since Ollivan
 | :-------------------------- | :------ | :------------------------------------------------------------- |
 | `preload_memories`          | List    | Memory arrays to initialize in the testbench via `$readmemh`.   |
 | `boot_mode`                 | String  | How the testbench boots the host: `"force"` (default) or `"jtag"`. See section 4.1. |
+| `bring_up`                  | String  | How much of a gated SoC the testbench powers up: `"all"` (default) or `"minimal"`. See section 4.2. |
 | `boot_force_delay_ns`       | Integer | How long the testbench holds the boot-mode and scratchpad force |
 |                             |         | values, in ns. Must outlast the host's internal reset sequence. |
 | `boot_force_fast_delay_ns`  | Integer | The same, for the shorter `fast` variant of the run.            |
@@ -425,6 +426,15 @@ Requirements for `"jtag"`, both checked or supplied by the generator:
 *   The host component must declare the JTAG boot contract in its header: `HasJtagBoot`, `JtagIdCode` (the expected IDCODE) and `JtagScratchOffset` (the scratch-register offset inside the host's address window). `cheshire_isle` declares all three.
 
 Among the example projects, five run `boot_mode: "jtag"` as their standard configuration (`noc`, `crossbar_isle`, `noc_isle`, `noc_subtile`, `super_crossbar`), keeping the architectural boot path under permanent regression. `crossbar` and `super_noc` deliberately stay on `"force"`: it is the schema default and a supported feature, and it would lose regression coverage if no example exercised it.
+
+### 4.2 `bring_up`: how much of the SoC the testbench powers up
+
+`bring_up` decides how many of the gated clock domains and control groups the generated testbench enables before handing control to the firmware. It applies to `boot_mode: "jtag"` only - the force path has no per-phase story - and it splits one job across two owners.
+
+*   `"all"` (the default) enables every managed domain and every auto control group during bring-up. The firmware finds the whole SoC awake, which is what a hello-world test wants.
+*   `"minimal"` enables only the boot-critical set: the domains and groups whose component type matches the boot memory. Everything else stays gated, and the **firmware** ungates each block when it needs it - the generated `offload` application already does, calling `<target>_enable()` before using a target and `<target>_disable()` after (see section 5.1). The result is closer to how a real chip runs: a domain is powered only while it is in use, and the power-down path gets exercised by the test itself instead of being dead code.
+
+Measured on the `noc` example, `"minimal"` cut the simulated run from 11m55s to 9m30s under QuestaSim, because the idle clusters no longer consume simulator cycles while the host boots. The saving grows with the number of gated blocks the test does not touch.
 
 ---
 
@@ -469,6 +479,8 @@ A component qualifies as an **offload target** when both halves of its boot cont
 *   its SoC-side half matches the contract kind: a `control_wire` target needs `system_config` with `fetch_enable: true` and `has_eoc_status: true` (plus `isolate: true` where the domain resets isolated — the generated helpers then open the fence first), while a `memory_mapped` target needs only its slave window.
 
 When a target's component type sits under a `clk_rst_control` auto control group (so its instances power on gated), the generated helpers ungate the whole group before the first slave-window access; the same happens for the payload memory's group, before the payload load.
+
+With `bring_up: minimal` (section 4.2) that ungating is no longer redundant but load-bearing: the testbench leaves everything but the boot path gated, so the firmware's `<target>_enable()` is what makes a target reachable at all. Symmetrically, the generated application calls `<target>_disable()` at the end of each phase - isolate the target and wait for the isolation status, then assert its reset and drop its clock enable, in that order, so no transaction is cut mid-flight. The pair therefore tests the full power cycle of every target, not only its wake-up.
 
 A `memory_mapped` component whose placement is a **box** (an instance array) is driven as an array: the helpers address each instance through its own window (base plus index times `size_per_instance`), the firmware configures and wakes **every** instance before polling any — a genuinely parallel launch — and the checksum is verified per instance. A single-instance target is simply the N = 1 case of the same code.
 

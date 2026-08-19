@@ -1377,7 +1377,7 @@ class RTLGenerator:
 
         # Emit the Verilator hierarchical configuration next to the other cfg/ artifacts:
         # the sim.mk verilator targets reference it unconditionally.
-        self.generate_verilator_config(cfg_dir, hw_dir, top_level_module_name)
+        self.generate_verilator_config(cfg_dir, hw_dir, top_level_module_name, comp_info)
 
         # Explicitly require the Clock Generator for the Phase 8 Chip Wrapper
         if getattr(self.soc_config.clock_tree, 'generators', 0) > 0:
@@ -1609,7 +1609,7 @@ class RTLGenerator:
                 
             write_if_changed(top_file_path, content)
 
-    def generate_verilator_config(self, cfg_dir, hw_dir, top_level_module_name):
+    def generate_verilator_config(self, cfg_dir, hw_dir, top_level_module_name, comp_info=None):
         """Emit cfg/<top>.vlt: the hier_block declarations for the Verilator flow.
 
         Hierarchical verilation is the only build mode the emitted verilator targets use:
@@ -1620,7 +1620,7 @@ class RTLGenerator:
         information only it has:
 
         - every tile module is a candidate, single-instance ones included: each child
-          verilates in its own bounded lane and is cached across rebuilds, so the win
+          verilates in its own bounded lane and is reused within the build, so the win
           is not only the N-instances-one-build sharing (every instance shares one
           parameterization by construction of the templates) but the lane itself;
         - a module is EXCLUDED when the generated testbench reaches into it hierarchically
@@ -1637,7 +1637,7 @@ class RTLGenerator:
         mesh), preload targets stay for their $readmemh paths, and every other
         non-external component whose wrapper survives the parameter rules becomes its
         own child library — valuable even at one instance apiece, because each child
-        verilates in its own bounded lane and is cached across rebuilds.
+        verilates in its own bounded lane and is reused within the build (between-build reuse is deliberately disabled in sim.mk, 2026-08-18).
 
         A config with no hier_block entries remains valid input and simply degenerates
         to a flat build.
@@ -1646,6 +1646,17 @@ class RTLGenerator:
         vlt_dir.mkdir(parents=True, exist_ok=True)
         vlt_path = vlt_dir / f"{top_level_module_name}.vlt"
         lines = ["`verilator_config"]
+
+        # THE HOST'S EXCLUSION IS A CONSEQUENCE OF THE BOOT MODE, NOT A PROPERTY
+        # OF THE HOST. Under 'force' the generated testbench reaches into the host
+        # with dotted paths (the boot scratch, the bring-up registers) and Verilator
+        # cannot cross a hier-block boundary with one, so the host must stay in the
+        # top unit. Under 'jtag' every one of those writes travels the debug module
+        # instead: no dotted path survives, and the host - the heaviest single
+        # component of every example - becomes eligible like any other. This is the
+        # dividend the force-free bring-up exists for (wip 2.1).
+        host_boot_mode = (self.soc_config.testbench or {}).get("boot_mode", "force")
+        host_reachable_by_tb = (host_boot_mode != "jtag")
 
         def _wrapper_params_ok(module):
             """Parameter rule shared by both topologies: a wrapper carrying a TYPE in
@@ -1715,8 +1726,9 @@ class RTLGenerator:
                               if (x, y) not in grid_owner)
 
             # Exclusion 1: tiles the testbench references hierarchically.
-            excluded = {self.soc_config.host.name}
+            excluded = {self.soc_config.host.name} if host_reachable_by_tb else set()
             tb_cfg = self.soc_config.testbench or {}
+
             for mem in tb_cfg.get("preload_memories", []):
                 # 'instance' is the documented key; 'name' survives as its historical
                 # alias. Until the single-instance rule was dropped this lookup never
@@ -1790,7 +1802,13 @@ class RTLGenerator:
                 excluded.add(comp_name)
             prefix = self.soc_config.project.module_prefix
             by_module = {}
-            for c in (self.soc_config.components or []):
+            # The host is a candidate on the same terms as any other isle, unless
+            # the testbench still reaches into it (force boot); it lives outside
+            # 'components', which is why it used to be excluded by enumeration.
+            candidates = list(self.soc_config.components or [])
+            if not host_reachable_by_tb:
+                candidates.append(self.soc_config.host)
+            for c in candidates:
                 if is_external(c) or c.name in excluded:
                     continue
                 by_module.setdefault(f"{prefix}_{c.type}", []).append(c.name)
@@ -1823,6 +1841,32 @@ class RTLGenerator:
             l.split('"')[1] for l in lines if l.startswith('hier_block')]
         print(f"  -> Rendering verilator hierarchical config into {vlt_path.name} "
               f"({len(lines) - 1} hier blocks)")
+
+        # STUB OF rand_verif_pkg, VERILATOR FLOW ONLY. common_verification's
+        # rand_verif_pkg::rand_wait contains an event control ('repeat (cycles)
+        # @(posedge clk)'), and a hierarchical child whose subtree elaborates the
+        # package fails with "Unsupported: --lib-create with --timing and delays"
+        # (met 2026-08-17: cheshire_isle was the only isle affected, and the task
+        # is never called by generated code - proven by rebuilding the subtree
+        # with this very stub, which verilates clean even under --no-timing).
+        # The stub lands next to the .vlt, outside every Bender-visible tree, and
+        # enters compile_verilator_src.f alone while the flist filter drops the
+        # real file (VERILATOR_FLIST_EXCLUDE): the QuestaSim flows keep compiling
+        # the true package. Same pattern as the VHDL auto-stubs, and like them a
+        # declared coverage loss of the license-free flow (docs/getting_started.md).
+        stub_path = vlt_dir / "rand_verif_pkg_stub.sv"
+        write_if_changed(stub_path, "\n".join([
+            "// AUTO-GENERATED by Ollivander - Verilator flow only, do not edit.",
+            "// Timing-free stand-in for common_verification's rand_verif_pkg: the",
+            "// real task waits a random number of clock cycles, which Verilator",
+            "// rejects inside a hierarchical block (--lib-create with --timing and",
+            "// delays). No generated code calls it; the stub only keeps the symbol",
+            "// resolvable. The QuestaSim flows compile the real package instead.",
+            "package rand_verif_pkg;",
+            "  task automatic rand_wait(input int unsigned min, max, ref logic clk);",
+            "  endtask",
+            "endpackage",
+        ]) + "\n")
 
     def generate_chip_wrapper(self, comp_info, wiring_matrix, global_defines):
         """
