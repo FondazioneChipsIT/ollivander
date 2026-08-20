@@ -47,6 +47,11 @@ endif
 # spatz_cc and the mesh cluster tile, 2026-08-1x). Never observed at or below
 # -j32; the build-time cost of the cap is minutes, a corrupt build costs a run.
 VERILATOR_JOBS ?= 32
+# Simulation threads of the built model - unrelated to VERILATOR_JOBS above, which is
+# build parallelism. Four is the measured trade-off on mesh (see the flag rationale);
+# raise it only on a machine you are not sharing, and never without checking that the
+# run still prints its UART output and the testbench's EOT.
+VERILATOR_THREADS ?= 4
 # bender's 'script verilator' format implicitly defines TARGET_SYNTHESIS, which turns the
 # olli_* simulation placeholders (the reset generator above all) into empty shells and
 # silently holds the whole SoC in reset under two-state semantics: prep-sim-verilator
@@ -79,11 +84,34 @@ VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer -
 # - hierarchical verilation is the only build mode: repeated tiles verilate once as child
 #   libraries (declared in the generated sim/verilator/$(TOP_MOD).vlt) and the monolithic build costs
 #   hours and tens of GB instead of minutes and ~3 GB per unit;
-# - --threads is deliberately absent: it inflated verilation from minutes to hours per unit;
-# - OPT_FAST=-O2 (vs the verilated.mk default -Os) is a run-time win whose compile cost
-#   ccache absorbs; the explicit -std is needed because the installed Verilator module was
-#   configured against the system g++ 8.5 and records no standard at all, while --timing
-#   generates C++20 coroutine code;
+# - --threads 4 cuts the run from 19m37s to 6m33s on mesh, UART and EOT unchanged. It was
+#   deliberately absent until 2026-08-20 on a measurement taken when nothing was actually
+#   boxed (see the .vlt note below): back then it inflated verilation, and the top was
+#   elaborating the whole design. Eight threads gave a further 29% only, not worth being
+#   more sensitive to a shared machine's load, and peak memory was 3.5 GB at both.
+#   CAVEAT, and the reason VERILATOR_THREADS exists as a knob: the gain may be
+#   family-dependent. On crux the run went 9m03s at one thread to 10m15s at four, i.e.
+#   threads appear to COST there, which fits the structure - mesh spreads sixteen
+#   identical tiles, crux has eight mostly single-instance isles, and a boxed block is
+#   evaluated inline on the calling thread, so there is nothing to spread. Not
+#   established: that comparison also moved -O2 to -Os. The control measurement is crux
+#   with VERILATOR_THREADS=1 at -Os, deliberately deferred past this commit; if it
+#   confirms, this default becomes per-topology instead of global;
+# - -DVL_TIME_CONTEXT is a CORRECTNESS flag, needed whether or not threads are enabled.
+#   --main makes Verilator define it for the top and only the top (verified: with --main
+#   the generated .mk carries it, without --main it does not), while the boxed children
+#   are verilated separately and never get it - so parent and children disagree on where
+#   simulated time lives, across the boxed boundary, in every build. Single-threaded that
+#   asymmetry is survivable and went unnoticed through two validated projects; with
+#   --threads it segfaults at simulated time zero inside a timing coroutine. Forcing the
+#   define through -CFLAGS reaches parent and children alike and removes it;
+# - OPT_FAST is deliberately NOT overridden, leaving verilated.mk's -Os. Forcing -O2 was
+#   justified by a run-time win measured on the flat model; re-measured with the design
+#   actually boxed it is 7m10s against 6m33s, i.e. no win at all. -march=native (7 s on
+#   6m30s, and it binds the binary to the building host's CPU) and Verilator's own -O3
+#   (build 7m38s -> 14m23s for nothing) were measured and rejected with it. The explicit
+#   -std stays: the installed Verilator module records no standard, while --timing
+#   generates C++20 coroutine code that the gcc-toolset compiler needs to be told about;
 # - -Wno-ENUMVALUE is the twin of run-sim's '-suppress 8386' (FlooNoC assigns the collective
 #   opcode from raw flit bits; upstream PR candidate);
 # - assertions are structurally off: no --assert, plus ASSERTS_OFF for the common_cells
@@ -100,13 +128,34 @@ VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer -
 #   file): without it every IP whose manifest omits its own include dir parses under vlog
 #   and dies under Verilator - softex and vendored ibex on the crossbar family;
 # - the component-declared defines (the DEFINE: mechanism, e.g. FEATURE_ICACHE_STAT) are
-#   appended below, mirroring what INJECT_MACROS_SCRIPT patches into every vlog call.
+#   appended below, mirroring what INJECT_MACROS_SCRIPT patches into every vlog call;
+# - --hierarchical-params-file is what actually makes hier_block take effect for a block
+#   that declares parameters: without it the top-level verilation inlines a clone per
+#   instance and the child library, built at full cost, is never referenced - no warning
+#   of any kind. The named file is generated empty next to the .vlt; see the comment on
+#   its emission in src/core/rtl_generator.py.
 VERILATOR_SIM_FLAGS ?= --cc --main --build --hierarchical -j $(VERILATOR_JOBS) \
-	--MAKEFLAGS "CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2" \
+	--hierarchical-params-file $(OUT_DIR)/sim/verilator/$(TOP_MOD)_hier_params.v \
+	--threads $(VERILATOR_THREADS) -CFLAGS -DVL_TIME_CONTEXT \
+	--MAKEFLAGS "CFG_CXXFLAGS_STD=-std=gnu++20" \
 	--timing --timescale 1ns/1ps -Wno-fatal -Wno-TIMESCALEMOD -Wno-ASCRANGE \
 	-Wno-SYMRSVDWORD -Wno-ENUMVALUE --error-limit 200 +define+ASSERTS_OFF \
 	+define+HCI_ASSERT_DELAY= \
-	--relative-includes${(" " + " ".join(["+define+" + d for d in global_defines])) if global_defines else ""}
+	--relative-includes${(" " + " ".join(["+define+" + d for d in global_defines])) if global_defines else ""} \
+	$(VERILATOR_EXTRA_FLAGS)
+# Appended to the measured set above, and therefore inherited by the emission
+# invocation too - which matters for anything that changes the generated C++
+# (--threads is the case in point). Empty by default, so the flag set stays the
+# flow's contract and this stays what it is: the hook for one-off experiments
+# and for a user tuning their own build.
+VERILATOR_EXTRA_FLAGS ?=
+# Variable assignments handed to the COMPILATION phase's make invocations. The two-phase
+# hierarchical build below drives that phase itself, so these cannot travel on the
+# verilator command line and used to be written out three times by hand - which is how
+# an OPT_FAST=-O2 survived here after being removed from the flags above, silently
+# undoing the decision. One definition, one place to change: only the C++ standard is
+# forced, and OPT_FAST is deliberately absent (see the flag rationale).
+VERILATOR_BUILD_VARS ?= CFG_CXXFLAGS_STD=-std=gnu++20
 # The same flags without --build: the hierarchical build is driven in two explicit
 # phases below (emission of every child, THEN compilation), which is what keeps a
 # child's sources from being compiled while they are still being written.
@@ -535,12 +584,12 @@ build-sim-verilator: prep-sim-verilator build-sw
 		fi; \
 		printf "\n[MAKE] Phase 2/2: compiling children and top unit...\n"; \
 		$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD)_hier.mk -j $(VERILATOR_JOBS) \
-			CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2 hier_build \
+			$(VERILATOR_BUILD_VARS) hier_build \
 		|| { printf "\n[MAKE] Compilation failed; retrying once (belt and braces, see the note above).\n"; \
 		     $(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD)_hier.mk -j $(VERILATOR_JOBS) \
-			CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2 hier_build; }; \
+			$(VERILATOR_BUILD_VARS) hier_build; }; \
 	else \
-		$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD).mk CFG_CXXFLAGS_STD=-std=gnu++20 OPT_FAST=-O2 -j $(VERILATOR_JOBS); \
+		$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD).mk $(VERILATOR_BUILD_VARS) -j $(VERILATOR_JOBS); \
 	fi && \
 	cd $(VERILATOR_WORK) && g++ -o Vtb_$(TOP_MOD) Vtb_$(TOP_MOD)__main.o \
 		-Wl,--start-group libVtb_$(TOP_MOD).a Vtb_$(TOP_MOD)__ALL.a libverilated.a $$(ls V*/lib*.a 2>/dev/null) -Wl,--end-group \

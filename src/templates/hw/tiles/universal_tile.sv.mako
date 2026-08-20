@@ -107,14 +107,26 @@
               continue # Port handled, move to next one
 
           # Passthrough ports for architecture wiring
-          # NOTE: instance identity (window base/size of a self-decoding subtile) is
-          # deliberately NOT a port family: it travels as the InstanceBaseAddr /
-          # InstanceWindowSize header parameters (docs/hw/subtile_standardization.md),
-          # which reach the isle through the ordinary parameter path below.
+          # NOTE ON INSTANCE IDENTITY, REVISED 2026-08-20. It used to travel only as
+          # the InstanceBaseAddr / InstanceWindowSize header parameters. The WINDOW
+          # SIZE still does - it is identical across the instances of a component, so
+          # it costs nothing - but the BASE may differ per instance, and a differing
+          # parameter value is a DISTINCT MODULE for Verilator: sixteen identical
+          # cluster tiles became sixteen hierarchical specializations, each elaborated
+          # and compiled separately, with elaboration accounting for half of a cold
+          # build (docs/developer/wip, section 5.2.-1). A subtile that needs the base
+          # only at run time therefore takes it as the port below, and the generator
+          # drives the constant from the top. The parameter path stays for everything
+          # not converted yet: l2_isle, for one, is convertible on inspection (its
+          # base feeds mapping rules that dyn_mem takes on a PORT, so the localparams
+          # could be wires) but is instantiated once per project, and one instance
+          # cannot be specialized twice - there is nothing to collapse and no reason
+          # to touch the boot memory's decoding. The day an array of it appears, the
+          # conversion is the same three lines as here.
           passthrough_ports = {
               'sys_clk_i', 'sys_rst_ni', 'pwr_on_rst_ni', 'rt_clk_i', 'boot_mode_i', 'bootmode_i',
               'axi_isolate_i', 'axi_isolated_o', 'fetch_en_i', 'en_sa_boot_i', 'boot_addr_i',
-              'busy_o', 'eoc_o', 'debug_req_i'
+              'busy_o', 'eoc_o', 'debug_req_i', 'instance_base_addr_i'
           }
           
           if comp.interrupts:

@@ -283,6 +283,17 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                 if m:
                     inst.connections.append(PortConnection(m.group(1).strip(), m.group(2).strip()))
 
+        # INSTANCE IDENTITY ON A PORT (2026-08-20). The twin of the InstanceBaseAddr
+        # parameter above, for isles that take the base at run time instead: it MUST
+        # be connected explicitly, because the tie-off below would otherwise drive it
+        # to '0 and the isle would decode its window at address zero - a valid design
+        # that never boots. Same value and same macro rebase as the parameter path.
+        if "instance_base_addr_i" in (c_info.get("ports") or {}):
+            b_val, _ = get_instance_window(comp)
+            expr = (f"MACRO_BASE_ADDR + {b_val}"
+                    if soc_config.project.build_mode == "macro" else b_val)
+            inst.connections.append(PortConnection("instance_base_addr_i", expr))
+
         # Auto-tie-off remaining ports
         connected_ports = {c.port_name for c in inst.connections}
         for port_name, p_info in c_info.get("ports", {}).items():
@@ -444,7 +455,16 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 # default, every window access missed the internal decode and hung
                 # the host (found 2026-08-10).
                 supported = c_info.get("supported_params", {})
-                if "InstanceBaseAddr" in supported:
+                # THE BASE MAY ARRIVE AS A PORT INSTEAD OF A PARAMETER (2026-08-20).
+                # A subtile that needs the window base only at run time declares
+                # 'instance_base_addr_i' and the constant is DRIVEN, not elaborated:
+                # every instance then shares one module, where a per-instance
+                # parameter made Verilator specialize the tile once per instance
+                # (sixteen cluster tiles, sixteen elaborations - wip 5.2.-1). The
+                # parameter path stays for the isles that build elaboration-time
+                # structures from the value, l2_isle's mapping rules being the case.
+                base_is_port = "instance_base_addr_i" in tile_ports
+                if base_is_port or "InstanceBaseAddr" in supported:
                     slaves = (c.interfaces or {}).get("axi_slave", [])
                     if isinstance(slaves, dict):
                         slaves = [slaves]
@@ -453,7 +473,12 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                         s_base = int(s_base, 0) if isinstance(s_base, str) else int(s_base)
                         s_size = slaves[0].get("size_per_instance", slaves[0].get("size", 0))
                         s_size = int(s_size, 0) if isinstance(s_size, str) else int(s_size)
-                        inst.parameters["InstanceBaseAddr"] = f"64'h{s_base + inst_idx * s_size:X}"
+                        base_lit = f"64'h{s_base + inst_idx * s_size:X}"
+                        if base_is_port:
+                            inst.connections.append(PortConnection(
+                                "instance_base_addr_i", base_lit))
+                        else:
+                            inst.parameters["InstanceBaseAddr"] = base_lit
                         if "InstanceWindowSize" in supported:
                             inst.parameters["InstanceWindowSize"] = f"64'h{s_size:X}"
 

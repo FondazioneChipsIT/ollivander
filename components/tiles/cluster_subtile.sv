@@ -32,7 +32,10 @@ module cluster_subtile
   // component shares (memory isles and clusters alike). Values are PROJECT-LOCAL in macro builds too: the
   // border adapters rebase incoming traffic before it reaches any tile.
   // -------------------------------------------------------------------------------
-  parameter longint unsigned InstanceBaseAddr   = 64'h0,
+  // NOTE: the window BASE arrives as a PORT (instance_base_addr_i), not as a
+  // parameter: see the port declaration for the measurement that forced the
+  // change. The window SIZE stays a parameter - it is identical across the
+  // instances of one component, so it costs no extra specialization.
   parameter longint unsigned InstanceWindowSize = 64'h0,
   // The geometry this subtile cannot depart from, stated as literals so that Ollivander
   // can read it and validate the connection to the bus this subtile is attached to
@@ -90,6 +93,15 @@ module cluster_subtile
   input  logic                                    clk_i,
   input  logic                                    rst_ni,
   input  logic                                    test_mode_i,
+  // INSTANCE IDENTITY AS A PORT, not a parameter (changed 2026-08-20). The window
+  // base differs per instance, and for Verilator a differing parameter value makes
+  // a DISTINCT module: sixteen identical cluster tiles became sixteen hierarchical
+  // specializations, elaborated and compiled sixteen times over, and elaboration is
+  // half of a cold build (docs/developer/wip, section 5.2.-1). Nothing here needs
+  // the value at elaboration time - it only reaches the cluster's own
+  // cluster_base_addr_i input - so a constant driven from the top synthesizes
+  // identically while collapsing the sixteen specializations into one.
+  input  logic [63:0]                             instance_base_addr_i,
   
   // Cluster ports
   input  logic                      [snitch_cluster_pkg::NrCores-1:0] debug_req_i,
@@ -271,7 +283,7 @@ module cluster_subtile
     // region (unique global IDs are an open question, docs/developer/wip).
     .hart_base_id_i        ('0),
     // The instance identity parameters, filled per instance by the generator.
-    .cluster_base_addr_i   (snitch_cluster_pkg::addr_t'(InstanceBaseAddr)),
+    .cluster_base_addr_i   (snitch_cluster_pkg::addr_t'(instance_base_addr_i)),
     .cluster_base_offset_i (snitch_cluster_pkg::addr_t'(InstanceWindowSize)),
     .mxip_i            (mxip),
     .clk_d2_bypass_i   ('0),

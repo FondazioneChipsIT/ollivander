@@ -95,6 +95,8 @@ For custom memory tiles (e.g., `l2_shared_memory_tile.sv` or generic memory tile
 *   `InstanceBaseAddr` (`parameter logic [63:0]` or `longint unsigned`): Base address of the memory mapping range.
 *   `InstanceWindowSize` (`parameter int unsigned` or `longint unsigned`): Size of the memory block in bytes.
 
+The base address may equally be declared as the **port** `input logic [63:0] instance_base_addr_i`, which is the preferred form and takes precedence when a header declares both: it keeps repeated tiles a single module under hierarchical verilation instead of one child library per instance, and it is the only form that can carry a relocatable `MACRO_BASE_ADDR + offset`. `InstanceWindowSize` has no port form. Section 2.6 of the subtile standardization owns the full rule, including how to consume the port inside the block.
+
 These are the **instance identity parameters** (section 2.6 of the subtile standardization owns the full definition): the generator fills them per instance in the top-level mesh wrapper from the component's `axi_slave` window whenever the header declares them, so each coordinate-specific tile decodes its own region. They replaced the historical `L2BaseAddr`/`L2MemSize` pair on 2026-08-11.
 
 ### 5.3 Simulation Force-Boot Parameters (Host Tiles Only)

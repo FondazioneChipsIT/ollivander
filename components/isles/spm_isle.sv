@@ -20,7 +20,14 @@ module spm_isle #(
   parameter int unsigned AxiMaxWriteTxns = 1,
   parameter int unsigned InstanceWindowSize      = 32'h00040000,
   parameter int unsigned SpmTileSize     = InstanceWindowSize,
-  parameter logic [63:0] InstanceBaseAddr     = 64'h00000000,
+  // NO 'InstanceBaseAddr' HERE, DELIBERATELY. The instance identity convention
+  // (docs/hw/subtile_standardization.md 2.6) is opt-in from the header, and this
+  // isle decodes nothing against a base address: it answers on the low address
+  // bits of whatever transaction the tile hands it. Declaring the parameter used
+  // to make the generator fill it PER INSTANCE, and a differing parameter value
+  // is a distinct module for Verilator: eight identical memory tiles became eight
+  // hierarchical specializations, verilated and compiled eight times over
+  // (measured on noc, 2026-08-20). An unused parameter is not free.
   parameter int unsigned SpmWordsPerBank = 1024,
   parameter int unsigned SpmDataWidth    = 64,
   parameter type         axi_req_t       = logic,

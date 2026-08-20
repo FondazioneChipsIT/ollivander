@@ -36,7 +36,10 @@ module l2_isle
   /// Mapping rules
   parameter int unsigned NumRules   = dyn_mem_pkg::NUM_MAP_TYPES * NumPort,
   /// L2 Memory settings
-  parameter logic [63:0] InstanceBaseAddr = 64'h88000000,
+  // NOTE: the window BASE arrives on the 'instance_base_addr_i' PORT, not as a
+  // parameter - see the port declaration for the reason. The window SIZE stays a
+  // parameter: it is identical across the instances of one component, so it adds
+  // no specialization.
   parameter int unsigned InstanceWindowSize  = 32'h00200000,
   /// Non-changable parameters
   localparam int unsigned AxiStrbWidth    = AxiDataWidth / 8,
@@ -89,6 +92,14 @@ module l2_isle
   input  logic                            clk_i            ,
   input  logic                            rst_ni           ,
   input  logic                            pwr_on_rst_ni    ,
+  // INSTANCE IDENTITY AS A PORT (2026-08-20, for uniformity with cluster_subtile).
+  // A differing parameter value is a distinct module for Verilator, so a memory
+  // instantiated N times would be elaborated and compiled N times; nothing here
+  // needs the base at elaboration time - the mapping rules below are DRIVEN into
+  // dyn_mem_top's 'mapping_rules_i' input - so a constant from the top synthesizes
+  // identically. Today this isle is single-instance and there is nothing to
+  // collapse; the port is what keeps an array of it free from the moment it appears.
+  input  logic [63:0]                     instance_base_addr_i,
   input  logic [NumPort-1:0][AsyncAxiInArWidth-1:0] async_axi_in_ar_data_i,
   input  logic [NumPort-1:0][       LogDepth:0] async_axi_in_ar_wptr_i,
   output logic [NumPort-1:0][       LogDepth:0] async_axi_in_ar_rptr_o,
@@ -184,24 +195,30 @@ typedef struct packed {
   logic [AxiAddrWidth-1:0] end_addr;
 } map_rule_t;
 
-localparam logic [63:0] L2Port0InterlBase    = InstanceBaseAddr;
-localparam logic [63:0] L2Port0NonInterlBase = InstanceBaseAddr + InstanceWindowSize / 2;
-localparam logic [63:0] L2Port1InterlBase    = InstanceBaseAddr + InstanceWindowSize;
-localparam logic [63:0] L2Port1NonInterlBase = InstanceBaseAddr + InstanceWindowSize + InstanceWindowSize / 2;
+// Derived from the port, so signals rather than localparams: dyn_mem_top takes the
+// rule array on an input, and a constant driven from the top is elaborated once for
+// every instance instead of once per instance.
+logic [63:0] l2_port0_interl_base, l2_port0_non_interl_base;
+logic [63:0] l2_port1_interl_base, l2_port1_non_interl_base;
+assign l2_port0_interl_base     = instance_base_addr_i;
+assign l2_port0_non_interl_base = instance_base_addr_i + InstanceWindowSize / 2;
+assign l2_port1_interl_base     = instance_base_addr_i + InstanceWindowSize;
+assign l2_port1_non_interl_base = instance_base_addr_i + InstanceWindowSize + InstanceWindowSize / 2;
 
-localparam map_rule_t [NumRules-1:0] MappingRules = '{
+map_rule_t [NumRules-1:0] MappingRules;
+assign MappingRules = '{
   '{idx       : dyn_mem_pkg::INTERLEAVE,
-    start_addr: L2Port0InterlBase,
-    end_addr  : L2Port0InterlBase + InstanceWindowSize/2},
+    start_addr: l2_port0_interl_base,
+    end_addr  : l2_port0_interl_base + InstanceWindowSize/2},
   '{idx       : dyn_mem_pkg::NONE_INTER,
-    start_addr: L2Port0NonInterlBase,
-    end_addr  : L2Port0NonInterlBase + InstanceWindowSize/2},
+    start_addr: l2_port0_non_interl_base,
+    end_addr  : l2_port0_non_interl_base + InstanceWindowSize/2},
   '{idx       : dyn_mem_pkg::INTERLEAVE,
-    start_addr: L2Port1InterlBase,
-    end_addr  : L2Port1InterlBase + InstanceWindowSize/2},
+    start_addr: l2_port1_interl_base,
+    end_addr  : l2_port1_interl_base + InstanceWindowSize/2},
   '{idx       : dyn_mem_pkg::NONE_INTER,
-    start_addr: L2Port1NonInterlBase,
-    end_addr  : L2Port1NonInterlBase + InstanceWindowSize/2}
+    start_addr: l2_port1_non_interl_base,
+    end_addr  : l2_port1_non_interl_base + InstanceWindowSize/2}
 };
 
 dyn_mem_top #(
