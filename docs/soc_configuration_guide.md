@@ -25,6 +25,7 @@ host: ...                # 7. Main Manager component
 components: ...          # 8. List of Subordinate/Peripheral components
 testbench: ...           # 9. Simulation configuration (Optional)
 software_stack: ...      # 10. Firmware compilation setup (Optional)
+simulation: ...          # 11. Simulator flags & options for power users (Optional)
 ```
 
 ---
@@ -475,7 +476,7 @@ With `test_app.name: "offload"` (which requires `auto_generate_c: true`, since e
 
 A component qualifies as an **offload target** when both halves of its boot contract exist:
 
-*   the isle wrapper declares the `Offload*` localparam contract — the IP-internal half: the register layout behind its slave window, the core count and the payload ISA/ABI (see `docs/hw/isle_standardization.md`);
+*   the isle wrapper declares the `Offload*` localparam contract — the IP-internal half: the register layout behind its slave window, the core count and the payload ISA/ABI (see `docs/hw/component_standardization.md`);
 *   its SoC-side half matches the contract kind: a `control_wire` target needs `system_config` with `fetch_enable: true` and `has_eoc_status: true` (plus `isolate: true` where the domain resets isolated — the generated helpers then open the fence first), while a `memory_mapped` target needs only its slave window.
 
 When a target's component type sits under a `clk_rst_control` auto control group (so its instances power on gated), the generated helpers ungate the whole group before the first slave-window access; the same happens for the payload memory's group, before the payload load.
@@ -500,7 +501,93 @@ make generate OFFLOAD_TARGETS="pulp_cluster"   # restrict the offload test to a 
 **Toolchain prerequisite**: the payloads are cross-compiled with the *host* toolchain, so it must provide the multilibs for every target ISA/ABI pair (e.g. `rv32im/ilp32` next to the host's `rv64`). Check with `riscv64-unknown-elf-gcc -print-multi-lib`; a toolchain built without multilib support fails at payload compile time.
 ---
 
-## 6. What Happens When the Configuration Is Wrong
+## 6. Simulation Flags & Options (`simulation`)
+
+An optional section for users who know the simulators and want direct control over the generated flows. Everyone else should omit it: the defaults are exactly what the test suite validates, and an absent section produces the same Makefiles as a section spelling the defaults out.
+
+Three rules govern every field. **Values are raw** - what you write is what the tool receives, with no translation layer that would have to track the tools' own option sets. **A field either APPENDS to a structural set or REPLACES a default, and each is marked below** - the extras and the guard lists (`suppress`, `warnings`, `flist_exclude`, `bender_targets`) append, so a guard can be extended from here but not removed; `plusargs`, the `firmware` flag lists and `run_do` replace their defaults, so the defaults can be dropped on purpose (writing `plusargs: ["+foo"]` loses `+fast_boot`). **Everything lands only in the generated Makefiles** - a project exported as a macro does not carry its `simulation` section to the parent, whose own section (or defaults) always wins.
+
+Appending is not a cage. Every derived list lives in one `?=` Makefile variable, so the command line replaces it wholesale for a single run (`make run-sim QUESTA_RUN_SUPPRESS=3009,8386` un-suppresses 13314 for that run); Verilator warnings need no override at all, because the tool's own negation appends - `warnings: ["-Wwarn-TIMESCALEMOD"]` re-enables a structurally suppressed warning, last flag wins. What has no YAML escape by design are the structural file-list exclusions: they are load-bearing (removing them breaks the build), and a structural entry that turns out wrong for a project is a generator defect to report, not something to work around silently.
+
+What Ollivander owns stays out of this section on purpose: the structural flags of each flow (`--cc --main --hierarchical --timing`, timescales, the hierarchical parameters file), the sets derived from the design (bender targets from the dependency registry, `+define+` from component `DEFINE:` pragmas, the hierarchical block set), and coupled pairs - `verilator.threads` is the visible half of one, and the generator emits or drops the `-DVL_TIME_CONTEXT` that must travel with `--threads` (both directions were measured to crash when mixed).
+
+```yaml
+simulation:
+  assertions: false             # renders ASSERTIONS ?= 0 (QuestaSim -nosva set). The
+                                # Verilator flow is structurally assertion-free either way.
+  plusargs: ["+fast_boot"]      # run plusargs of BOTH simulators. REPLACES the
+                                # default (["+fast_boot"]): list it to keep it
+  bender_targets: ["my_feat"]   # extra -t on both dependency resolutions
+  firmware:
+    cflags: ["-O2", "-g3"]      # replaces the host application's default -g -O0 tail
+    ldflags: ["-Wl,-Map=fw.map"]
+    cluster_cflags: ["-O3"]     # replaces the offload payload's default -O2 -g
+
+  questa:
+    vlog: ["+cover"]            # extra --vlog-arg values at compile-script generation
+    vsim: ["-sv_seed", "1234"]  # extra args of the batch run
+    gui: ["-assertdebug"]       # extra args of the GUI run only
+    run_do: "run 100us; quit"   # REPLACES the batch -do script. The one non-additive
+                                # field: you own the whole sequence, and forgetting
+                                # 'quit' leaves a batch suite waiting forever.
+    suppress: [9999]            # message numbers ADDED to every derived -suppress list
+                                # (compile driver, elaboration, run, fast-check)
+    waveform:
+      enable: true              # batch runs elaborate with +acc, log to $(TOP_MOD).wlf
+      scope: "tb_mesh/dut"      # subtree to log; empty logs the whole design. Costly:
+                                # +acc lowers vopt optimization exactly like the GUI.
+
+  verilator:
+    threads: 4                  # value of --threads; 0 and 1 both mean "no threading"
+                                # (Verilator's own --threads 1 builds the threaded
+                                # scheduler, which is the broken half on this flow)
+    verilate_jobs: 32           # -j of the emission phase. Capped by default: -j48
+                                # produced truncated generated C++ (see the Makefile note)
+    compile_jobs: 32            # -j of the compile phase, safe to raise independently
+    bender_targets: ["vl_only"] # extra -t of the Verilator file list only
+    flist_exclude: ["my_ip/bad_file\\.sv"]  # regexes ADDED to the structural exclusions
+    verilate: ["--trace-depth", "3"]        # raw extras on the verilation command line
+    warnings: ["-Wno-WIDTH"]    # ADDED to the shared warning list (build AND fast-check)
+    compile: ["OPT_FAST=-O3"]   # raw make assignments of the C++ compile phase
+    run: ["+verilator+seed+42"] # raw args appended to the built executable
+    keep_work: false            # 1 keeps verilator_work across builds (warm rebuilds)
+```
+
+The example above is illustrative and mixes defaults with non-defaults. The authoritative per-field behaviour:
+
+| Field | Behaviour | Default when omitted / structural base it appends to |
+| --- | --- | --- |
+| `assertions` | replaces | `true` (renders `ASSERTIONS ?= 1`; `false` renders `0`) |
+| `plusargs` | **replaces** | `["+fast_boot"]` - list it again to keep it |
+| `bender_targets` | appends | base: the resolved dependency-registry targets (`BENDER_TARGETS`) |
+| `firmware.cflags` | **replaces** | `-g -O0` (the tail after the derived `-march/-mabi/-mcmodel/-f*-sections`) |
+| `firmware.ldflags` | appends | base: `-T linker.ld -nostartfiles -Wl,--gc-sections` |
+| `firmware.cluster_cflags` | **replaces** | `-O2 -g` (the offload payload's tail) |
+| `questa.vlog` | appends | base: `--vlog-arg="-timescale 1ns/1ps"` |
+| `questa.vsim` | appends | base: none (empty) |
+| `questa.gui` | appends | base: `-voptargs=+acc` |
+| `questa.run_do` | **replaces** | `run -all; quit` (with `waveform.enable`: prefixed by `log -r ...; `) |
+| `questa.suppress` | appends | bases per context: compile `13233`, elaboration `13314,13233`, run `13314,3009,8386` |
+| `questa.waveform.enable` | replaces | `false` |
+| `questa.waveform.scope` | replaces | empty = log the whole design (`log -r /*`) |
+| `verilator.threads` | replaces | `4`; values 0 and 1 drop `--threads` AND `-DVL_TIME_CONTEXT` together |
+| `verilator.verilate_jobs` | replaces | `32` (the emission-truncation cap - see the Makefile note) |
+| `verilator.compile_jobs` | replaces | `32` |
+| `verilator.bender_targets` | appends | base: `-t verilator -t cv32e40p_exclude_tracer -t scm_use_latch_scm` (on top of `BENDER_TARGETS`) |
+| `verilator.flist_exclude` | appends | base: `behavioral/tc_pad\.sv\|common_verification/src/rand_verif_pkg\.sv` |
+| `verilator.verilate` | appends | base: the structural verilation flags (see `VERILATOR_SIM_FLAGS`) |
+| `verilator.warnings` | appends | base: `-Wno-fatal -Wno-TIMESCALEMOD -Wno-ASCRANGE -Wno-SYMRSVDWORD -Wno-ENUMVALUE` |
+| `verilator.compile` | appends | base: `CFG_CXXFLAGS_STD=-std=gnu++20` (make assignments of the C++ phase) |
+| `verilator.run` | appends | base: the common `plusargs` |
+| `verilator.keep_work` | replaces | `false` (the work directory is wiped before every build) |
+
+There is no `verilator.waveform`: under the hierarchical flow a dump needs a generated main that owns it, and a flag here would ship a segfault - the analysis and the reference implementation are tracked in the developer notes. For waveforms today, use the QuestaSim flow (`make gui`, or `questa.waveform` for batch runs).
+
+The test suite validates the **defaults**, not user-composed combinations: a configuration built from these fields is yours to validate, and the first check is always the same - the run still prints its `[UART]` output and the testbench's EOT line.
+
+---
+
+## 7. What Happens When the Configuration Is Wrong
 
 Ollivander refuses a configuration it cannot make sense of, rather than generating from the part it understood. Every check below runs before any file is written, so the report you get is the whole story and the output directory is left untouched.
 

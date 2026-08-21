@@ -25,9 +25,8 @@ A component enters the generator through a standardized SystemVerilog wrapper. W
 
 | Guide | Wrapper kind |
 | :--- | :--- |
-| [Isle Standardization](hw/isle_standardization.md) | `*_isle.sv` — the universal component model: single unified AXI boundary, works in both topologies. **Start here**: the other two build on it |
-| [Subtile Standardization](hw/subtile_standardization.md) | `*_subtile.sv` — NoC components exposing the native narrow/wide dual boundary; includes the driven-versus-verified parameter contract |
-| [Tile Standardization](hw/tile_standardization.md) | `*_tile.sv` — fully custom NoC nodes that instantiate their own router |
+| [Testbench Guide](testbench_guide.md) | The generated verification environment: testbench anatomy, VIP agents, boot sequences per mode, preload mechanics, monitors, pass criterion, and what the test applications execute. |
+| [Component Standardization](hw/component_standardization.md) | The single contract for `*_isle.sv`, `*_subtile.sv` and `*_tile.sv`: one common part, then the particularities of each level. Start here to wrap an IP. |
 | [Clocking, Reset & CDC Requirements](hw/clocking_reset_cdc_requirements.md) | The clock/reset interface every wrapper must honour, and where the CDC boundaries sit |
 | [APB Subsystem Isle](hw/apb_subsystem_isle.md) | The one dynamically *generated* isle: how the peripheral subsystem is assembled and which IPs it knows |
 

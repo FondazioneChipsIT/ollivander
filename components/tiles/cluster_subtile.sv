@@ -23,7 +23,7 @@ module cluster_subtile
 #(
   parameter bit UseHWPE = 1'b0,
   // -------------------------------------------------------------------------------
-  // INSTANCE IDENTITY (see docs/hw/subtile_standardization.md, "Instance identity
+  // INSTANCE IDENTITY (see docs/hw/component_standardization.md, "Instance identity
   // parameters"). A subtile that decodes its own slave window declares this pair and
   // Ollivander fills it PER INSTANCE at tile instantiation (rtl_ir_builder.py):
   // base_addr + index * size_per_instance for the base, size_per_instance for the
@@ -59,7 +59,7 @@ module cluster_subtile
   localparam int unsigned AxiWideOutIdWidth   = 3,   // snitch_cluster_pkg::WideIdWidthOut
   // ---------------------------------------------------------------------------------
   // Offload boot contract - "memory_mapped", the snitch-family protocol (semantics in
-  // docs/hw/isle_standardization.md section 9; the spatz isle carries the sibling
+  // docs/hw/component_standardization.md section 8; the spatz isle carries the sibling
   // realization). The cores boot the cluster's internal PC-RELATIVE bootrom and park
   // in WFI; the host writes the payload entry point into scratch[1] of the cluster
   // peripherals, wakes every hart through cl_clint_set, and collects per-core

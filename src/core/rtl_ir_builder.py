@@ -22,7 +22,7 @@ def get_instance_window(comp, inst_idx=0):
     """
     Calculate one instance's slave window (base address, size) for a component that
     decodes its own window internally - the values behind the InstanceBaseAddr /
-    InstanceWindowSize identity parameters (docs/hw/subtile_standardization.md 2.6).
+    InstanceWindowSize identity parameters (docs/hw/component_standardization.md section 1.6).
     """
     base_addr = 0
     size_val = 0
@@ -140,7 +140,7 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                 b_val = int(b_addr, 16) if isinstance(b_addr, str) else b_addr
                 inst.parameters[p] = f"64'h{b_val:X}"
             elif p == 'InstanceBaseAddr':
-                # INSTANCE IDENTITY (docs/hw/subtile_standardization.md section 2.6): a
+                # INSTANCE IDENTITY (docs/hw/component_standardization.md section 1.6): a
                 # component that decodes its own slave window internally (the pulp
                 # cluster's cluster_bus_wrap, the memory isles' mapping rules) declares
                 # this parameter and receives the axi_slave 'base_addr' the description
@@ -438,7 +438,7 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 c_info = comp_info.get(c.name, {})
                 tile_ports = c_info.get("ports", {})
 
-                # INSTANCE IDENTITY parameters (docs/hw/subtile_standardization.md,
+                # INSTANCE IDENTITY parameters (docs/hw/component_standardization.md,
                 # section 2.6): a component that decodes its own slave window declares
                 # InstanceBaseAddr / InstanceWindowSize in its header, and every
                 # instance receives ITS OWN window here - base + inst_idx * stride,

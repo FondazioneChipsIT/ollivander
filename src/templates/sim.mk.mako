@@ -5,9 +5,43 @@
   # This template generates the main simulation Makefile: the QuestaSim flow
   # (build-sim/run-sim/gui) and the license-free Verilator flow (*-verilator).
   # It dynamically aggregates compilation targets from the central environment
-  # registry (BENDER_TARGETS), automates the extraction of the SystemVerilog 
+  # registry (BENDER_TARGETS), automates the extraction of the SystemVerilog
   # compilation script via Bender, handles C firmware compilation, and provides
   # advanced features like macro injection and rapid RTL stubbing (fast-check).
+  #
+  # The optional `simulation:` section of the SoC description parameterizes the
+  # user-tunable knobs below. Contract (soc_schema.py, SimulationConfig): raw
+  # values, additive lists on top of the structural sets, and an ABSENT section
+  # renders byte-identically to a section spelling out the defaults - which is
+  # the property the validation checks. `sim(...)` walks the section and falls
+  # back to the given default at the first missing level.
+  def sim(*path, default=None):
+      obj = getattr(config, "simulation", None)
+      for key in path:
+          if obj is None:
+              return default
+          obj = getattr(obj, key, None)
+      return obj if obj is not None else default
+  sim_plusargs   = " ".join(sim("plusargs", default=["+fast_boot"]))
+  # User warnings/suppressions/targets are ADDED to the structural sets.
+  vl_warn_extra  = " " + " ".join(sim("verilator", "warnings", default=[])) if sim("verilator", "warnings", default=[]) else ""
+  q_supp_extra   = "".join(",%d" % n for n in sim("questa", "suppress", default=[]))
+  vl_excl_extra  = "".join("|" + r for r in sim("verilator", "flist_exclude", default=[]))
+  bt_extra       = "".join(" -t " + t for t in sim("bender_targets", default=[]))
+  vl_bt_extra    = "".join(" -t " + t for t in sim("verilator", "bender_targets", default=[]))
+  q_vlog_extra   = "".join(' --vlog-arg="%s"' % a for a in sim("questa", "vlog", default=[]))
+  q_vsim_extra   = " " + " ".join(sim("questa", "vsim", default=[])) if sim("questa", "vsim", default=[]) else ""
+  vl_emit_extra  = " " + " ".join(sim("verilator", "verilate", default=[])) if sim("verilator", "verilate", default=[]) else ""
+  vl_build_extra = " " + " ".join(sim("verilator", "compile", default=[])) if sim("verilator", "compile", default=[]) else ""
+  vl_run_extra   = " " + " ".join(sim("verilator", "run", default=[])) if sim("verilator", "run", default=[]) else ""
+  q_gui_extra    = " " + " ".join(sim("questa", "gui", default=[])) if sim("questa", "gui", default=[]) else ""
+  # Waveform (QuestaSim batch): +acc at elaboration plus a log command ahead of
+  # the run, exactly what the gui target does interactively. A custom run_do
+  # wins over the derived one - it REPLACES, the section's one non-additive field.
+  wave_on        = bool(sim("questa", "waveform", "enable", default=False))
+  wave_scope     = sim("questa", "waveform", "scope", default="") or ""
+  wave_log       = ("log -r %s/*; " % wave_scope.rstrip("/")) if wave_scope else "log -r /*; "
+  q_run_do       = sim("questa", "run_do", default=None) or ((wave_log if wave_on else "") + "run -all; quit")
 %>
 # ==============================================================================
 # Auto-generated simulation Makefile for ${config.project.name}
@@ -21,7 +55,7 @@ PYTHON   ?= python3
 MAKE     ?= make
 FAST_CHECK_TOOL ?= ${env_config.get("fast_check_tool", "questa")}
 VERILATOR ?= verilator
-VSIM_FLAGS ?= +fast_boot
+VSIM_FLAGS ?= ${sim_plusargs}${q_vsim_extra}${" -voptargs=+acc -wlf $(TOP_MOD).wlf" if wave_on else ""}
 # vopt optimizes fully by default in current Questa releases: the -O<num> levels were removed
 # and passing one only earns a "(vopt-14495) '-O' option is obsolete, and will be ignored"
 # note on every run. There is nothing left to hand to vopt for a batch run, and no
@@ -31,10 +65,27 @@ VSIM_FLAGS ?= +fast_boot
 VSIM_OPT_FLAGS ?=
 
 # Assertions control (set ASSERTIONS=0 to disable SVA)
-ASSERTIONS ?= 1
+ASSERTIONS ?= ${"0" if sim("assertions", default=True) is False else "1"}
 ifeq ($(ASSERTIONS),0)
   VSIM_OPT_FLAGS += -nosva -noimmedassert -nopsl
 endif
+
+# Message suppression, one variable per context because the numbers are
+# context-specific by documented policy (see the run-sim severity comment):
+# the compile driver hides 13233 alone, elaboration adds 13314, the run hides
+# the third-party runtime noise. User additions from `simulation.questa.
+# suppress` are appended to ALL three - a message declared benign for the
+# project is benign in every context it can appear in.
+QUESTA_COMPILE_SUPPRESS ?= 13233${q_supp_extra}
+QUESTA_ELAB_SUPPRESS    ?= 13314,13233${q_supp_extra}
+QUESTA_RUN_SUPPRESS     ?= 13314,3009,8386${q_supp_extra}
+# The batch run's -do script. REPLACED, not extended, by simulation.questa.run_do:
+# whoever sets it owns the whole sequence, 'quit' included - without it a batch
+# suite waits on an interactive prompt forever.
+QUESTA_RUN_DO  ?= ${q_run_do}
+# GUI-only elaboration flags: +acc keeps internal signals accessible (slower,
+# but signals can be logged without recompiling - the point of the GUI).
+QUESTA_GUI_FLAGS ?= -voptargs=+acc${q_gui_extra}
 
 # ==============================================================================
 # Verilator simulation flow - the license-free twin of build-sim / run-sim.
@@ -46,12 +97,32 @@ endif
 # C++ (a hier-block .cpp cut mid-expression, g++ 'expected )' at end of input;
 # spatz_cc and the mesh cluster tile, 2026-08-1x). Never observed at or below
 # -j32; the build-time cost of the cap is minutes, a corrupt build costs a run.
-VERILATOR_JOBS ?= 32
+VERILATOR_JOBS ?= ${sim("verilator", "verilate_jobs", default=32)}
+# Parallelism of the COMPILE phase, a separate hazard domain: the -j48 truncation
+# above is a defect of emission, while phase 2 runs nothing but g++ (see the
+# two-phase note in the build recipe), so it may safely exceed the cap.
+VERILATOR_COMPILE_JOBS ?= ${sim("verilator", "compile_jobs", default=32)}
 # Simulation threads of the built model - unrelated to VERILATOR_JOBS above, which is
 # build parallelism. Four is the measured trade-off on mesh (see the flag rationale);
 # raise it only on a machine you are not sharing, and never without checking that the
 # run still prints its UART output and the testbench's EOT.
-VERILATOR_THREADS ?= 4
+VERILATOR_THREADS ?= ${sim("verilator", "threads", default=4)}
+# --threads and -DVL_TIME_CONTEXT are a COUPLED PAIR and switch together, in
+# whichever direction. Measured as a full 2x2 on crux (2026-08-21): the boxed
+# children need the define exactly when the model is threaded (without it the
+# parent and children disagree on where simulated time lives and the run
+# segfaults at time zero inside a timing coroutine), and need it ABSENT exactly
+# when it is not (forced on a non-threaded model, same crash). 0 and 1 both
+# mean "no threading": Verilator's own --threads 1 still builds the threaded
+# scheduler, which is the broken half, not the single-threaded model.
+ifeq ($(filter 0 1,$(VERILATOR_THREADS)),)
+  VERILATOR_THREAD_OPTS = --threads $(VERILATOR_THREADS) -CFLAGS -DVL_TIME_CONTEXT
+else
+  VERILATOR_THREAD_OPTS =
+endif
+# Wiped-by-default policy: see the build recipe. 1 keeps the work directory for
+# targeted debug and warm rebuilds (a no-change rebuild is seconds, not minutes).
+VERILATOR_KEEP_WORK ?= ${"1" if sim("verilator", "keep_work", default=False) else "0"}
 # bender's 'script verilator' format implicitly defines TARGET_SYNTHESIS, which turns the
 # olli_* simulation placeholders (the reset generator above all) into empty shells and
 # silently holds the whole SoC in reset under two-state semantics: prep-sim-verilator
@@ -73,13 +144,19 @@ VERILATOR_THREADS ?= 4
 # hierarchical child (--lib-create with --timing and delays, met 2026-08-17 on
 # cheshire_isle). A timing-free stub generated next to the .vlt replaces it in this
 # flow only (see prep-sim-verilator); QuestaSim keeps compiling the real package.
-VERILATOR_FLIST_EXCLUDE ?= behavioral/tc_pad\.sv|common_verification/src/rand_verif_pkg\.sv
+VERILATOR_FLIST_EXCLUDE ?= behavioral/tc_pad\.sv|common_verification/src/rand_verif_pkg\.sv${vl_excl_extra}
 # scm_use_latch_scm: scm's manifest swaps its latch-based register files for FF
 # equivalents under the 'verilator' target, but that branch misses
 # register_file_1r_1w_test_wrap, which hier-icache instantiates (MODMISSING).
 # Forcing the latch set keeps Verilator compiling the same scm sources as
 # QuestaSim - the flow's byte-equivalence principle; inert where scm is absent.
-VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer -t scm_use_latch_scm
+VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer -t scm_use_latch_scm${vl_bt_extra}
+# ONE warning list for the whole flow, shared by the full build and the
+# fast-check lint: the two used to carry hand-written copies that had already
+# diverged (the lint was missing -Wno-fatal and -Wno-ENUMVALUE) - the same
+# defect class as the OPT_FAST that survived in three recipe bodies. User
+# additions from simulation.verilator.warnings land here, and therefore in both.
+VERILATOR_WARN ?= -Wno-fatal -Wno-TIMESCALEMOD -Wno-ASCRANGE -Wno-SYMRSVDWORD -Wno-ENUMVALUE${vl_warn_extra}
 # Flag rationale, all measured on the mesh example:
 # - hierarchical verilation is the only build mode: repeated tiles verilate once as child
 #   libraries (declared in the generated sim/verilator/$(TOP_MOD).vlt) and the monolithic build costs
@@ -136,12 +213,12 @@ VERILATOR_TARGETS ?= $(BENDER_TARGETS) -t verilator -t cv32e40p_exclude_tracer -
 #   its emission in src/core/rtl_generator.py.
 VERILATOR_SIM_FLAGS ?= --cc --main --build --hierarchical -j $(VERILATOR_JOBS) \
 	--hierarchical-params-file $(OUT_DIR)/sim/verilator/$(TOP_MOD)_hier_params.v \
-	--threads $(VERILATOR_THREADS) -CFLAGS -DVL_TIME_CONTEXT \
+	$(VERILATOR_THREAD_OPTS) \
 	--MAKEFLAGS "CFG_CXXFLAGS_STD=-std=gnu++20" \
-	--timing --timescale 1ns/1ps -Wno-fatal -Wno-TIMESCALEMOD -Wno-ASCRANGE \
-	-Wno-SYMRSVDWORD -Wno-ENUMVALUE --error-limit 200 +define+ASSERTS_OFF \
+	--timing --timescale 1ns/1ps $(VERILATOR_WARN) \
+	--error-limit 200 +define+ASSERTS_OFF \
 	+define+HCI_ASSERT_DELAY= \
-	--relative-includes${(" " + " ".join(["+define+" + d for d in global_defines])) if global_defines else ""} \
+	--relative-includes${(" " + " ".join(["+define+" + d for d in global_defines])) if global_defines else ""}${vl_emit_extra} \
 	$(VERILATOR_EXTRA_FLAGS)
 # Appended to the measured set above, and therefore inherited by the emission
 # invocation too - which matters for anything that changes the generated C++
@@ -155,12 +232,12 @@ VERILATOR_EXTRA_FLAGS ?=
 # an OPT_FAST=-O2 survived here after being removed from the flags above, silently
 # undoing the decision. One definition, one place to change: only the C++ standard is
 # forced, and OPT_FAST is deliberately absent (see the flag rationale).
-VERILATOR_BUILD_VARS ?= CFG_CXXFLAGS_STD=-std=gnu++20
+VERILATOR_BUILD_VARS ?= CFG_CXXFLAGS_STD=-std=gnu++20${vl_build_extra}
 # The same flags without --build: the hierarchical build is driven in two explicit
 # phases below (emission of every child, THEN compilation), which is what keeps a
 # child's sources from being compiled while they are still being written.
 VERILATOR_EMIT_FLAGS = $(filter-out --build,$(VERILATOR_SIM_FLAGS))
-VERILATOR_RUN_FLAGS ?= +fast_boot
+VERILATOR_RUN_FLAGS ?= ${sim_plusargs}${vl_run_extra}
 VERILATOR_WORK ?= verilator_work
 # The C++20 coroutines require a modern compiler; RHEL hosts ship them as gcc-toolset SCLs.
 # The newest installed toolset is sourced in the build recipe when the default g++ cannot
@@ -190,7 +267,7 @@ with open("logs/debug/debug_testbench.txt", "w") as f:
   b_targets = [t for t in b_targets if t != "scm_use_fpga_scm"]
   bender_targets_str = " ".join([f"-t {t}" for t in b_targets])
 %>\
-BENDER_TARGETS ?= ${bender_targets_str}
+BENDER_TARGETS ?= ${bender_targets_str}${bt_extra}
 
 # Fallback when bender is neither on PATH nor loadable as a module: it is installed
 # into the generator's virtual environment bin/, the same place getting_started.md
@@ -415,7 +492,7 @@ prep-sim: update-hw
 	@# sampled TDO at +15 ps, reading every DMI bit one cycle early. Units that
 	@# declare their own timescale are unaffected.
 	@mkdir -p $(OUT_DIR)/sim/questa
-	$(BENDER) script vsim $(BENDER_TARGETS) --vlog-arg="-timescale 1ns/1ps" > $(OUT_DIR)/sim/questa/compile_vsim.tcl
+	$(BENDER) script vsim $(BENDER_TARGETS) --vlog-arg="-timescale 1ns/1ps"${q_vlog_extra} > $(OUT_DIR)/sim/questa/compile_vsim.tcl
 % if global_defines:
 	@printf "\n[MAKE] Injecting compilation macros (+define+) into compilation script...\n"
 	@python3 -c "$$INJECT_MACROS_SCRIPT" $(OUT_DIR)/sim/questa/compile_vsim.tcl
@@ -425,7 +502,7 @@ build-sim: prep-sim build-sw
 	@printf "\n[MAKE] Compiling RTL with QuestaSim (vlog)...\n"
 	@mkdir -p logs
 	@$(call ensure-tools,vsim:questa); \
-	$(VSIM) -c -l logs/compile.log -suppress 13233 -do "set err [source $(OUT_DIR)/sim/questa/compile_vsim.tcl]; if {\$$err == 1} {quit -code 1}; quit"
+	$(VSIM) -c -l logs/compile.log -suppress $(QUESTA_COMPILE_SUPPRESS) -do "set err [source $(OUT_DIR)/sim/questa/compile_vsim.tcl]; if {\$$err == 1} {quit -code 1}; quit"
 
 fast-check: prep-sim
 	@printf "\n[MAKE] Generating exact stubs for external IPs...\n"
@@ -433,11 +510,11 @@ fast-check: prep-sim
 	@$(call ensure-tools,$(if $(filter verilator,$(FAST_CHECK_TOOL)),verilator:verilator,vsim:questa)); \
 	if [ "$(FAST_CHECK_TOOL)" = "verilator" ]; then \
 		printf "\n[MAKE] Linting/Checking fast RTL with Verilator...\n"; \
-		$(VERILATOR) -Wno-TIMESCALEMOD -Wno-ASCRANGE -Wno-SYMRSVDWORD -f $(OUT_DIR)/sim/verilator/compile_verilator_fast.f --top-module $(TOP_MOD); \
+		$(VERILATOR) $(VERILATOR_WARN) -f $(OUT_DIR)/sim/verilator/compile_verilator_fast.f --top-module $(TOP_MOD); \
 	else \
 		printf "\n[MAKE] Compiling fast RTL (packages and stubs) with QuestaSim...\n"; \
 		mkdir -p logs; \
-		$(VSIM) -c -l logs/fast_compile.log -suppress 13233 -do "source $(OUT_DIR)/sim/questa/compile_vsim_fast.tcl; quit"; \
+		$(VSIM) -c -l logs/fast_compile.log -suppress $(QUESTA_COMPILE_SUPPRESS) -do "source $(OUT_DIR)/sim/questa/compile_vsim_fast.tcl; quit"; \
 		printf "\n[MAKE] Elaborating top-level with Unresolved Blackboxes...\n"; \
 		: '13314 and 13233 are noise: relaxed SV input port kind, and a design unit'; \
 		: 'overwriting an earlier one in the library, which is normal with Bender.'; \
@@ -445,7 +522,7 @@ fast-check: prep-sim
 		: 'width differs from the port) are deliberately NOT suppressed: checking that'; \
 		: 'the generated wrappers match the IP signatures is the whole purpose of this'; \
 		: 'stub-based elaboration, and those two are the errors that report a mismatch.'; \
-		$(VSIM) -c -l logs/fast_check.log -do "if {[catch {vopt -suppress 13314,13233 +bbox_u ${top_level_module_name} -o ${top_level_module_name}_fast_check}]} {quit -code 1}; quit"; \
+		$(VSIM) -c -l logs/fast_check.log -do "if {[catch {vopt -suppress $(QUESTA_ELAB_SUPPRESS) +bbox_u ${top_level_module_name} -o ${top_level_module_name}_fast_check}]} {quit -code 1}; quit"; \
 	fi
 	@printf "\n[SUCCESS] Fast architecture check passed!\n"
 
@@ -485,7 +562,7 @@ run-sim:
 	@mkdir -p logs/stdout
 	@ln -snf ../generated logs/generated
 	@$(call ensure-tools,vsim:questa); \
-	cd logs && $(VSIM) -c -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress 13314,3009,8386 -warning 2732 -do "run -all; quit"
+	cd logs && $(VSIM) -c -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -suppress $(QUESTA_RUN_SUPPRESS) -warning 2732 -do "$(QUESTA_RUN_DO)"
 
 gui:
 	@printf "\n[MAKE] Launching QuestaSim GUI...\n"
@@ -505,7 +582,7 @@ gui:
 	@# run costs minutes; trusting a stale image costs a debugging day.
 	@rm -rf work/_opt* 2>/dev/null || true
 	@$(call ensure-tools,vsim:questa); \
-	cd logs && $(VSIM) -gui -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) -voptargs=+acc -suppress 13314,3009,8386 -warning 2732
+	cd logs && $(VSIM) -gui -lib ../work tb_$(TOP_MOD) $(VSIM_FLAGS) $(VSIM_OPT_FLAGS) $(QUESTA_GUI_FLAGS) -suppress $(QUESTA_RUN_SUPPRESS) -warning 2732
 
 prep-sim-verilator: update-hw
 	@printf "\n[MAKE] Extracting Verilator file list via Bender...\n"
@@ -583,13 +660,13 @@ build-sim-verilator: prep-sim-verilator build-sw
 			$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD)_hier.mk -j $(VERILATOR_JOBS) $$CHILD_MKS || exit 1; \
 		fi; \
 		printf "\n[MAKE] Phase 2/2: compiling children and top unit...\n"; \
-		$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD)_hier.mk -j $(VERILATOR_JOBS) \
+		$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD)_hier.mk -j $(VERILATOR_COMPILE_JOBS) \
 			$(VERILATOR_BUILD_VARS) hier_build \
 		|| { printf "\n[MAKE] Compilation failed; retrying once (belt and braces, see the note above).\n"; \
-		     $(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD)_hier.mk -j $(VERILATOR_JOBS) \
+		     $(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD)_hier.mk -j $(VERILATOR_COMPILE_JOBS) \
 			$(VERILATOR_BUILD_VARS) hier_build; }; \
 	else \
-		$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD).mk $(VERILATOR_BUILD_VARS) -j $(VERILATOR_JOBS); \
+		$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD).mk $(VERILATOR_BUILD_VARS) -j $(VERILATOR_COMPILE_JOBS); \
 	fi && \
 	cd $(VERILATOR_WORK) && g++ -o Vtb_$(TOP_MOD) Vtb_$(TOP_MOD)__main.o \
 		-Wl,--start-group libVtb_$(TOP_MOD).a Vtb_$(TOP_MOD)__ALL.a libverilated.a $$(ls V*/lib*.a 2>/dev/null) -Wl,--end-group \

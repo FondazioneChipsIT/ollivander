@@ -27,7 +27,7 @@ module spatz_cluster_isle
   // ---------------------------------------------------------------------------------
   // Offload boot contract - the IP-internal half of what the firmware generator needs
   // to hand work to this cluster (see pulp_cluster_isle.sv for the mechanism, and
-  // docs/hw/isle_standardization.md section 9 for the field semantics). Scalars and
+  // docs/hw/component_standardization.md section 8 for the field semantics). Scalars and
   // strings only, self-contained literals or references to literals of this header.
   //
   // "memory_mapped" contract, the snitch-family boot protocol: the cores come out of

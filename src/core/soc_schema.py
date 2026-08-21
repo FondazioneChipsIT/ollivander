@@ -616,10 +616,89 @@ class Component(StrictModel):
 # OLLIVANDER ROOT CONFIGURATION
 # ==============================================================================
 
+# ==============================================================================
+# SIMULATION FLAGS & OPTIONS (power-user section)
+# ==============================================================================
+# Design decided on 2026-08-21. The section is for users who know the tools:
+# every value is RAW (the text the tool receives - no abstraction layer that
+# would have to track the tools' own option sets), user lists are ADDITIVE on
+# top of the structural sets Ollivander derives (they cannot remove a guard;
+# the command line, which overrides the generated ?= variables, remains the
+# escape hatch for that), and everything here lands ONLY in the generated
+# Makefiles - which are not exported with a macro, so a parent project never
+# inherits a child's simulation settings. What Ollivander owns stays out on
+# purpose: structural flags (--cc/--main/--hierarchical/--timing/--timescale,
+# --hierarchical-params-file), sets derived from the design (bender targets
+# from the registry, +define+ from DEFINE pragmas, the .vlt block set), and
+# coupled pairs - `threads` is the one visible knob of a coupled pair, and the
+# generator emits the -DVL_TIME_CONTEXT that MUST accompany --threads (or
+# neither, for 0/1): the two were measured broken in every mixed combination
+# (see wip 5.2, the 2x2 of 2026-08-21).
+
+class SimulationFirmware(StrictModel):
+    """Flags of the firmware build (generated sw/Makefile), one riscv-gcc for all."""
+    cflags: Optional[List[str]] = None          # replaces the host application's -O2 -g tail
+    ldflags: Optional[List[str]] = None         # appended to the host link line
+    cluster_cflags: Optional[List[str]] = None  # replaces the offload core's -O2 -g tail
+
+class SimulationWaveform(StrictModel):
+    """QuestaSim waveform capture for batch runs (GUI logging stays interactive)."""
+    enable: bool = False
+    scope: str = ""                             # hierarchical path to log; empty = whole design
+
+class SimulationQuesta(StrictModel):
+    """Per-step raw additions for the QuestaSim flow."""
+    vlog: Optional[List[str]] = None      # extra --vlog-arg values at script generation
+    vsim: Optional[List[str]] = None      # extra vsim args of the batch run (-sv_seed, -wlf, ...)
+    gui: Optional[List[str]] = None       # extra vsim args of the GUI run only
+    run_do: Optional[str] = None          # REPLACES the batch -do script ("run -all; quit").
+                                          # The one non-additive field: forgetting 'quit' hangs
+                                          # a batch suite, and the guide says so.
+    suppress: Optional[List[int]] = None  # message numbers ADDED to the derived list, which is
+                                          # one list shared by compile driver, run and fast-check
+    waveform: Optional[SimulationWaveform] = None
+
+class SimulationVerilator(StrictModel):
+    """Per-step raw additions and knobs for the Verilator flow."""
+    threads: Optional[int] = None         # value of --threads; 0/1 = no threading, and the
+                                          # generator drops the coupled define with the flag
+    verilate_jobs: Optional[int] = None   # -j of the emission phase (capped default: truncated
+                                          # C++ was observed at -j48; see the template note)
+    compile_jobs: Optional[int] = None    # -j of the compile phase, a separate hazard domain
+    bender_targets: Optional[List[str]] = None  # extra -t of the Verilator flist only
+    flist_exclude: Optional[List[str]] = None   # regexes ADDED to the structural exclusions
+    verilate: Optional[List[str]] = None  # raw extras on the verilation command line
+    warnings: Optional[List[str]] = None  # -W... ADDED to the shared list (build AND lint)
+    compile: Optional[List[str]] = None   # raw make assignments of the compile phase
+                                          # (OPT_FAST=-O3, CFLAGS=-march=native, ...)
+    run: Optional[List[str]] = None       # raw args appended to the built executable
+    keep_work: Optional[bool] = None      # default of VERILATOR_KEEP_WORK
+    # No waveform subsection: under the hierarchical flow the dump needs a generated
+    # main that owns it (wip 5.5); exposing a flag here would ship a segfault.
+
+class SimulationConfig(StrictModel):
+    """
+    Optional `simulation:` section of the SoC description. Everything is optional
+    and the empty section renders Makefiles identical to the omitted one - the
+    defaults ARE today's validated behaviour, and the test suite validates the
+    defaults, not user-composed combinations.
+    """
+    assertions: Optional[bool] = None           # False renders ASSERTIONS ?= 0 (QuestaSim's
+                                                # -nosva set). The Verilator flow is structurally
+                                                # assertion-free either way: ASSERTS_OFF and the
+                                                # emptied HCI_ASSERT_DELAY are what make the
+                                                # hierarchical build possible (see the template)
+    plusargs: Optional[List[str]] = None        # run plusargs of BOTH simulators (+fast_boot)
+    bender_targets: Optional[List[str]] = None  # extra -t of both dependency resolutions
+    firmware: Optional[SimulationFirmware] = None
+    questa: Optional[SimulationQuesta] = None
+    verilator: Optional[SimulationVerilator] = None
+
+
 class OllivanderConfig(StrictModel):
     """
     Root Pydantic Model mapping the entire YAML configuration.
-    Contains the top-level sections defining the SoC and acts as the 
+    Contains the top-level sections defining the SoC and acts as the
     in-memory database for the entire generation process.
     """
     model_config = {"populate_by_name": True}
@@ -634,6 +713,7 @@ class OllivanderConfig(StrictModel):
     components: Optional[List[Component]] = Field(default_factory=list, alias='tiles')
     testbench: Optional[Dict[str, Any]] = None
     software_stack: Optional[Dict[str, Any]] = None
+    simulation: Optional[SimulationConfig] = None
 
     @model_validator(mode='after')
     def enforce_macro_rules(self) -> 'OllivanderConfig':

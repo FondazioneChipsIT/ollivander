@@ -27,7 +27,7 @@ module sram_isle
   parameter int unsigned InstanceWindowSize      = 32'h00100000,
   parameter int unsigned MemSize        = InstanceWindowSize,
   // NO 'InstanceBaseAddr' HERE, DELIBERATELY. The instance identity convention
-  // (docs/hw/subtile_standardization.md 2.6) is opt-in from the header, and this
+  // (docs/hw/component_standardization.md section 1.6) is opt-in from the header, and this
   // isle decodes nothing against a base address: it answers on the low address
   // bits of whatever transaction the tile hands it. Declaring the parameter used
   // to make the generator fill it PER INSTANCE, and a differing parameter value

@@ -264,5 +264,5 @@ The [documentation portal](docs/README.md) organizes every guide by reading path
 | If you want to... | Start from |
 | :--- | :--- |
 | **Use** Ollivander to build an SoC | [Getting Started](docs/getting_started.md), then the [SoC](docs/soc_configuration_guide.md), [Environment](docs/env_configuration_guide.md) and [Padframe](docs/padframe_configuration_guide.md) configuration guides |
-| **Wrap an IP** so the generator can instantiate it | The standardization guides: [Isle](docs/hw/isle_standardization.md), [Subtile](docs/hw/subtile_standardization.md), [Tile](docs/hw/tile_standardization.md), plus [Clocking, Reset & CDC](docs/hw/clocking_reset_cdc_requirements.md) |
+| **Wrap an IP** so the generator can instantiate it | The [component standardization contract](docs/hw/component_standardization.md), plus [Clocking, Reset & CDC](docs/hw/clocking_reset_cdc_requirements.md) |
 | **Develop** Ollivander itself | The [SV-IR architecture](docs/developer/intermediate_representation.md) and the planned work in [`docs/developer/wip/`](docs/developer/wip/future_evolution_tasks.md) |

@@ -1,46 +1,51 @@
-# Ollivander Unified Component Model: The "Isle" Standardization
+# Ollivander Component Standardization: Isles, Subtiles and Tiles
 
-## 1. Overview
-In the Ollivander SoC Generator, all hardware components (clusters, memories, peripherals, and hosts) must be encapsulated within standardized SystemVerilog wrappers referred to as **Isles** (e.g., `pulp_cluster_isle.sv`, `l2_isle.sv`).
+This is the single contract a hardware component must satisfy to be integrated by the Ollivander SoC Generator. It replaces the three guides that preceded it - `isle_standardization.md`, `subtile_standardization.md` and `tile_standardization.md` - which described three levels of what is largely one contract: 947 lines across three files, nine section titles identical in all three, and ownership of individual rules already scattered between them (the isle guide pointed at the subtile guide for the parameter-verification rule, both pointed at the isle guide for memory preloading, and all three restated the dependency mechanism in full).
 
-The purpose of the Isle is to provide a **uniform, generator-friendly interface** that decouples the complexity and the specific dialects of individual IPs from the Python generator logic. Python only sees standard parameters and standard ports, allowing it to seamlessly stitch together complex SoCs (either Crossbar-based or NoC-based) without embedding IP-specific SystemVerilog code.
+**How to read it.** **Part 1 is the contract**, and it applies to every level: read it in full whichever kind of component you are writing. **Parts 2, 3 and 4 state only the particularities** of an Isle, a Subtile and a Custom Tile respectively - what that level adds, what it replaces, and what does not apply to it. A particularity chapter never restates a rule from Part 1, so "not mentioned there" always means "as in Part 1".
 
-**Cross-Topology Reusability (`_isle` vs `_subtile`)**: To maximize IP reuse, Ollivander establishes a strict hierarchical naming convention:
-*   **`*_isle.sv` (Topology-Agnostic)**: Uses standard single-network AXI/RegBus ports. Can be instantiated safely in both Crossbar and NoC topologies. In a NoC, Ollivander automatically generates a Tile wrapper for it.
-*   **`*_subtile.sv` (NoC-Specific)**: Designed natively for NoC topologies (e.g., uses `noc_mode: "dual"` to expose physically separate narrow and wide AXI networks). **Cannot** be used in a Crossbar topology. (See the [Subtile standardization guide](subtile_standardization.md) for details).
+That rule is the acceptance criterion for any change to this document: a statement that holds for every level belongs in Part 1 and nowhere else. Restating it per level is how the three previous guides came to disagree without anyone noticing.
 
-This document provides the definitive guide for hardware designers looking to integrate a Topology-Agnostic component or a custom Host into the Ollivander ecosystem.
+**Which one am I writing?** An **Isle** (`*_isle.sv`) is topology-agnostic: standard single-network AXI/RegBus ports, usable in both Crossbar and NoC topologies - in a NoC, Ollivander generates the enclosing Tile for it. A **Subtile** (`*_subtile.sv`) is NoC-native: it may expose physically separate narrow and wide networks (`noc_mode: "dual"`) and therefore cannot be used in a Crossbar topology; Ollivander still generates its Tile wrapper. A **Custom Tile** (`*_tile.sv`) is written by hand and instantiates the FlooNoC router itself, connecting directly to the 2D mesh. Prefer an Isle unless you need what the other two give you.
 
----
+# Part 1 - The Contract
 
-## 2. Parameter Interface (`parameter` vs `localparam`)
+*Applies to Isles, Subtiles and Custom Tiles alike.*
+
+## 1. Parameter Interface (`parameter` vs `localparam`)
 Every Isle MUST expose a standardized set of parameters to define bus geometries and microarchitectural behaviors. Ollivander's parser (`sv_parser.py`) actively scans the module header and treats `parameter` and `localparam` differently:
 
 *   **`parameter` (Configurable):** Use this for values that the IP can adapt to dynamically. Ollivander will override these at instantiation time in the top-level based on the YAML configuration.
 *   **`localparam` (Fixed Constraint):** Use this in the module header for values that **cannot** be changed (e.g., a hardware IP that strictly requires a 64-bit data bus). Ollivander will add these to a `fixed_params` list, skip them during parameter assignment in the top-level, and **strictly validate** that the global YAML configuration does not violate them. If a violation occurs, the generator halts with an architectural error.
 
-### 2.1 Expected Bus Geometries
-These parameters define the physical width of the AXI lines, and the generator drives each from the geometry of the interconnect the Isle is attached to. *(Note: Isles support only a single, unified AXI network. For dual-network NoC IPs, see Subtiles).*
+
+### 1.1 Expected Bus Geometries
+These parameters define the physical width of the AXI lines, and the generator drives each from the geometry of the interconnect the component is attached to.
 *   `AxiAddrWidth`, `AxiDataWidth`, `AxiUserWidth`: taken from the `global_bus` declaration (crossbar) or from the network (NoC).
 *   `AxiInIdWidth`: Width of the AXI ID for incoming requests (required if `axi_slave` is used). Driven with the interconnect's **slave-side** ID width — in a crossbar that is not a `global_bus` field but a computed value, the manager ID width plus the arbitration bits for the number of managers, so it grows when components are added.
 *   `AxiOutIdWidth`: Width of the AXI ID for outgoing requests (required if `axi_master` is used). Driven with the manager-side ID width (`mst_id_width`, or the network's input width in a NoC).
 
-Declaring one of these as a `localparam` instead states a geometry the Isle cannot depart from, and switches it from *driven* to *verified*: address and data widths must then equal the bus exactly, and the ID widths are checked along the direction of travel — see the same contract in the [Subtile standardization guide, section 2.1](subtile_standardization.md#21-expected-bus-geometries), which applies unchanged.
 
-### 2.2 Clock Domain Crossing (CDC) Widths
+How each declaration is treated depends on whether the wrapper declares it `parameter` or `localparam`, and the distinction is the contract. A **`parameter`** is *driven*: the generator sets it to the geometry of the network the port rides on, so a wrapper around a sizeable IP should expose one and propagate it into the IP — every default it would otherwise fall back to describes the context the wrapper was extracted from, not the SoC it lands in. A **`localparam`** is *verified*: it states a geometry the component cannot depart from, and Ollivander checks it against the bus at generation time. Keep those as literals — the check reads the value as written and cannot resolve `some_pkg::SomeWidth` — and, when the IP defines the same number itself, guard the literal with an elaboration-time `$fatal` against the IP's package, as `cluster_subtile` does, so it stays readable to the generator and cannot drift from the IP.
+
+The verification rule is not plain equality. Address and data widths must match exactly, since no adaptation exists for them: a mismatch there is refused. The ID widths are checked **along the direction of travel**: what the component emits (`*OutIdWidth`) may be narrower than the network's input side — the tile zero-extends it — but never wider, or the network would truncate and distinct transactions would alias; what it accepts (`*InIdWidth`) must cover the network's compressed output side, or responses would be misrouted inside the component.
+
+### 1.2 Clock Domain Crossing (CDC) Widths
 Since most Isles reside in independent clock domains, they expose pre-calculated widths for the asynchronous AXI channels. This prevents the generator from having to compute complex SystemVerilog `$clog2` macros in the top-level.
 *   `LogDepth`: Log2 depth of the CDC FIFOs.
 *   `AsyncAxiInAwWidth`, `AsyncAxiInWWidth`, `AsyncAxiInBWidth`, `AsyncAxiInArWidth`, `AsyncAxiInRWidth`
 *   `AsyncAxiOutAwWidth`, `AsyncAxiOutWWidth`, `AsyncAxiOutBWidth`, `AsyncAxiOutArWidth`, `AsyncAxiOutRWidth`
 
-### 2.3 System Microarchitecture
+
+### 1.3 System Microarchitecture
 To guarantee system-wide coherence without introducing tight coupling to a specific Host package (e.g., Cheshire's `Cfg` struct), Isles use the `ollivander_soc_pkg` as their default value source for system properties:
 *   `AxiMaxReadTxns` / `AxiMaxWriteTxns`: Depth of outstanding transactions.
 *   `AxiUserAmoMsb` / `AxiUserAmoLsb`: Bit mapping for Atomic Memory Operation (AMO) reservation IDs within the `user` field.
 *   `AxiUserEccErrBit`: Bit mapping for the ECC error flag within the `user` field.
 *   `AxiAmoNumCuts`: Number of pipeline registers in the AXI ATOP adapters.
 
-### 2.4 AXI Struct Parameter Types (Strict Type Equivalence)
+
+### 1.4 Struct Parameter Types (Strict Type Equivalence)
 SystemVerilog enforces strict type equivalence for structs. To avoid compilation errors when instantiating Isles in different SoCs (or when exporting an entire SoC as a Macro IP), Isles should expose their AXI structs as `parameter type` in the module header, rather than hardcoding a specific package.
 *   `axi_req_t`: Synchronous AXI request type for slave interfaces.
 *   `axi_resp_t`: Synchronous AXI response type for slave interfaces.
@@ -56,24 +61,41 @@ An Isle that instead types its AXI ports from its own IP package — legitimate 
 
 The package name follows the **top-level module name**, not the bare project name, so it carries the same suffix that `build_mode: "macro"` adds. A project `crux` built standalone produces `crux_soc_pkg`, while the same project built as a macro with `export_type: "isle"` produces `crux_isle_soc_pkg`. This is what allows both builds of a project — and a parent SoC that instantiates one of them — to be compiled into a single simulation library without the two packages colliding under the same name.
 
-### 2.5 Memory Mapping Parameters
+### 1.5 Memory Mapping Parameters
 For topology-agnostic memory wrappers (e.g., L2 memory wrapper `l2_isle.sv`), the wrapper should expose standard configurable parameters defining its size and base address:
 *   `InstanceBaseAddr` (`parameter logic [63:0]` or `longint unsigned`): Base address of the memory mapping range.
 *   `InstanceWindowSize` (`parameter int unsigned` or `longint unsigned`): Size of the memory block in bytes.
 
-The base address may equally be declared as the **port** `input logic [63:0] instance_base_addr_i`, which is the preferred form and takes precedence when a header declares both: it keeps repeated isles a single module under hierarchical verilation instead of one child library per instance, and it is the only form that can carry a relocatable `MACRO_BASE_ADDR + offset`. `InstanceWindowSize` has no port form. `l2_isle.sv` is the shipped example of the port form (its four localparams and its `mapping_rules` became `assign`ed wires); `pulp_cluster_isle` keeps the parameter, since its base reaches the IP through the struct parameter `Cfg.ClusterBaseAddr` and from there into four child parameter overrides. Section 2.6 of the subtile standardization owns the full rule.
+The base address may equally be declared as the **port** `input logic [63:0] instance_base_addr_i`, which is the preferred form and takes precedence when a header declares both: it keeps repeated isles a single module under hierarchical verilation instead of one child library per instance, and it is the only form that can carry a relocatable `MACRO_BASE_ADDR + offset`. `InstanceWindowSize` has no port form. `l2_isle.sv` is the shipped example of the port form (its four localparams and its `mapping_rules` became `assign`ed wires); `pulp_cluster_isle` keeps the parameter, since its base reaches the IP through the struct parameter `Cfg.ClusterBaseAddr` and from there into four child parameter overrides. Section 1.6 owns the full rule.
 
-These are the **instance identity parameters** (section 2.6 of the subtile standardization owns the full definition): the generator fills them from the component's `axi_slave` window whenever the header declares them, so the local address decoding and interleaving rules computed within the Isle scale correctly. They replaced the historical `L2BaseAddr`/`L2MemSize` pair on 2026-08-11.
+These are the **instance identity parameters** (section 1.6 owns the full definition): the generator fills them from the component's `axi_slave` window whenever the header declares them, so the local address decoding and interleaving rules computed within the Isle scale correctly. They replaced the historical `L2BaseAddr`/`L2MemSize` pair on 2026-08-11.
 
 The same mechanism serves compute components that decode part of their own slave region internally:
 
 *   `InstanceBaseAddr` also serves the compute clusters: `pulp_cluster_isle` exposes it (it was `ClusterBaseAddr` until 2026-08-11) to align the cluster's internal decode (TCDM, peripherals, external escape) with the region the SoC description maps it at — an internal decode left at the IP default would silently route every external access to the wrong rule.
 
-Like every entry of the standard parameter vocabulary, these are matched **by parameter name, per instance**: each component that exposes the parameter receives the base of its own `axi_slave` mapping, so a design may instantiate any number of such components, each decoding its own region. When a **crossbar-family** SoC is built as a macro (`build_mode: "macro"`), `InstanceBaseAddr` is emitted as `MACRO_BASE_ADDR + <base>`: this family keeps global addresses inside the macro, so the decode relocates with it wherever the parent maps it. The **NoC family** does the opposite — its border adapters rebase incoming traffic to project-local addresses, so its identity values stay local (see the subtile standardization).
+Like every entry of the standard parameter vocabulary, these are matched **by parameter name, per instance**: each component that exposes the parameter receives the base of its own `axi_slave` mapping, so a design may instantiate any number of such components, each decoding its own region. When a **crossbar-family** SoC is built as a macro (`build_mode: "macro"`), `InstanceBaseAddr` is emitted as `MACRO_BASE_ADDR + <base>`: this family keeps global addresses inside the macro, so the decode relocates with it wherever the parent maps it. The **NoC family** does the opposite — its border adapters rebase incoming traffic to project-local addresses, so its identity values stay local (see Part 3).
 
----
 
-## 3. Supported Interfaces & Port Naming
+### 1.6 Instance Identity
+Some IPs decode their **own slave window internally**: the block compares incoming addresses against a base and an extent it was told at instantiation, serves what falls inside (local memory, internal peripherals) and forwards the rest to its master port. The snitch-family cluster is the reference case. When such a block is instantiated as a component **array** (a placement `box` with `size_per_instance`), every instance needs its own base — one shared constant cannot serve sixteen windows, and a wrong base makes every window access miss the internal decode and stall (there is no error response: the transaction re-enters the network and never completes).
+
+A subtile that decodes its own window declares the following pair in its header, and the generator fills it **per instance** at tile instantiation (`rtl_ir_builder.py`):
+
+*   `InstanceBaseAddr` (`parameter longint unsigned`): the base address of THIS instance's slave window. The generator computes `base_addr + index * size_per_instance`, with the same x-major instance enumeration the FlooGen address map and the auto-control-group bit-selects use, so the three mechanisms can never disagree. In macro builds the value stays **project-local**: the macro's border adapters rebase incoming traffic before any tile sees it.
+*   `InstanceWindowSize` (`parameter longint unsigned`): the per-instance window extent (`size_per_instance`, or `size` for a single instance).
+
+The declared parameter type travels through the SV parser to the generated tile wrapper (2026-08-11): a plain built-in type (`bit`, `int unsigned`, `longint unsigned`, `logic[N:M]`, `string`) is re-declared as written, so 64-bit identity values cross the tile boundary intact; only package-scoped or otherwise exotic types still fall back to value-based inference.
+
+**The base address may be declared as a PORT instead of a parameter, and that is now the preferred form.** A component that writes `input logic [63:0] instance_base_addr_i` in its header receives its window base as a driven value rather than an elaborated one; the generator connects it per instance exactly as it would have filled `InstanceBaseAddr`, and if a header declares both the port wins. There is no port form for `InstanceWindowSize`, which stays a parameter: it is an extent rather than an identity, and it is the same for every instance of one component, so nothing is gained by driving it.
+
+Two reasons to prefer the port, one per flow. Under **hierarchical verilation** a parameter whose value differs per instance makes each instance a distinct module, so sixteen identical tiles become sixteen child libraries to verilate and compile, while a port keeps them one module and one library (see section 5.2.1 of `docs/developer/wip/future_evolution_tasks.md`). In a **macro build** the base becomes `MACRO_BASE_ADDR + offset`, a value the parent knows only at its own instantiation: a port connection can carry that expression, a parameter override computed at generation time cannot without freezing the macro's position.
+
+Inside the block, cast the port back to whatever type the IP wants at the inner instantiation (`cluster_subtile.sv` does `snitch_cluster_pkg::addr_t'(instance_base_addr_i)`). Where the value used to feed a `localparam` that must be elaborated - an address-map struct array, for instance - derive it with an `assign` to a wire and hand it to the IP's port instead: `l2_isle.sv` converts its four localparams and its `mapping_rules` this way. A value that genuinely cannot leave elaboration keeps the parameter form: `pulp_cluster_isle` does, because its base flows into the struct parameter `Cfg.ClusterBaseAddr` and from there into four child parameter overrides, which would mean modifying upstream IP.
+
+This is a **declared opt-in**, by parameter or by port: the generator acts only on what the header declares, and never matches on component types. Memory components travel the same route (section 1.5) — one convention for every self-mapping component, memories and clusters alike. The subtile consumes the parameters internally (e.g. `cluster_subtile.sv` drives the meta-generated wrapper's `cluster_base_addr_i`/`cluster_base_offset_i` ports from them, and ties `hart_base_id_i` to zero — global hart IDs deliberately repeat across the array, see the alias-region rationale in the offload contract and the open question in `docs/developer/wip/future_evolution_tasks.md`); no identity port appears on the subtile interface.
+
+## 2. Supported Interfaces & Port Naming
 Isles abstract away the native interfaces of their underlying IPs. Ollivander automatically maps these interfaces during generation if they are declared in the YAML and match the exact naming conventions below.
 
 > **⚠️ STRICT NAMING ENFORCEMENT** The naming conventions defined below are **strictly enforced**. No deviations, custom prefixes, or alternative spellings (e.g., using `spih_` instead of `spi_`, or `bootmode` instead of `boot_mode`) are permitted. The primary purpose of the Isle wrapper is to adapt the inner IP's arbitrary port names to match this exact Ollivander standard. Failure to expose these exact names at the Isle boundary will result in unconnected wires and architectural validation errors.
@@ -83,7 +105,8 @@ Isles abstract away the native interfaces of their underlying IPs. Ollivander au
 *   **Host Component**: Because the Host Isle contains the central routing crossbar, its AXI and RegBus ports are complementary to standard components and *always* exposed as multi-dimensional arrays (e.g., `[AxiNumMst-1:0][Width-1:0]`) to aggregate all system traffic.
 *   **Direction**: When a component acts as a slave, the Host acts as a master, and vice versa.
 
-### 3.1 AXI Slave (`axi_slave`)
+
+### 2.1 AXI Slave (`axi_slave`)
 Depending on the `sync_domain` YAML flag, an Isle can receive AXI requests either synchronously or asynchronously.
 
 **Asynchronous (Default, requires CDC):**
@@ -124,7 +147,8 @@ Depending on the `sync_domain` YAML flag, an Isle can receive AXI requests eithe
 *   `axi_resp_o` (`axi_resp_t`): Synchronous AXI response struct.
     *   **Ollivander Handling**: Component -> Connected to `xbar_sync_slv_rsp`. Host -> Array connected to `xbar_sync_mst_rsp`.
 
-### 3.2 AXI Master (`axi_master`)
+
+### 2.2 AXI Master (`axi_master`)
 **Asynchronous:**
 *   `async_axi_out_aw_data_o` (`logic [AsyncAxiOutAwWidth-1:0]`): Write address channel data payload.
     *   **Ollivander Handling**: Component -> Connected to `xbar_mst_aw_data`. Host -> Array connected to `xbar_slv_aw_data`.
@@ -163,20 +187,8 @@ Depending on the `sync_domain` YAML flag, an Isle can receive AXI requests eithe
 *   `axi_resp_i` (`axi_master_resp_t`): Synchronous AXI response struct.
     *   **Ollivander Handling**: Component -> Connected to `xbar_sync_mst_rsp`. Host -> Array connected to `xbar_sync_slv_rsp`.
 
-### 3.3 Dedicated LLC Port (`llc_port`)
-Certain Hosts (like Cheshire) expose a dedicated asynchronous AXI Master port intended specifically to route high-bandwidth traffic directly to an external memory controller (e.g., HyperBus), bypassing the main system crossbar entirely.
 
-**Host Side (Master):**
-*   `async_axi_llc_aw_data_o` (`logic [AsyncAxiLlcAwWidth-1:0]`): Write address channel data payload.
-*   `async_axi_llc_aw_wptr_o` (`logic [LogDepth:0]`): Write address channel CDC write pointer.
-*   `async_axi_llc_aw_rptr_i` (`logic [LogDepth:0]`): Write address channel CDC read pointer.
-*   *(... and all other standard AXI channels following the `async_axi_llc_*` prefix)*
-*   `async_axi_llc_isolate_i` / `async_axi_llc_isolated_o`: Dedicated isolation fence for the LLC domain.
-
-**Peripheral Side (Slave):** Components marked with the `llc_port` interface in the YAML (e.g., `hyperbus_isle`) simply expose the standard asynchronous AXI Slave ports (`async_axi_in_*`).
-*   **Ollivander Handling**: The generator automatically creates direct point-to-point wires between the Host's `async_axi_llc_*` master ports and the peripheral's `async_axi_in_*` slave ports, creating a private high-speed link.
-
-### 3.4 RegBus Slave (`regbus_slave`)
+### 2.3 RegBus Slave (`regbus_slave`)
 Standard narrow-bus (32-bit) used for configuration registers.
 
 **Asynchronous (`sync_domain: false`):**
@@ -199,22 +211,8 @@ Standard narrow-bus (32-bit) used for configuration registers.
 *   `reg_rsp_o` (`reg_intf_pkg::reg_rsp_t`): Synchronous register response struct.
     *   **Ollivander Handling**: Component -> Connected to the corresponding slice of the host's synchronous RegBus master port (`sys_reg_rsp`).
 
-### 3.5 RegBus Master (Host Only)
-The Host Isle acts as the central RegBus orchestrator and exposes multi-dimensional arrays to drive all configuration registers in the system.
 
-**Asynchronous:**
-*   `reg_async_mst_req_o` (`logic [RegNumSlvAsync-1:0]`): Connected to `async_reg_req_out`.
-*   `reg_async_mst_ack_i` (`logic [RegNumSlvAsync-1:0]`): Connected to `async_reg_ack_in`.
-*   `reg_async_mst_data_o` (`async_reg_out_req_t [RegNumSlvAsync-1:0]`): Connected to `async_reg_data_out`.
-*   `reg_async_mst_req_i` (`logic [RegNumSlvAsync-1:0]`): Connected to `async_reg_req_in`.
-*   `reg_async_mst_ack_o` (`logic [RegNumSlvAsync-1:0]`): Connected to `async_reg_ack_out`.
-*   `reg_async_mst_data_i` (`async_reg_out_rsp_t [RegNumSlvAsync-1:0]`): Connected to `async_reg_data_in`.
-
-**Synchronous:**
-*   `reg_req_o` (`sync_reg_out_req_t [RegNumSlvSync-1:0]`): Connected to `sys_reg_req`.
-*   `reg_rsp_i` (`sync_reg_out_rsp_t [RegNumSlvSync-1:0]`): Connected to `sys_reg_rsp`.
-
-### 3.6 JTAG (`jtag`)
+### 2.4 JTAG (`jtag`)
 Standard 4-wire JTAG interface. Output enable (`_oe_o`) is provided for tristate pad integration at the chip level.
 *   `jtag_tck_i` (`logic`): JTAG Test Clock.
     *   **Ollivander Handling**: Exposed as a top-level SoC I/O pin. The pin is named `jtag_<component_name>_tck_i` (e.g., `jtag_safety_island_tck_i`). For the host component, the prefix is omitted.
@@ -229,7 +227,8 @@ Standard 4-wire JTAG interface. Output enable (`_oe_o`) is provided for tristate
 *   `jtag_tdo_oe_o` (`logic`): JTAG Test Data Out Enable (high when driving TDO). **[OPTIONAL]**
     *   **Ollivander Handling**: Ollivander automatically parses the Isle's SystemVerilog header. If this port is declared in the module, it is wired and exposed at the SoC top-level as `jtag_<component_name>_tdo_oe_o`. If omitted from the wrapper, Ollivander safely ignores it without causing compilation errors.
 
-### 3.7 Common Peripherals
+
+### 2.5 Common Peripherals
 All common peripheral ports are exposed as top-level SoC I/O pins. If the component is not the host, the pin names are prefixed with the component's name (e.g., `uart_security_island_tx_o`).
 
 *   **UART (`uart`)**: 
@@ -278,16 +277,14 @@ All common peripheral ports are exposed as top-level SoC I/O pins. If the compon
     *   `tx_o` (`logic`): CAN transmit pin.
     *   **Ollivander Handling**: Automatically exposed at the SoC top-level when instantiated inside an `apb_subsystem`. The pin names are prefixed with the sub-component name (e.g., `can_bus_rx_i`).
 
----
 
-## 4. Interrupt Guidelines (Strictly Level-Triggered)
+## 3. Interrupt Guidelines (Strictly Level-Triggered)
 Ollivander establishes a strict hardware contract for the SoC Top-Level: **All interrupt routing is assumed to be level-triggered.**
 
 If your IP natively generates edge-triggered or pulsed interrupts (like some APB timers), **the Isle wrapper must encapsulate an `edge_propagator`** (or equivalent pulse-to-level logic) and expose a stable, level-triggered signal to the outside world.
 
----
 
-## 5. Autonomous System Signals
+## 4. Autonomous System Signals
 Ollivander's parser reads the SystemVerilog header of your Isle and automatically wires up specific system/control signals if it finds them. You do not need to specify these in the YAML interfaces list.
 
 ### Mandatory Signals
@@ -326,25 +323,12 @@ These signals are mapped automatically if their exact name is found in the modul
 *   **`eoc_o`** (`logic`): End of Computation status flag exported to the System Controller (and optionally mapped as an interrupt).
     *   **Ollivander Handling**: Connected to the `sys_regs_hw2reg.<component_name>_eoc.d` register input (enabled via `has_eoc_status: true` in `system_config`).
 
----
 
-## 6. The Host Isle & Interconnect Requirement
-The Host Isle (e.g., `cheshire_isle.sv`) is the most critical component, acting as the system orchestrator.
+## 5. The Host Component
 
-### 6.1 The Crossbar Mandate
-In a Crossbar-based topology, **the Host Isle MUST internally contain the AXI crossbar** (or the NoC injection points). Ollivander builds the address map and routing arrays in the Python generator and passes them via the `ollivander_soc_pkg`. The Host Isle is responsible for reading these arrays and instantiating the physical crossbar that demultiplexes `axi_ext_slv` traffic and multiplexes `axi_ext_mst` traffic.
+One component of the SoC is declared the `host` in the YAML, and the generator treats it differently from every other: it sizes its buses and interrupt vectors from the connectivity of the whole system, and it reads its simulation boot hooks. What follows applies to a host at any level; how the host is wrapped is a particularity of each level (Parts 2, 3 and 4).
 
-### 6.2 Dynamic Configuration Builder Pattern
-To maintain a standardized interface while supporting massive Host configurations (like Cheshire's `cheshire_cfg_t` struct), the Host Isle implements the **Dynamic Configuration Builder Pattern**:
-
-1.  **Standard Interface:** It exposes only flat, scalar parameters (`AxiNumMst`, `NumCores`, `FeatureUart`, etc.) and system arrays.
-2.  **Internal Builder:** A SystemVerilog `function automatic cheshire_cfg_t build_cheshire_cfg()` is defined locally inside the wrapper.
-3.  **Struct Assembly:** The function takes the scalar parameters and the arrays provided by the generator package and translates them into the complex struct required by the inner IP.
-
-This strictly enforces a unidirectional data flow: `YAML Topology -> Python Generator -> ollivander_soc_pkg.sv -> cheshire_isle.sv -> cheshire_soc`
-
-### 6.3 Auto-Calculated Host Parameters
-
+### 5.1 Auto-Calculated Host Parameters
 To further simplify the configuration, Ollivander automatically calculates several key architectural and interrupt-related parameters for the Host Isle based on the connectivity defined in the YAML sections. The user **should not** specify these in the `parameters` block of the host, as the generator will override them.
 
 #### Bus Interface Counts (Crossbar/NoC Sizing)
@@ -367,7 +351,7 @@ Ollivander infers the required size of the Host's interrupt aggregators by inspe
 
 This auto-sizing mechanism ensures that the Host's interrupt interface is always correctly dimensioned to match the system's connectivity, removing the burden of manual calculation from the user.
 
-### 6.4 Simulation Force-Boot Parameters
+### 5.2 Simulation Force-Boot Parameters
 To support dynamic force-booting in simulation, a Host Isle wrapper (e.g., `cheshire_isle.sv`) can optionally expose standard parameters defining the startup control:
 *   `HasForceBoot` (`localparam bit`): Set to `1` if this host supports software force-booting in simulation.
 *   `ForceBootPath` (`localparam string`): Hierarchical path from the host wrapper top to the entry point scratch register (e.g., `"i_cheshire_soc.i_regs.field_storage.scratch[0].scratch.value"`).
@@ -375,13 +359,10 @@ To support dynamic force-booting in simulation, a Host Isle wrapper (e.g., `ches
 
 These parameters are read by the testbench generator to automatically drive the boot entry sequence.
 
----
-
-## 7. Dependency Management
-
+## 6. Dependency Management
 Ollivander features an automated dependency resolution engine that scans your Isles and populates the `Bender.yml` manifest. This ensures that only the files and IP packages actually instantiated in the SoC are included in the compilation flow.
 
-### 7.1 Static Dependencies (SystemVerilog Files)
+### 6.1 Static Dependencies (SystemVerilog Files)
 For standard `.sv` files, declare dependencies using special comments anywhere in the file (typically at the top):
 
 *   **Bender Packages**: Use `// BENDER: name="<package_name>"` to link an external repository. Ollivander will look up the git URL and version in the `ollivander_config.yml` registry.
@@ -401,13 +382,13 @@ For standard `.sv` files, declare dependencies using special comments anywhere i
     ```systemverilog
     // DEFINE: name="FEATURE_ICACHE_STAT"
     ```
-    Defines are merged **by macro name**, and a `defines` entry in the project's own SoC description wins over the pragma, so a pr
+    Defines are merged **by macro name**, and a `defines` entry in the project's own SoC description wins over the pragma, so a project can replace a valued define (`NAME=VAL`) without editing the wrapper. Note that `+define+` applies to the whole compilation library, not just to this Isle's sources.
 
 *   **Hierarchical-Verilation Restriction**: use `// OLLIVANDER: exclude_hier_block="<reason>"` when the Isle's subtree contains a construct Verilator refuses inside a `--lib-create` child library — a delay of any form (statement-position or intra-assignment), or a `fork ... join_none` inside a class declared in a package. The generator then keeps the Isle, **and every tile or isle whose subtree contains it**, out of the hierarchical block set of `cfg/<top>.vlt`, and prints the reason at generation time. The reason is part of the pragma on purpose: Verilator's own refusal message carries no source location, so an exclusion without a written reason looks arbitrary to whoever reads the configuration later. The shipped `hyperbus_isle` carries the reference specimen (its delay-line simulation model uses an intra-assignment delay). A macro export forwards the mark automatically, so a parent project that nests the macro inherits the restriction without knowing its origin.
 
-*   **Hierarchical-Block Declaration**: the positive counterpart, `// OLLIVANDER: hier_block="<module_name>"` (one line per module), names internal modules that **can** be verilated as hierarchical child libraries. An exported macro emits these automatically — they are the lines of the child project's own `cfg/<top>.vlt` — but the pragma is equally available to a hand-written component that wraps a large hierarchy with repeated internal units. The uniform rule the generator applies: a component that declares internal blocks never becomes a block itself (its wrapper is inlined and the declared modules get their own build lanes; blocks nested inside blocks are deliberately not attempted), and whatever the declaration *omits* stays inlined — the consuming project does not guess why a module was left out.oject can replace a valued define (`NAME=VAL`) without editing the wrapper. Note that `+define+` applies to the whole compilation library, not just to this Isle's sources.
+*   **Hierarchical-Block Declaration**: the positive counterpart, `// OLLIVANDER: hier_block="<module_name>"` (one line per module), names internal modules that **can** be verilated as hierarchical child libraries. An exported macro emits these automatically — they are the lines of the child project's own `cfg/<top>.vlt` — but the pragma is equally available to a hand-written component that wraps a large hierarchy with repeated internal units. The uniform rule the generator applies: a component that declares internal blocks never becomes a block itself (its wrapper is inlined and the declared modules get their own build lanes; blocks nested inside blocks are deliberately not attempted), and whatever the declaration *omits* stays inlined — the consuming project does not guess why a module was left out.
 
-### 7.2 Dynamic Dependencies (Mako Templates)
+### 6.2 Dynamic Dependencies (Mako Templates)
 If your Isle is dynamically generated (a `.sv.mako` file), you should avoid hardcoding dependency comments if the underlying hardware instantiation is conditional (e.g., inside an `% if` block). 
 
 Instead, use the injected Python functions to dynamically register dependencies *only if* the Mako condition is met. These functions will automatically print the correct `// OLLIVANDER:` or `// BENDER:` tag into the generated `.sv` file and register it in the manifest.
@@ -423,13 +404,10 @@ Instead, use the injected Python functions to dynamically register dependencies 
 % endif
 ```
 
----
-
-## 8. Memory Preloading Standardization
-
+## 7. Memory Preloading Standardization
 For memory Isles that require simulation-only binary preloading (via `$readmemh`), the wrapper can optionally expose standard `localparam` values in its SystemVerilog module declaration. This allows Ollivander to automatically determine how to format and load firmware files without any hardcoded component knowledge.
 
-### 8.1 Parameters Definition
+### 7.1 Parameters Definition
 Declare the following localparams inside your memory wrapper's parameter list:
 
 *   **`PreloadType`** (`string`): The preload mode. Supported values:
@@ -442,7 +420,7 @@ Declare the following localparams inside your memory wrapper's parameter list:
 *   **`PreloadBanksPerGroup`** (`int unsigned`): The number of physical SRAM banks in each group (optional, dynamically calculated as `AxiDataWidth / PreloadBankWidth` if omitted or set to 0).
 *   **`PreloadInterleave`** (`string`): The physical interleaving scheme of the memory, i.e. what the `{group}` and `{bank}` indices of `PreloadTemplate` actually select. Supported values are `"lane-group"` and `"word-group"`, described in the next section. Defaults to `"word-group"` if omitted, which preserves the behaviour of legacy wrappers.
 
-### 8.2 Interleaving Schemes
+### 7.2 Interleaving Schemes
 
 **Declaring the wrong scheme is never caught by a tool.** Generation, hex splitting, compilation and elaboration all succeed: the firmware is simply written into the wrong physical locations, and nothing compares it against what the RTL will read back.
 
@@ -467,18 +445,18 @@ Used by `l2_isle`. Consecutive AXI words rotate across the groups, and each AXI 
 *   `{group}` = `W % PreloadNumGroups`.
 *   `{bank}` = `d * num_lanes + lane`, where `num_lanes = AxiDataWidth / PreloadBankWidth` and `d` is the depth index derived from `W / PreloadNumGroups`.
 
-### 8.3 Execution Workflow
+### 7.3 Execution Workflow
 When Ollivander parses a YAML configuration where `preload_memories` refers to a component wrapper declaring `PreloadType = "interleaved"`, the generator:
 1.  **Testbench Generation**: Automatically iterates over `PreloadNumGroups` and `PreloadBanksPerGroup` (falling back to `AxiDataWidth / PreloadBankWidth` if undefined) to generate individual `$readmemh` statements targeted at each physical bank using the resolved hierarchical path from `PreloadTemplate`.
 2.  **Hex Splitting Target**: Automatically appends a call to the generic `split_hex.py` script under the Makefile's `build-sw` target, passing the base address, size, and parsed width/group parameters, plus `--interleave <PreloadInterleave>` so the split matches the physical wiring described above.
 
 ---
 
-## 9. Offload Boot Contract Standardization
+## 8. Offload Boot Contract
 
 An Isle that wraps a **programmable accelerator** (a compute cluster the host can hand work to) can declare an *offload boot contract*: a block of `Offload*` localparams in its module parameter list, following exactly the mechanism the `Preload*` localparams of section 8 use for memories. The contract is the **IP-internal half** of what the generated `offload` test application (see the SoC configuration guide, section 5.1) needs to drive the component; the SoC-side half — which isolation, fetch-enable and EOC status registers exist in the System Controller — is declared by the user in the component's `system_config` and never restated here. The Isle declares only what the YAML cannot know: the register layout behind its own slave window, and the ISA its cores execute.
 
-### 9.1 Parameters Definition
+### 8.1 Parameters Definition
 
 *   **`OffloadContract`** (`string`): The kind of boot protocol the IP implements. Currently supported: `"control_wire"` — payload and per-core boot addresses are written by the host through the slave window, the cores are released by the SoC-side fetch-enable wire, completion is signalled on `eoc_o` and the result read back from an MMIO register. (A `"memory_mapped"` kind, for snitch-style clusters driven through scratch registers and a CLINT, is planned.)
 *   **`OffloadCtrlOffs`** (`int unsigned`): Offset of the IP's control unit from the component's `axi_slave` base address.
@@ -494,10 +472,204 @@ Two rules keep the contract robust, both inherited from hard-won constraints:
 *   **Scalars and strings only, never `localparam type`**: a type parameter in a wrapper header evicts the module from hierarchical Verilation (see `docs/getting_started.md`, section 8.3).
 *   **Self-contained literals**: every value must be a literal or a one-hop reference to another literal of the same header, because the contract is parsed from the wrapper file alone, without elaborating its package dependencies.
 
-### 9.2 Eligibility and Discovery
+### 8.2 Eligibility and Discovery
 
 The contract alone does not make a component an offload target: the generated firmware also needs the SoC-side half, so the component's `system_config` must declare at least `fetch_enable: true` and `has_eoc_status: true` (plus `isolate: true` when the domain resets isolated, which shapes the generated bring-up prologue). Discovery is automatic — every component satisfying both halves is tested, unless `test_app.offload_targets` restricts the list. A component that declares a contract but misses the SoC-side half is reported and skipped in auto-discovery, and is a hard error when named explicitly.
 
-### 9.3 Reference Implementation
+### 8.3 Reference Implementation
 
 `pulp_cluster_isle.sv` carries the reference `"control_wire"` contract; the authority for its offsets is the wrapped IP's own control unit (`cluster_control_unit.sv` of `cluster_peripherals`), and the header comment of the block records that derivation. When wrapping a new cluster IP, derive the offsets the same way — from the RTL of the register file behind the slave window, never from a software header of a reference project.
+
+# Part 2 - Particularities of an Isle
+
+*Only what is specific to an Isle; Part 1 applies unchanged.*
+
+## 9. The Isle
+An Isle is the topology-agnostic form, and it is the one to reach for by default: the same wrapper compiles into a Crossbar SoC and, through a generated Tile wrapper, into a NoC one. Everything in Part 1 applies to it unchanged. Three things are specific to this level.
+
+### 9.1 A Single, Unified AXI Network
+
+An Isle supports only **one** AXI network. The bus-geometry parameters of section 1.1 therefore appear once, unprefixed, and the struct types of section 1.4 come as a single pair. An IP that natively drives physically separate narrow and wide networks cannot be an Isle - that is what a Subtile is for (Part 3).
+
+### 9.2 Dedicated LLC Port (`llc_port`)
+Certain Hosts (like Cheshire) expose a dedicated asynchronous AXI Master port intended specifically to route high-bandwidth traffic directly to an external memory controller (e.g., HyperBus), bypassing the main system crossbar entirely.
+
+**Host Side (Master):**
+*   `async_axi_llc_aw_data_o` (`logic [AsyncAxiLlcAwWidth-1:0]`): Write address channel data payload.
+*   `async_axi_llc_aw_wptr_o` (`logic [LogDepth:0]`): Write address channel CDC write pointer.
+*   `async_axi_llc_aw_rptr_i` (`logic [LogDepth:0]`): Write address channel CDC read pointer.
+*   *(... and all other standard AXI channels following the `async_axi_llc_*` prefix)*
+*   `async_axi_llc_isolate_i` / `async_axi_llc_isolated_o`: Dedicated isolation fence for the LLC domain.
+
+**Peripheral Side (Slave):** Components marked with the `llc_port` interface in the YAML (e.g., `hyperbus_isle`) simply expose the standard asynchronous AXI Slave ports (`async_axi_in_*`).
+*   **Ollivander Handling**: The generator automatically creates direct point-to-point wires between the Host's `async_axi_llc_*` master ports and the peripheral's `async_axi_in_*` slave ports, creating a private high-speed link.
+
+
+### 9.3 The Host Isle & Interconnect Requirement
+
+The auto-calculated parameters and the force-boot hooks of section 5 apply to a Host Isle as they do to any host. What follows is specific to hosting a **crossbar** SoC.
+
+#### 9.3.1 The Crossbar Mandate
+In a Crossbar-based topology, **the Host Isle MUST internally contain the AXI crossbar** (or the NoC injection points). Ollivander builds the address map and routing arrays in the Python generator and passes them via the `ollivander_soc_pkg`. The Host Isle is responsible for reading these arrays and instantiating the physical crossbar that demultiplexes `axi_ext_slv` traffic and multiplexes `axi_ext_mst` traffic.
+
+#### 9.3.2 Dynamic Configuration Builder Pattern
+To maintain a standardized interface while supporting massive Host configurations (like Cheshire's `cheshire_cfg_t` struct), the Host Isle implements the **Dynamic Configuration Builder Pattern**:
+
+1.  **Standard Interface:** It exposes only flat, scalar parameters (`AxiNumMst`, `NumCores`, `FeatureUart`, etc.) and system arrays.
+2.  **Internal Builder:** A SystemVerilog `function automatic cheshire_cfg_t build_cheshire_cfg()` is defined locally inside the wrapper.
+3.  **Struct Assembly:** The function takes the scalar parameters and the arrays provided by the generator package and translates them into the complex struct required by the inner IP.
+
+This strictly enforces a unidirectional data flow: `YAML Topology -> Python Generator -> ollivander_soc_pkg.sv -> cheshire_isle.sv -> cheshire_soc`
+
+
+#### 9.3.3 RegBus Master (Host Only)
+The Host Isle acts as the central RegBus orchestrator and exposes multi-dimensional arrays to drive all configuration registers in the system.
+
+**Asynchronous:**
+*   `reg_async_mst_req_o` (`logic [RegNumSlvAsync-1:0]`): Connected to `async_reg_req_out`.
+*   `reg_async_mst_ack_i` (`logic [RegNumSlvAsync-1:0]`): Connected to `async_reg_ack_in`.
+*   `reg_async_mst_data_o` (`async_reg_out_req_t [RegNumSlvAsync-1:0]`): Connected to `async_reg_data_out`.
+*   `reg_async_mst_req_i` (`logic [RegNumSlvAsync-1:0]`): Connected to `async_reg_req_in`.
+*   `reg_async_mst_ack_o` (`logic [RegNumSlvAsync-1:0]`): Connected to `async_reg_ack_out`.
+*   `reg_async_mst_data_i` (`async_reg_out_rsp_t [RegNumSlvAsync-1:0]`): Connected to `async_reg_data_in`.
+
+**Synchronous:**
+*   `reg_req_o` (`sync_reg_out_req_t [RegNumSlvSync-1:0]`): Connected to `sys_reg_req`.
+*   `reg_rsp_i` (`sync_reg_out_rsp_t [RegNumSlvSync-1:0]`): Connected to `sys_reg_rsp`.
+
+
+# Part 3 - Particularities of a Subtile
+
+*Only what is specific to a Subtile; Part 1 applies unchanged.*
+
+## 10. The Subtile
+A Subtile is the NoC-native form: the user provides pure AXI/RegBus interfaces and Ollivander generates the enclosing `*_tile.sv`, instantiating the FlooNoC Router, the Chimneys, the Bus Joins and - for a host - the Central System Controller. It **cannot** be used in a Crossbar topology, and Ollivander rejects it during validation if attempted.
+
+Everything in Part 1 applies unchanged, with these additions. The reason to write a Subtile rather than an Isle is the dual-network case of section 10.1; if your IP speaks a single AXI network, write an Isle and gain the crossbar topology for free.
+
+### 10.1 Dual-Network Mode (`noc_mode`)
+
+The expected naming depends strictly on the **`noc_mode`** and **`sync_domain`** fields of the YAML. In **joined** mode everything is exactly as in Part 1: a single unprefixed set of parameters, types and ports. In **dual** mode the Subtile connects to two independent networks at once and every name carries a network prefix.
+
+Bus geometries (section 1.1), dual mode:
+    *   `AxiNarrowDataWidth`, `AxiWideDataWidth`
+    *   `AxiNarrowUserWidth`, `AxiWideUserWidth`
+    *   `AxiNarrowInIdWidth`, `AxiNarrowOutIdWidth`, `AxiWideInIdWidth`, `AxiWideOutIdWidth`
+    *   *(Note: `AxiAddrWidth` is assumed global for the SoC, but `AxiNarrowAddrWidth` is supported).*
+
+Struct types (section 1.4), dual mode:
+    *   `axi_narrow_req_t`, `axi_narrow_resp_t`
+    *   `axi_wide_req_t`, `axi_wide_resp_t`
+
+Ports (section 2), dual mode:
+*   **AXI slave**: `axi_narrow_req_i` / `axi_narrow_resp_o`, `axi_wide_req_i` / `axi_wide_resp_o`
+*   **AXI master**: `axi_narrow_req_o` / `axi_narrow_resp_i`, `axi_wide_req_o` / `axi_wide_resp_i`
+*   **Asynchronous**: the `async_axi_in_*` and `async_axi_out_*` families of Part 1 gain the same prefixes - `async_axi_narrow_in_*`, `async_axi_wide_in_*`, and likewise for `out`.
+
+### 10.2 Which Type Each Network Pair Carries
+In dual mode both pairs carry the **input** type of the network — the slave port and the master port alike. FlooNoC compresses IDs across a network (`InIdWidth` > `OutIdWidth`), so the output of one chimney can never be handed straight to the input of the next one: each side widens its own chimney output back to the input width before exporting it, which keeps the adaptation next to the chimney that narrowed the ID and lets the two boundaries connect directly. The widening is field-wise, so that it applies to `id` alone.
+
+```mermaid
+flowchart LR
+    subgraph PARENT["Parent SoC (per network)"]
+        PCH["Border chimney"]
+        PW["widen id<br/>out → in"]
+        PCH -- "out type (compressed)" --> PW
+    end
+    subgraph MACRO["Subtile macro"]
+        MW["widen id<br/>out → in"]
+        MCH["Internal chimney"]
+        MCH -- "out type (compressed)" --> MW
+    end
+    PW -- "boundary: network IN type" --> MCH
+    MW -- "boundary: network IN type" --> PCH
+```
+
+Both arrows crossing the boundary carry the same input-typed struct, which is why the two sides connect directly: every compressed-to-input adaptation stays on the side whose chimney produced the compressed ID.
+
+Typing these ports from the Subtile's own SoC package instead exports a single ID and user width for both networks and both directions, which matches neither of them: since `id` is the first member of the struct, and therefore occupies its most significant bits, the resulting connection does not merely truncate the ID but misaligns every field of the channel.
+
+A wrapper that does **not** expose these as `parameter type`, typing its ports from its own IP package instead, is left connected to the chimney output directly — that is the width a subordinate side expects, and the `snitch_cluster` subtile is the example in the tree.
+
+### 10.3 A Subtile Exported as a Whole Project
+A whole project exported with `export_type: "subtile"` is a distinct case from a hand-written wrapper, and one constraint on it comes from outside the project: it plugs its slave ports into the chimneys of the network FlooGen generated for it, so it *accepts* a fixed ID width. Its SoC package publishes that width, a parent reads it back, and a parent network resolving wider is refused rather than truncated at the boundary. The number may therefore have to be declared on the network of the exporting project — see [Network ID width](../soc_configuration_guide.md#22-topology-topology) in the SoC configuration guide, which covers the whole rule and the diagnostics.
+
+### 10.4 The Host Subtile Exception (Hierarchy Flattening)
+The Host component (e.g., `cheshire_subtile.sv`) is treated specially by Ollivander to avoid unnecessary hierarchy levels.
+
+When a Subtile is defined as the `host` in the YAML configuration, Ollivander generates a `*_tile.sv` wrapper that does **four** things:
+
+1.  Instantiates the **FlooNoC Router**.
+2.  Instantiates the **Chimneys** to convert the Host's AXI traffic to NoC packets.
+3.  Instantiates the **Host Subtile** itself.
+4.  Instantiates the **System Controller (`_reg_top`)**.
+
+#### 10.4.1 RegBus Orchestration
+The Host Subtile must act as the RegBus master for the entire SoC. It should expose multi-dimensional arrays for the RegBus:
+
+*   `reg_req_o` (`sync_reg_out_req_t [RegNumSlvSync-1:0]`)
+*   `reg_rsp_i` (`sync_reg_out_rsp_t [RegNumSlvSync-1:0]`)
+*   *(And corresponding `reg_async_mst_*` arrays for asynchronous slaves).*
+
+**The Flattening Mechanism:**
+Inside the generated Tile wrapper, Ollivander intercepts the **lowest index** of the synchronous RegBus (`reg_req_o[0]`) and routes it directly to the locally instantiated System Controller (`_reg_top`). 
+The remaining RegBus array slices (`[RegNumSlvSync-1:1]`) are routed out of the Tile and up to the SoC Top-Level, where they are distributed to the other Subtiles/Tiles in the system.
+
+# Part 4 - Particularities of a Custom Tile
+
+*Only what is specific to a Custom Tile; Part 1 applies unchanged.*
+
+## 11. The Custom Tile
+A Custom Tile is a hand-written NoC node: instead of letting Ollivander wrap an IP, the wrapper *itself* instantiates the `floo_nw_router` or connects directly to the 2D mesh. Write one only for the cases that need it:
+1.  **Dummy Tiles** (`dummy_tile.sv`): Empty routing nodes used to bridge physical distances in the mesh floorplan.
+2.  **Custom Offload Nodes**: Tiles that manipulate custom NoC packets (e.g., multicast or reductions) directly at the router level without going through standard AXI Chimneys.
+3.  **Third-Party Pre-Packaged Tiles**: IPs that already include a FlooNoC-compatible router inside their top-level RTL.
+
+Everything in Part 1 applies unchanged - including the interrupt contract, the dependency mechanism, the memory-preloading parameters and the generic port export driven by `export_interfaces`. Four things are specific to this level.
+
+### 11.1 Mandatory NoC Boundary Interfaces
+Because a Custom Tile is instantiated directly within the NoC 2D mesh array by the `noc_soc_top.sv.mako` template, it **MUST** expose the exact FlooNoC routing interfaces in all four cardinal directions (`[West:North]`).
+
+The following ports are mandatory and strictly checked by the generator:
+
+```systemverilog
+import floo_pkg::*;
+// Note: You should also import your project-specific NoC package 
+// (e.g., floo_gwaihir_noc_pkg::*) to get the correct struct definitions.
+
+// Narrow Network
+output floo_req_t  [West:North] floo_req_o,
+input  floo_rsp_t  [West:North] floo_rsp_i,
+input  floo_req_t  [West:North] floo_req_i,
+output floo_rsp_t  [West:North] floo_rsp_o,
+
+// Wide Network (Required even if internally tied to zero)
+output floo_wide_t [West:North] floo_wide_o,
+input  floo_wide_t [West:North] floo_wide_i
+```
+
+### 11.2 The Tile's Coordinate Identity
+*   **`id_i`** (`id_t`): the physical X/Y coordinate assigned to this Tile by the mesh generator, and a mandatory port. The internal router needs it to know its position; nothing else in the contract carries it.
+
+### 11.3 Clock and Reset Control Under an Auto Control Group
+
+A Tile subject to an `auto_control_group` receives its gating controls at the tile boundary, where an Isle would receive the System Controller signals of section 4:
+*   **`tile_clk_en_i`** (`logic`): Software-controlled clock enable, active high (`1` = clock enabled). Driven by bit `i` of the group's `<group>_clk_en` register, where `i` is the instance index of this Tile within the group.
+*   **`tile_rst_ni`** (`logic`): Software-controlled reset, **active low** at the pin. It is driven by the *inverse* of bit `i` of the group's `<group>_rst` register, which is active high (`1` = held in reset); the inversion happens in the SoC top-level.
+*   **`clk_rst_bypass_i`** (`logic`): Hardware override to bypass clock gating and software resets during test modes. It is also the escape hatch that allows a Tile to be used before any CSR has been written.
+
+The power-on value of both registers is set by `system_controller.power_on_state`, which defaults to `"gated"`: the Tile comes up with its clock disabled and its reset asserted, and must be brought up explicitly. See the [System Controller section](../soc_configuration_guide.md#25-system-controller-system_controller) of the SoC configuration guide.
+
+Gating a Tile must never break traffic that merely routes *through* it. Keep the NoC router (and, preferably, the chimney) on the ungated `clk_i` / `rst_ni`, and confine `tile_clk` and `tile_rst_n` to the payload IP.
+
+### 11.4 NoC Struct Parameter Types
+Because Custom Tiles natively interact with the NoC router, the quickest integration method is to hardcode the import of the local NoC package (e.g., `import floo_gwaihir_noc_pkg::*;`) inside the wrapper to access the `floo_req_t` and `id_t` structs.
+
+However, if you are designing a **truly reusable** Custom Tile meant to be instantiated across different SoCs (or exported within different Macros), hardcoding the package will cause strict type equivalence errors during compilation. To make the Custom Tile fully portable, you should expose the NoC structs as `parameter type` in the module header:
+*   `floo_req_t`, `floo_rsp_t`, `floo_wide_t`
+*   `id_t`
+*   `sam_rule_t` (if handling address mapping directly)
+
+*(Note: Because Ollivander currently auto-injects AXI types but not NoC types into Custom Tiles, you must explicitly map these NoC types in the `parameters` block of your YAML configuration if you choose to parameterize them).*
+
+*Note: Because Custom Tiles natively instantiate the NoC router, they must often rely on the auto-generated NoC configuration package (e.g., `AxiCfgN`, `AxiCfgW`, `RouteCfg`) provided by FlooGen, rather than relying solely on scalar parameters.*

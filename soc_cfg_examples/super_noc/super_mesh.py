@@ -292,6 +292,20 @@ config = OllivanderConfig(
     # Defines the toolchain and target memory for automated bare-metal C compilation.
     # Ollivander uses this to automatically generate a memory-mapped Linker Script
     # aligned to the physical memory map.
+
+    # Simulator flags & options (power-user section, guide ch. 6). Phase 2 of the
+    # Verilator build is pure g++ (the -j48 emission-truncation hazard cannot reach
+    # it), and this project's twenty child libraries share the default 32 slots -
+    # spatz and pulp alone spend ~6 min of already-parallel compilation (wip 5.2.2).
+    simulation={
+        "verilator": {"compile_jobs": 64},
+        # compile_jobs 64: measured -26/-27% on both supers' cold builds (the
+        # -j48 emission-truncation hazard cannot reach phase 2, which is pure
+        # g++). threads stays at the default 4: 8 was tried on 2026-08-21 and
+        # reverted - it segfaults super_crux's top at time zero (isolated to
+        # the thread count alone, jobs exonerated) and bought nothing on
+        # super_mesh (22m20 vs 21m44); see wip 5.2.
+    },
     software_stack={
         "toolchain": "riscv64-unknown-elf-",
         "boot_memory": "l2_shared_memory",

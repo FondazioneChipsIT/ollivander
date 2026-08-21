@@ -11,9 +11,24 @@ CC      = ${toolchain}gcc
 OBJCOPY = ${toolchain}objcopy
 OBJDUMP = ${toolchain}objdump
 
+<%
+  # simulation.firmware knobs (soc_schema.py): raw flag lists. cflags REPLACES the
+  # optimization/debug tail of the host line (the ISA/ABI/cmodel triplet stays
+  # derived from the host component - it describes hardware, not preference);
+  # ldflags APPENDS to the link line; cluster_cflags REPLACES the offload
+  # payload's -O2 -g. Absent section = today's text, byte for byte.
+  def _fw(key, default):
+      s = getattr(config, "simulation", None)
+      f = getattr(s, "firmware", None) if s else None
+      v = getattr(f, key, None) if f else None
+      return " ".join(v) if v else default
+  fw_cflags  = _fw("cflags", "-g -O0")
+  fw_ldflags = _fw("ldflags", "")
+  fw_cluster = _fw("cluster_cflags", "-O2 -g")
+%>\
 # Default compilation flags for Host (dynamic based on ISA/ABI/cmodel)
-CFLAGS  = -march=${config.host.isa or "rv64imafdc"} -mabi=${config.host.abi or "lp64d"} -mcmodel=${config.host.cmodel or "medany"} -ffunction-sections -fdata-sections -g -O0
-LDFLAGS = -T linker.ld -nostartfiles -Wl,--gc-sections
+CFLAGS  = -march=${config.host.isa or "rv64imafdc"} -mabi=${config.host.abi or "lp64d"} -mcmodel=${config.host.cmodel or "medany"} -ffunction-sections -fdata-sections ${fw_cflags}
+LDFLAGS = -T linker.ld -nostartfiles -Wl,--gc-sections${" " + fw_ldflags if fw_ldflags else ""}
 
 .PHONY: all clean
 all: ${app_name}.hex
@@ -60,7 +75,7 @@ payload_defines = " ".join(common + specific)
 %>\
 # Target '${t_name}': ${t["isa"]}/${t["abi"]}, registers via the '${t["contract"]}' contract.
 payload_${t_name}.elf: payload_main.c payload.ld
-	$(CC) -march=${t["isa"]} -mabi=${t["abi"]} -mcmodel=medlow -O2 -g -ffreestanding -nostartfiles -nostdlib -T payload.ld ${payload_defines} -o $@ payload_main.c
+	$(CC) -march=${t["isa"]} -mabi=${t["abi"]} -mcmodel=medlow ${fw_cluster} -ffreestanding -nostartfiles -nostdlib -T payload.ld ${payload_defines} -o $@ payload_main.c
 
 payload_${t_name}.bin: payload_${t_name}.elf
 	$(OBJCOPY) -O binary $< $@
