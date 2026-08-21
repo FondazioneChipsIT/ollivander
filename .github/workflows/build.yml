@@ -1,0 +1,44 @@
+# Copyright Fondazione Chips-IT
+# Licensed under the Apache License, Version 2.0, see LICENSE for details.
+# SPDX-License-Identifier: Apache-2.0
+
+name: build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+
+  build:
+    strategy:
+      # matrix:
+      #   target: [hw, doc]
+      fail-fast: false
+    runs-on: ubuntu-22.04
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+      -
+        name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+          cache: pip
+      -
+        name: Install uv
+        run: pip install uv
+      -
+        name: Setup Ollivander
+        run: |
+          make setup
+          source .venv/bin/activate
+      -
+        name: Install Bender
+        uses: pulp-platform/pulp-actions/bender-install@v2
+        with:
+          version: 0.31.0
+      -
+        name: Generation
+        run: make generate SOC_YAML=$(pwd)/soc_cfg_examples/crossbar/crux.yml ENV_YAML=$(pwd)/soc_cfg_examples/crossbar/crux_env.yml OUT_DIR=$(pwd)/generated
