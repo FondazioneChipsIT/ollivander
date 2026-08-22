@@ -717,26 +717,36 @@ ${jtag_rst_str}
   begin
     // The flat hex is @-addressed in bytes at the region's base; the local
     // associative array keeps the image out of the DUT's hierarchy entirely.
-    // The packing ASSUMES the image is one contiguous span starting at the
-    // region base: the num()-based word count undercounts the span if the
-    // @-blocks had a gap, silently truncating the tail. That contract is
-    // enforced where it is cheap - the generated sw/Makefile checks the hex
-    // for contiguity right after objcopy and fails the BUILD on a gap - and
-    // deliberately NOT here: the runtime alternative (assoc-array first/
-    // last/exists inside this timed process) crashes Verilator 5.050's
-    // threaded scheduler (a C++ length_error thrown by VlTriggerScheduler;
-    // the same constructs pass unthreaded - one-thread crux, standalone
-    // probes). Note for editors: this comment must not spell package-colon-
-    // colon-symbol forms, the auto-importer reads comments too.
+    // The word count comes from the KEY SPAN, never from num(): the image
+    // may arrive as several @-blocks, and a gap between them would make a
+    // num()-based count undercount the span and silently truncate the tail.
+    // For hexes built by the generated sw/Makefile this is belt on top of
+    // suspenders (objcopy --gap-fill closes the alignment slivers and an awk
+    // check fails the build on residual gaps), but 'file' may name ANY hex,
+    // including a hand-built one that never met that Makefile. Gap bytes are
+    // zero-filled explicitly - the linker emitted nothing there, and an
+    // unset key would read X. (These constructs briefly appeared to crash
+    // the threaded runtime of Verilator on 2026-08-21; that crash was later
+    // proven to be ccache poisoning of the precompiled-header build, not a
+    // defect of the code below.) Two traps for editors of this comment: no
+    // package-colon-colon-symbol spellings (the auto-importer reads
+    // comments), and no line may BEGIN with the tool's name (a leading
+    // 'verilator' in a comment parses as a metacomment pragma and errors).
     automatic logic [7:0]  sba_img [logic [63:0]];
     automatic logic [31:0] sba_words [];
+    automatic logic [63:0] sba_first, sba_last;
     $readmemh("${mem['file']}", sba_img);
-    sba_words = new[(sba_img.num() + 3) / 4];
+    if (sba_img.first(sba_first) == 0)
+      $fatal(1, "[TB] SBA load: ${mem['file']} is empty or unreadable");
+    void'(sba_img.last(sba_last));
+    if (sba_first != 64'h${f"{sba_base:x}"})
+      $fatal(1, "[TB] SBA load: image starts at 0x%h, expected region base 0x${f"{sba_base:08x}"} - image and memory map disagree", sba_first);
+    sba_words = new[((sba_last - sba_first + 1) + 3) / 4];
     foreach (sba_words[w])
-      sba_words[w] = {sba_img[64'h${f"{sba_base:x}"} + 4*w + 3],
-                      sba_img[64'h${f"{sba_base:x}"} + 4*w + 2],
-                      sba_img[64'h${f"{sba_base:x}"} + 4*w + 1],
-                      sba_img[64'h${f"{sba_base:x}"} + 4*w + 0]};
+      for (int unsigned b = 0; b < 4; b++) begin
+        automatic logic [63:0] sba_addr = 64'h${f"{sba_base:x}"} + 4*w + b;
+        sba_words[w][8*b +: 8] = sba_img.exists(sba_addr) ? sba_img[sba_addr] : 8'h00;
+      end
     $display("[TB] SBA load: %0d bytes (%0d words) from ${mem['file']} to 0x${f"{sba_base:08x}"}...",
              sba_img.num(), sba_words.size());
     i_vip.sba_load(64'h${f"{sba_base:x}"}, sba_words, sba_words.size(), ${sba_verify_lit});
