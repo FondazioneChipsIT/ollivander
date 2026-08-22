@@ -872,6 +872,20 @@ def validate_cross_references(config: OllivanderConfig):
                           f" to list 'jtag' in export_interfaces: without it the TAP pins never"
                           f" reach the top level and the JTAG agent reads only X.")
 
+    # The system-bus load travels the debug module, which only the JTAG bring-up sequence
+    # initializes: under force boot no TAP driver is even instantiated, so a 'jtag' preload
+    # would hang on the first DMI access with nothing on the other end. A configuration
+    # error, not a runtime surprise.
+    preload_mode = (config.testbench or {}).get('preload_mode', 'readmemh')
+    if preload_mode not in ('readmemh', 'jtag'):
+        errors.append(f"[testbench] preload_mode '{preload_mode}' is not implemented: choose"
+                      f" 'readmemh' (hierarchical $readmemh, the default) or 'jtag' (streamed"
+                      f" system-bus load through the debug module).")
+    elif preload_mode == 'jtag' and (config.testbench or {}).get('boot_mode') != 'jtag':
+        errors.append(f"[testbench] preload_mode 'jtag' requires boot_mode 'jtag': the image"
+                      f" travels the debug module's system bus, which only the JTAG bring-up"
+                      f" sequence brings to life.")
+
     if errors:
         raise ValueError("\n".join(f"\n{e}" for e in errors))
 
@@ -930,6 +944,19 @@ _ROOT_BLOCK_SPEC = {
                   # the firmware ungate the rest per phase. jtag boot only - the
                   # force path has no per-phase story.
                   "bring_up": str,
+                  # How the firmware image reaches the preload memories (wip 2.1,
+                  # second half): 'readmemh' (default) injects the split hex files
+                  # through hierarchical paths into the SRAM instances; 'jtag'
+                  # streams the flat hex through the debug module's system bus
+                  # access (vip_ollivander_soc.sba_load) - no dotted path survives,
+                  # so the preload targets become eligible as Verilator hier
+                  # blocks. Requires boot_mode 'jtag' (the DMI must be up).
+                  "preload_mode": str,
+                  # Re-read the whole image through the same channel after a jtag
+                  # preload and compare word by word (sbreadondata streaming).
+                  # Measured ~2.8x the plain load's simulated time: meant for one
+                  # verifying configuration in the fleet, not for every project.
+                  "preload_verify": bool,
                   "preload_memories": [{"instance": str, "file": str}]},
     "software_stack": {"toolchain": str, "boot_memory": str,
                        "test_app": {"name": str, "auto_generate_c": bool, "baudrate": int,

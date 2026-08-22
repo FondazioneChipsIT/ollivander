@@ -481,4 +481,116 @@ module vip_ollivander_soc #(
     end
   endtask
 
+  // Streamed system-bus load: an image of 32-bit words delivered to 'base'
+  // through SBA autoincrement - the architected replacement for hierarchical
+  // $readmemh preloads (interleaving happens in the DUT's own hardware, and
+  // the same sequence works against silicon). Cost is the reason this task
+  // exists next to sba_write32: the one-word task pays FOUR DMI operations
+  // per word (two address writes, a data write, a status poll - measured
+  // 5.36 us/word at the default TCK), which multiplied by an image costs
+  // more simulated time than the test it feeds. With sbautoincrement the
+  // address is written once and every SBData0 write both fires a bus beat
+  // and advances the address, so the steady state is ONE DMI write per beat;
+  // where the debug module offers sbaccess64 (read back from SBCS, never
+  // assumed) the beats are 64-bit - SBData1 first, SBData0 last, because
+  // writing SBData0 is what triggers the beat. Note what 64-bit does NOT buy:
+  // each beat still costs two DMI writes, so the JTAG-side traffic stays at
+  // one DMI write per 32-bit word either way; the gain is halved bus beats
+  // (and parity with Cheshire's own loader, which streams the same way).
+  // Errors are checked ONCE at the end: sberror and sbbusyerror are sticky
+  // by spec, so a mid-stream failure cannot be missed, only reported with
+  // the stream (not the beat) as context - the price of not polling per word.
+  // The optional 'verify' pass re-reads the whole image through the same
+  // channel (sbreadondata streaming: the address is written once, and every
+  // SBData0 READ both returns the current word and fires the next bus read).
+  // Measured on the 699-word mesh image: 2199 us with verify against 792 us
+  // without - the read stream costs ~1.8x the write stream, because a DMI
+  // read is two scans (issue, then capture with backoff) where a write is
+  // one. Roughly a 2.8x total, so it is OFF by default:
+  // the intended use is one verifying configuration in the regression fleet,
+  // the fast path everywhere else - the same split astral's CI applies to
+  // its one JTAG-preload entry.
+  task automatic sba_load(input logic [63:0] base,
+                          input logic [31:0] image[],
+                          input int unsigned num_words,
+                          input bit verify = 1'b0);
+    automatic dm::sbcs_t sbcs;
+    automatic int unsigned w = 0;
+    automatic bit use64;
+    // Capability probe: 64-bit beats only if the hardware declares them.
+    drv_read_dmi_exp_backoff(dm::SBCS, sbcs);
+    use64 = sbcs.sbaccess64 && !base[2];  // 64-bit needs an 8-byte-aligned base
+    sbcs = '{sbautoincrement: 1'b1, sbaccess: use64 ? 3'h3 : 3'h2, default: '0};
+    write_dmi_safe(dm::SBCS, sbcs);
+    write_dmi_safe(dm::SBAddress1, base[63:32]);
+    write_dmi_safe(dm::SBAddress0, base[31:0]);
+    if (use64) begin
+      for (; w + 1 < num_words; w += 2) begin
+        write_dmi_safe(dm::SBData1, image[w+1]);
+        write_dmi_safe(dm::SBData0, image[w]);
+      end
+      if (w < num_words) begin
+        // Odd tail: one last 32-bit beat at the already-incremented address.
+        sbcs = '{sbautoincrement: 1'b1, sbaccess: 3'h2, default: '0};
+        write_dmi_safe(dm::SBCS, sbcs);
+        write_dmi_safe(dm::SBData0, image[w]);
+        w++;
+      end
+    end else begin
+      for (; w < num_words; w++) write_dmi_safe(dm::SBData0, image[w]);
+    end
+    // Drain, then the one sticky-error check for the whole stream.
+    do drv_read_dmi_exp_backoff(dm::SBCS, sbcs);
+    while (sbcs.sbbusy);
+    if (sbcs.sberror != 3'h0 || sbcs.sbbusyerror)
+      $fatal(1, "[VIP-JTAG] SBA LOAD FAILED (base 0x%h, %0d words: sberror=%0d sbbusyerror=%0d)",
+             base, num_words, sbcs.sberror, sbcs.sbbusyerror);
+    if (verify) begin
+      // Streamed readback: sbreadonaddr fires the read of word 0 when the
+      // address is written, then every SBData0 READ both returns the current
+      // word and fires the next (sbreadondata + autoincrement). The pass stays
+      // on 32-bit beats even where the store used 64: streamed-read DMI cost
+      // is ~one operation per 32-bit word in BOTH modes (SBData1+SBData0 per
+      // double word vs SBData0 per word), and DMI dominates, so 64-bit would
+      // buy nothing here. Like the write stream, no per-word status polling:
+      // the sticky sberror/sbbusyerror check at the end covers the stream.
+      automatic logic [31:0] rdata;
+      sbcs = '{sbreadonaddr: 1'b1, sbreadondata: 1'b1, sbautoincrement: 1'b1,
+               sbaccess: 3'h2, default: '0};
+      write_dmi_safe(dm::SBCS, sbcs);
+      write_dmi_safe(dm::SBAddress1, base[63:32]);
+      write_dmi_safe(dm::SBAddress0, base[31:0]);
+      for (w = 0; w + 1 < num_words; w++) begin
+        drv_read_dmi_exp_backoff(dm::SBData0, rdata);
+        if (rdata !== image[w])
+          $fatal(1, "[VIP-JTAG] SBA VERIFY MISMATCH at 0x%h: wrote 0x%h, read 0x%h",
+                 base + 64'(w) * 4, image[w], rdata);
+      end
+      // Last word: drop sbreadondata BEFORE consuming it, or the final SBData0
+      // read would fire a bus read beyond the image - possibly into unmapped
+      // space, latching a spurious sticky sberror. Wait out sbbusy first:
+      // writing SBCS while the prefetched read is in flight sets sbbusyerror.
+      do drv_read_dmi_exp_backoff(dm::SBCS, sbcs);
+      while (sbcs.sbbusy);
+      sbcs = '{sbaccess: 3'h2, default: '0};
+      write_dmi_safe(dm::SBCS, sbcs);
+      drv_read_dmi_exp_backoff(dm::SBData0, rdata);
+      if (rdata !== image[num_words-1])
+        $fatal(1, "[VIP-JTAG] SBA VERIFY MISMATCH at 0x%h: wrote 0x%h, read 0x%h",
+               base + 64'(num_words - 1) * 4, image[num_words-1], rdata);
+      // The one sticky-error check for the whole read stream.
+      drv_read_dmi_exp_backoff(dm::SBCS, sbcs);
+      if (sbcs.sberror != 3'h0 || sbcs.sbbusyerror)
+        $fatal(1, "[VIP-JTAG] SBA VERIFY FAILED (base 0x%h, %0d words: sberror=%0d sbbusyerror=%0d)",
+               base, num_words, sbcs.sberror, sbcs.sbbusyerror);
+      $display("[VIP-JTAG] SBA verify complete: %0d words match at 0x%h", num_words, base);
+    end
+    // Restore the write-mode SBCS every other task assumes (no autoincrement).
+    sbcs = '{sbaccess: 3'h2, default: '0};
+    write_dmi_safe(dm::SBCS, sbcs);
+    $display("[VIP-JTAG] SBA load complete: %0d words at 0x%h (%s beats%s)",
+             num_words, base, use64 ? "64-bit" : "32-bit",
+             verify ? ", verified" : "");
+  endtask
+
 endmodule

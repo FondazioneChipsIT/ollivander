@@ -1682,8 +1682,10 @@ class RTLGenerator:
           parameterization by construction of the templates) but the lane itself;
         - a module is EXCLUDED when the generated testbench reaches into it hierarchically
           (Verilator cannot cross a hier-block boundary with a dotted path): the host tile
-          carries the bring-up forces and the Cheshire boot scratch, and every tile named
-          in testbench.preload_memories is a $readmemh target;
+          carries the bring-up forces and the Cheshire boot scratch (force boot only), and
+          every tile named in testbench.preload_memories is a $readmemh target (readmemh
+          preload only - under preload_mode 'jtag' the image travels the debug module
+          instead and the target stays eligible);
         - a module is EXCLUDED when its wrapper declares struct-typed or type parameters:
           Verilator 5.050's hier-parameters wrapper cannot rebuild those (internal error,
           reported upstream). Detected by scanning the generated wrapper header.
@@ -1714,6 +1716,16 @@ class RTLGenerator:
         # dividend the force-free bring-up exists for (wip 2.1).
         host_boot_mode = (self.soc_config.testbench or {}).get("boot_mode", "force")
         host_reachable_by_tb = (host_boot_mode != "jtag")
+
+        # THE PRELOAD TARGETS' EXCLUSION IS LIKEWISE A CONSEQUENCE OF THE PRELOAD
+        # MODE, NOT A PROPERTY OF THE TILES. Under 'readmemh' the testbench reaches
+        # into their SRAM banks with dotted paths (the $readmemh targets and the AXI
+        # transaction monitors); under 'jtag' the image travels the debug module's
+        # system bus and the monitors are gated out with the readmemh section, so no
+        # dotted path survives and the boot tile becomes eligible like any other -
+        # the second half of the dividend the force-free bring-up exists for.
+        preload_by_dotted_path = \
+            (self.soc_config.testbench or {}).get("preload_mode", "readmemh") != "jtag"
 
         # LOCAL EXCLUSIONS VS EXPORTED DECLARATIONS (wip 2.1 residual 2, second half).
         # Two kinds of exclusion end up in the same set below, and they do NOT have
@@ -1812,7 +1824,7 @@ class RTLGenerator:
             excluded = set()
             tb_cfg = self.soc_config.testbench or {}
 
-            for mem in tb_cfg.get("preload_memories", []):
+            for mem in (tb_cfg.get("preload_memories", []) if preload_by_dotted_path else []):
                 # 'instance' is the documented key; 'name' survives as its historical
                 # alias. Until the single-instance rule was dropped this lookup never
                 # decided anything on the shipped examples - their preload tiles were
@@ -1870,7 +1882,7 @@ class RTLGenerator:
             # wrapper survives the parameter rule becomes its own child library.
             excluded = set()
             tb_cfg = self.soc_config.testbench or {}
-            for mem in tb_cfg.get("preload_memories", []):
+            for mem in (tb_cfg.get("preload_memories", []) if preload_by_dotted_path else []):
                 inst = mem.get("instance", mem.get("name", ""))
                 for part in inst.split('.'):
                     if part.startswith("i_"):

@@ -92,5 +92,20 @@ ${app_name}.elf: main.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 % endif
 
+# The flat hex must be ONE contiguous span: the generated testbench's SBA
+# preload packs it with a num()-based word count, which silently truncates
+# the tail if the @-blocks have a gap. objcopy emits one block per section,
+# and section ALIGNMENT leaves real slivers between them (crux: 6 bytes
+# between @8800094a and @88000950), so --gap-fill closes them with zeros -
+# the same bytes a debugger-side loader would write. The awk check stays as
+# the contract's enforcer: it fails the BUILD on any residual gap, instead
+# of a runtime check in the testbench, where the robust SV constructs crash
+# Verilator 5.050's threaded scheduler (see tb_soc.sv.mako, image load).
 ${app_name}.hex: ${app_name}.elf
-	$(OBJCOPY) -O verilog $< $@
+	$(OBJCOPY) -O verilog --gap-fill 0x00 $< $@
+	@awk '/^@/ { a = strtonum("0x" substr($$1, 2)); \
+	             if (expect && a != expect) { \
+	               printf "ERROR: %s: @%x does not continue @%x - the image has a gap or overlap, the SBA preload would truncate it\n", \
+	                      FILENAME, a, expect > "/dev/stderr"; exit 1; } \
+	             expect = a; next } \
+	           { expect += NF }' $@

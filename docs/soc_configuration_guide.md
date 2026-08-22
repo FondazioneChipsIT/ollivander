@@ -388,9 +388,11 @@ Instructs the simulation environment on how to initialize the SoC. Since Ollivan
 
 | Field                       | Type    | Description                                                    |
 | :-------------------------- | :------ | :------------------------------------------------------------- |
-| `preload_memories`          | List    | Memory arrays to initialize in the testbench via `$readmemh`.   |
+| `preload_memories`          | List    | Memory regions to initialize with the firmware image.           |
 | `boot_mode`                 | String  | How the testbench boots the host: `"force"` (default) or `"jtag"`. See section 4.1. |
-| `bring_up`                  | String  | How much of a gated SoC the testbench powers up: `"all"` (default) or `"minimal"`. See section 4.2. |
+| `preload_mode`              | String  | How the image reaches the memories: `"readmemh"` (default) or `"jtag"`. See section 4.2. |
+| `preload_verify`            | Boolean | `jtag` preload only: re-read and compare the whole image (default `false`). See section 4.2. |
+| `bring_up`                  | String  | How much of a gated SoC the testbench powers up: `"all"` (default) or `"minimal"`. See section 4.3. |
 | `boot_force_delay_ns`       | Integer | How long the testbench holds the boot-mode and scratchpad force |
 |                             |         | values, in ns. Must outlast the host's internal reset sequence. |
 | `boot_force_fast_delay_ns`  | Integer | The same, for the shorter `fast` variant of the run.            |
@@ -414,7 +416,7 @@ testbench:
 
 ### 4.1 Boot modes: `force` and `jtag`
 
-`boot_mode` selects how the generated testbench brings the SoC out of reset and starts the firmware. Memory preload is `$readmemh` in both modes (it is the fast regression path); what changes is everything after it.
+`boot_mode` selects how the generated testbench brings the SoC out of reset and starts the firmware. It is one of two independent axes: how the *image* reaches the memories is `preload_mode` (section 4.2), and the two compose — `jtag` boot with `readmemh` preload is a supported (and shipped) combination.
 
 *   `"force"` (the default) drives the host's boot-mode and scratch registers, and the system controller's clock-enable and reset registers, through hierarchical `force` statements. It is fast and needs nothing from the design, but it exercises no architectural path: silicon has no `force`.
 Every generated testbench instantiates the verification IP (`components/tb/vip_ollivander_soc.sv`), which hosts all the bench's agents: the clock and reset drivers, the UART RX monitor (timed on the divisor the firmware actually programs), and the JTAG agent below. The testbench itself owns only the policy: input ties, memory preloads and the boot sequence.
@@ -426,9 +428,18 @@ Requirements for `"jtag"`, both checked or supplied by the generator:
 *   The host must list `"jtag"` in `export_interfaces`, otherwise its TAP pins never reach the SoC top-level. This is validated at generation time with an explicit error, because the failure mode is otherwise perfectly silent: every DMI read returns X, and X falls open through every liveness check a testbench agent can make.
 *   The host component must declare the JTAG boot contract in its header: `HasJtagBoot`, `JtagIdCode` (the expected IDCODE) and `JtagScratchOffset` (the scratch-register offset inside the host's address window). `cheshire_isle` declares all three.
 
-Among the example projects, five run `boot_mode: "jtag"` as their standard configuration (`noc`, `crossbar_isle`, `noc_isle`, `noc_subtile`, `super_crossbar`), keeping the architectural boot path under permanent regression. `crossbar` and `super_noc` deliberately stay on `"force"`: it is the schema default and a supported feature, and it would lose regression coverage if no example exercised it.
+Among the example projects, five run `boot_mode: "jtag"` as their standard configuration (`crossbar`, `noc`, `noc_isle`, `super_crossbar`, `super_noc`), keeping the architectural boot path under permanent regression. `crossbar_isle` and `noc_subtile` deliberately stay on `"force"`: it is the schema default and a supported feature, and it would lose regression coverage if no example exercised it.
 
-### 4.2 `bring_up`: how much of the SoC the testbench powers up
+### 4.2 Preload modes: `readmemh` and `jtag`
+
+`preload_mode` selects the road the compiled image takes into the `preload_memories` regions.
+
+*   `"readmemh"` (the default) injects the hex files through hierarchical `$readmemh` into the physical SRAM arrays — simulation-only, fast, and the reason interleaved memories need their image pre-split per bank. The dotted paths it (and its AXI monitors) plant into the DUT keep the preloaded module out of Verilator's hierarchical blocks.
+*   `"jtag"` streams the *flat* hex through the debug module's System Bus Access, from inside the JTAG boot sequence: one `sba_load` call per `preload_memories` entry, its base address resolved by the generator from the component's `axi_slave` interface, autoincrement addressing, 64-bit beats where the debug module declares them, and one sticky-error check per stream. Interleaving happens in the SoC's own decoder hardware, and the identical sequence would work against silicon. Because no dotted path reaches the DUT, the preload target stays eligible as a Verilator hierarchical block — the practical reason to choose this mode. It requires `boot_mode: "jtag"` (validated at generation time: the system bus only exists once the debug module is up).
+
+With `preload_verify: true` the testbench re-reads the whole image through the same channel (`sbreadondata` streaming) and compares word by word, failing fatally on the first mismatch. It costs ~2.8x the plain load's simulated time, so the intended use is one verifying configuration in the regression fleet rather than every project.
+
+### 4.3 `bring_up`: how much of the SoC the testbench powers up
 
 `bring_up` decides how many of the gated clock domains and control groups the generated testbench enables before handing control to the firmware. It applies to `boot_mode: "jtag"` only - the force path has no per-phase story - and it splits one job across two owners.
 
@@ -481,7 +492,7 @@ A component qualifies as an **offload target** when both halves of its boot cont
 
 When a target's component type sits under a `clk_rst_control` auto control group (so its instances power on gated), the generated helpers ungate the whole group before the first slave-window access; the same happens for the payload memory's group, before the payload load.
 
-With `bring_up: minimal` (section 4.2) that ungating is no longer redundant but load-bearing: the testbench leaves everything but the boot path gated, so the firmware's `<target>_enable()` is what makes a target reachable at all. Symmetrically, the generated application calls `<target>_disable()` at the end of each phase - isolate the target and wait for the isolation status, then assert its reset and drop its clock enable, in that order, so no transaction is cut mid-flight. The pair therefore tests the full power cycle of every target, not only its wake-up.
+With `bring_up: minimal` (section 4.3) that ungating is no longer redundant but load-bearing: the testbench leaves everything but the boot path gated, so the firmware's `<target>_enable()` is what makes a target reachable at all. Symmetrically, the generated application calls `<target>_disable()` at the end of each phase - isolate the target and wait for the isolation status, then assert its reset and drop its clock enable, in that order, so no transaction is cut mid-flight. The pair therefore tests the full power cycle of every target, not only its wake-up.
 
 A `memory_mapped` component whose placement is a **box** (an instance array) is driven as an array: the helpers address each instance through its own window (base plus index times `size_per_instance`), the firmware configures and wakes **every** instance before polling any — a genuinely parallel launch — and the checksum is verified per instance. A single-instance target is simply the N = 1 case of the same code.
 

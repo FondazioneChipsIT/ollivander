@@ -248,15 +248,19 @@ ${dut_ports_str}
 % endif
 
   // ===========================================================================
-  // Memory Preload ($readmemh)
+  // Memory Preload
   // ===========================================================================
-  // Extracts the 'preload_memories' configuration from the YAML testbench 
-  // section. It uses standard $readmemh to inject compiled firmware (hex) 
-  // directly into the hierarchical SRAM instances before the boot sequence.
-  // This avoids the need for complex JTAG/SPI boot preloaders in simulation.
+  // The 'preload_memories' entries of the YAML testbench section travel one of
+  // two roads (testbench.preload_mode): 'readmemh' (default) injects the split
+  // hex files through hierarchical paths into the SRAM instances below - fast,
+  // but a dotted path into the DUT; 'jtag' streams the flat hex through the
+  // debug module's system bus inside the boot sequence further down, leaving
+  // this section empty and the preload targets free of hierarchical reaches.
 <%
 testbench_cfg = config.testbench or {}
 preload_mems = testbench_cfg.get("preload_memories", [])
+preload_mode = testbench_cfg.get("preload_mode", "readmemh")
+preload_verify = testbench_cfg.get("preload_verify", False)
 all_comps = [config.host] + (config.components if config.components else [])
 
 def resolve_param_val(val, comp, fixed_params=None, extra_params=None):
@@ -304,7 +308,7 @@ def resolve_param_val(val, comp, fixed_params=None, extra_params=None):
             return int(digits[0])
         return 1
 %>
-% if preload_mems:
+% if preload_mems and preload_mode == "readmemh":
   % for mem in preload_mems:
     <%
     comp_name = mem['instance']
@@ -402,10 +406,13 @@ if not uart_base:
         uart_base = "0x03002000"
 %>
 
-% if preload_mems:
+% if preload_mems and preload_mode == "readmemh":
   // ===========================================================================
   // AXI Transaction Monitor variables
   // ===========================================================================
+  // readmemh mode only: the monitors below reach into the DUT with dotted
+  // paths, which a preload target promoted to a Verilator hier block (the
+  // whole point of preload_mode 'jtag') turns into a build error.
   % for mem in preload_mems:
     <%
     comp_name = mem['instance']
@@ -681,6 +688,61 @@ ${jtag_clk_str}
 ${jtag_rst_str}
   $display("[TB] Gated domains reset released after a clocked reset window.");
 % endif
+% if preload_mode == "jtag":
+  // ==========================================================================
+  // Architected image load (wip 2.1, second half): the same flat hex the
+  // readmemh path would split per bank, streamed instead through the debug
+  // module's system bus (vip_ollivander_soc.sba_load). No dotted path into
+  // the SRAM banks - interleaving happens in the DUT's own decoder hardware,
+  // the identical sequence works against silicon, and the preload targets
+  // stay eligible as Verilator hier blocks. One call per configured region;
+  // the base is resolved by the generator from the memory map, never assumed
+  // by the testbench. Runs after the gated bring-up (the image may live in a
+  // gated tile) and before the handoff (the host must find it on wake-up).
+  // ==========================================================================
+  % for mem in preload_mems:
+<%
+    sba_comp = find_component(mem['instance'], config)
+    sba_base = None
+    if sba_comp:
+        for slv in (getattr(sba_comp, "interfaces", {}) or {}).get("axi_slave", []):
+            sba_base = slv.get("base_addr")
+            if sba_base is not None:
+                break
+    if sba_base is None:
+        raise ValueError(f"preload_mode 'jtag': cannot resolve the base address of preload "
+                         f"instance '{mem['instance']}' from its axi_slave interfaces")
+    sba_verify_lit = "1'b1" if preload_verify else "1'b0"
+%>
+  begin
+    // The flat hex is @-addressed in bytes at the region's base; the local
+    // associative array keeps the image out of the DUT's hierarchy entirely.
+    // The packing ASSUMES the image is one contiguous span starting at the
+    // region base: the num()-based word count undercounts the span if the
+    // @-blocks had a gap, silently truncating the tail. That contract is
+    // enforced where it is cheap - the generated sw/Makefile checks the hex
+    // for contiguity right after objcopy and fails the BUILD on a gap - and
+    // deliberately NOT here: the runtime alternative (assoc-array first/
+    // last/exists inside this timed process) crashes Verilator 5.050's
+    // threaded scheduler (a C++ length_error thrown by VlTriggerScheduler;
+    // the same constructs pass unthreaded - one-thread crux, standalone
+    // probes). Note for editors: this comment must not spell package-colon-
+    // colon-symbol forms, the auto-importer reads comments too.
+    automatic logic [7:0]  sba_img [logic [63:0]];
+    automatic logic [31:0] sba_words [];
+    $readmemh("${mem['file']}", sba_img);
+    sba_words = new[(sba_img.num() + 3) / 4];
+    foreach (sba_words[w])
+      sba_words[w] = {sba_img[64'h${f"{sba_base:x}"} + 4*w + 3],
+                      sba_img[64'h${f"{sba_base:x}"} + 4*w + 2],
+                      sba_img[64'h${f"{sba_base:x}"} + 4*w + 1],
+                      sba_img[64'h${f"{sba_base:x}"} + 4*w + 0]};
+    $display("[TB] SBA load: %0d bytes (%0d words) from ${mem['file']} to 0x${f"{sba_base:08x}"}...",
+             sba_img.num(), sba_words.size());
+    i_vip.sba_load(64'h${f"{sba_base:x}"}, sba_words, sba_words.size(), ${sba_verify_lit});
+  end
+  % endfor
+% endif
 % if is_cheshire:
   // Host boot handoff: entry pointer and argc first, the boot-mode register
   // LAST as the 'go' - the passive preboot loop polls it, so write ordering
@@ -785,10 +847,11 @@ ${bringup_rst_str}
     $finish;
   end
 
-% if preload_mems:
+% if preload_mems and preload_mode == "readmemh":
   // ===========================================================================
   // AXI Transaction Monitor for Preloaded Memories
   // ===========================================================================
+  // readmemh mode only - same dotted-path rationale as the variables above.
   % for mem in preload_mems:
     <%
     comp_name = mem['instance']
