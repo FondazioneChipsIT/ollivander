@@ -493,6 +493,10 @@ prep-sim: update-hw
 	@# declare their own timescale are unaffected.
 	@mkdir -p $(OUT_DIR)/sim/questa
 	$(BENDER) script vsim $(BENDER_TARGETS) --vlog-arg="-timescale 1ns/1ps"${q_vlog_extra} > $(OUT_DIR)/sim/questa/compile_vsim.tcl
+	@# The vendored ELF loader rides every compilation unconditionally (astral's
+	@# pattern: one vlog line appended to the bender script), so the VIP's DPI
+	@# imports resolve whether or not any preload region declares 'image: elf'.
+	@echo 'vlog "$(OLLIVANDER_ROOT)/components/tb/elfloader.cpp" -ccflags "-std=c++11"' >> $(OUT_DIR)/sim/questa/compile_vsim.tcl
 % if global_defines:
 	@printf "\n[MAKE] Injecting compilation macros (+define+) into compilation script...\n"
 	@python3 -c "$$INJECT_MACROS_SCRIPT" $(OUT_DIR)/sim/questa/compile_vsim.tcl
@@ -651,7 +655,8 @@ build-sim-verilator: prep-sim-verilator build-sw
 	if [ -n "$(GCC_TOOLSET)" ] && ! echo '#include <coroutine>' | g++ -std=gnu++20 -x c++ -fsyntax-only - >/dev/null 2>&1; then . $(GCC_TOOLSET)/enable; fi; \
 	$(VERILATOR) $(VERILATOR_EMIT_FLAGS) --top-module tb_$(TOP_MOD) --Mdir $(VERILATOR_WORK) \
 		$(OUT_DIR)/sim/verilator/$(TOP_MOD).vlt $$(cat $(OUT_DIR)/sim/verilator/verilator_incdirs.f) +incdir+$(abspath $(OUT_DIR)/hw) \
-		-f $(OUT_DIR)/sim/verilator/compile_verilator_src.f && \
+		-f $(OUT_DIR)/sim/verilator/compile_verilator_src.f \
+		$(OLLIVANDER_ROOT)/components/tb/elfloader.cpp && \
 	HIER_MK=$(VERILATOR_WORK)/Vtb_$(TOP_MOD)_hier.mk; \
 	if [ -f $$HIER_MK ]; then \
 		CHILD_MKS=$$(grep -oE '^V[A-Za-z_0-9]+/V[A-Za-z_0-9]+\.mk' $$HIER_MK | sort -u | tr '\n' ' '); \
@@ -669,6 +674,7 @@ build-sim-verilator: prep-sim-verilator build-sw
 		$(MAKE) -C $(VERILATOR_WORK) -f Vtb_$(TOP_MOD).mk $(VERILATOR_BUILD_VARS) -j $(VERILATOR_COMPILE_JOBS); \
 	fi && \
 	cd $(VERILATOR_WORK) && g++ -o Vtb_$(TOP_MOD) Vtb_$(TOP_MOD)__main.o \
+		$$(ls *elfloader*.o 2>/dev/null) \
 		-Wl,--start-group libVtb_$(TOP_MOD).a Vtb_$(TOP_MOD)__ALL.a libverilated.a $$(ls V*/lib*.a 2>/dev/null) -Wl,--end-group \
 		-lpthread -lm
 	@touch $(VERILATOR_WORK)/.build_ok

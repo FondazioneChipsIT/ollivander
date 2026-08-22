@@ -390,8 +390,9 @@ Instructs the simulation environment on how to initialize the SoC. Since Ollivan
 | :-------------------------- | :------ | :------------------------------------------------------------- |
 | `preload_memories`          | List    | Memory regions to initialize with the firmware image.           |
 | `boot_mode`                 | String  | How the testbench boots the host: `"force"` (default) or `"jtag"`. See section 4.1. |
-| `preload_mode`              | String  | How the image reaches the memories: `"readmemh"` (default) or `"jtag"`. See section 4.2. |
+| `preload_mode`              | String  | How the image reaches the memories: `"readmemh"` (default), `"jtag"` or `"slink"`. See section 4.2. |
 | `preload_verify`            | Boolean | `jtag` preload only: re-read and compare the whole image (default `false`). See section 4.2. |
+| `elf_max_section_bytes`     | Integer | Capacity of the static ELF section buffer (default 4 MiB). See section 4.2. |
 | `bring_up`                  | String  | How much of a gated SoC the testbench powers up: `"all"` (default) or `"minimal"`. See section 4.3. |
 | `boot_force_delay_ns`       | Integer | How long the testbench holds the boot-mode and scratchpad force |
 |                             |         | values, in ns. Must outlast the host's internal reset sequence. |
@@ -404,7 +405,8 @@ Instructs the simulation environment on how to initialize the SoC. Since Ollivan
 *   `instance`: String. The hierarchical RTL path to the memory array instance inside the top-level.
     *   *For Crossbar topologies*: It is usually `<component_name>.sram_array`.
     *   *For NoC topologies*: Memories are physically split across tiles. You must target the specific tile instance, typically the first one where the Host expects to boot (e.g., `i_tile_0_0.sram_array`).
-*   `file`: String. The path to the compiled hex binary (e.g., `generated/sw/hello_world.hex`).
+*   `file`: String. The path to the compiled image (e.g., `generated/sw/hello_world.hex`, or the `.elf` when `image: elf`). `{test_app}` resolves at generation time to the firmware actually built.
+*   `image`: String, optional. The image format: `"hex"` (default, the flat objcopy output) or `"elf"` — see section 4.2. `elf` requires an architected `preload_mode` (`jtag` or `slink`): the hierarchical `readmemh` path only understands the split per-bank hex files.
 
 **Example (Crossbar):**
 ```yaml
@@ -430,14 +432,19 @@ Requirements for `"jtag"`, both checked or supplied by the generator:
 
 Among the example projects, five run `boot_mode: "jtag"` as their standard configuration (`crossbar`, `noc`, `noc_isle`, `super_crossbar`, `super_noc`), keeping the architectural boot path under permanent regression. `crossbar_isle` and `noc_subtile` deliberately stay on `"force"`: it is the schema default and a supported feature, and it would lose regression coverage if no example exercised it.
 
-### 4.2 Preload modes: `readmemh` and `jtag`
+### 4.2 Preload modes: `readmemh`, `jtag` and `slink`
 
 `preload_mode` selects the road the compiled image takes into the `preload_memories` regions.
 
 *   `"readmemh"` (the default) injects the hex files through hierarchical `$readmemh` into the physical SRAM arrays — simulation-only, fast, and the reason interleaved memories need their image pre-split per bank. The dotted paths it (and its AXI monitors) plant into the DUT keep the preloaded module out of Verilator's hierarchical blocks.
 *   `"jtag"` streams the *flat* hex through the debug module's System Bus Access, from inside the JTAG boot sequence: one `sba_load` call per `preload_memories` entry, its base address resolved by the generator from the component's `axi_slave` interface, autoincrement addressing, 64-bit beats where the debug module declares them, and one sticky-error check per stream. Interleaving happens in the SoC's own decoder hardware, and the identical sequence would work against silicon. Because no dotted path reaches the DUT, the preload target stays eligible as a Verilator hierarchical block — the practical reason to choose this mode. It requires `boot_mode: "jtag"` (validated at generation time: the system bus only exists once the debug module is up).
+*   `"slink"` loads at AXI speed through the host's serial link: the VIP instantiates an off-chip twin of the host's own `serial_link` instance (same register package, so framing agrees by construction) and drives the image as AXI write bursts — 1 KiB each, cheshire upstream's own practice — through the DDR pins. In this mode *everything* rides the link: the gated-domain bring-up writes, the image, and the boot handoff, because with the serial link built into the host (`SerialLink: true`, required and validated together with the `slink` export) the debug module's SBA writes into the host's internal register path complete with an OKAY but never land — an upstream anomaly under investigation; the link's external AXI ingress reaches the same registers reliably. `boot_mode: "jtag"` is still required: the sequence is anchored to the JTAG boot flow (TAP init, passive preboot loop). Like `jtag`, no dotted path reaches the DUT, so every preload target stays eligible for Verilator's hierarchical blocks — on `noc_isle` this releases all eight L2 tiles at once.
 
-With `preload_verify: true` the testbench re-reads the whole image through the same channel (`sbreadondata` streaming) and compares word by word, failing fatally on the first mismatch. It costs ~2.8x the plain load's simulated time, so the intended use is one verifying configuration in the regression fleet rather than every project.
+With `preload_verify: true` the testbench re-reads the whole image through the same channel (`sbreadondata` streaming) and compares word by word, failing fatally on the first mismatch. It costs ~2.8x the plain load's simulated time, so the intended use is one verifying configuration in the regression fleet rather than every project. It is implemented for `jtag` only.
+
+**ELF images.** With `image: elf` on a preload region, the testbench reads the file through the vendored cheshire `elfloader` DPI (`components/tb/elfloader.cpp`, compiled unconditionally by both simulator flows) and streams **every loadable segment** through whichever transport the project configured — the loaders never learn the source format. Two things change with respect to a hex image: the **entry point comes from the ELF header at runtime** instead of the generator's map-derived literal (with a multi-segment ELF the linker owns that truth), and the sections pass through a **static staging buffer** whose capacity is the `elf_max_section_bytes` knob (default 4 MiB) — static because Verilator cannot yet pass dynamic arrays to DPI open arrays. A segment larger than the buffer stops the run with a fatal that names the knob; nothing is streamed partially. The first section's address is checked against the configured region's base with a loud message (not a fatal): an ELF may legitimately scatter loadable segments across several memories, which is precisely its advantage over the flat hex.
+
+Among the examples the two axes compose into a deliberate coverage matrix: `crossbar_isle` and `noc_subtile` stay on `readmemh` (the schema default), `mesh` runs `jtag`+hex and `crux` runs `jtag`+ELF, the serial-link trio runs `slink` — `super_noc` and `super_crux` with hex, `noc_isle` with ELF.
 
 ### 4.3 `bring_up`: how much of the SoC the testbench powers up
 

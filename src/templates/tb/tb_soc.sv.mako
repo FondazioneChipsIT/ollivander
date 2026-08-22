@@ -163,6 +163,32 @@ ${stubs_str}
       boot_mode = "force"
   jtag_idcode = int(host_fixed.get("JtagIdCode", "1").strip('"\''))
   jtag_scratch_off = int(host_fixed.get("JtagScratchOffset", "0").strip('"\''))
+  # Serial-link agent activation (wip 2.1 wave two): the image travels the
+  # serial link only when the mode asks for it, the host declares the contract
+  # AND the pins actually reach the top level (the schema validates the export;
+  # the contract guard keeps this template robust on hosts that lack it).
+  preload_mode_early = testbench_cfg.get("preload_mode", "readmemh")
+  # HasSlinkPreload is tied to the host's SerialLink feature switch, so its
+  # raw value is an EXPRESSION (the parameter name), not a literal: resolve it
+  # through the project's parameter overrides, then through the wrapper's own
+  # defaults, and accept the truthy spellings YAML and SV produce.
+  _hsp = str(host_fixed.get("HasSlinkPreload", "0")).strip('"\'').strip()
+  _hsp_env = {}
+  _hsp_env.update({str(k): str(v) for k, v in (host_info.get("supported_params", {}) or {}).items()})
+  _hsp_env.update({str(k): str(v) for k, v in (config.host.parameters or {}).items()})
+  _hsp = _hsp_env.get(_hsp, _hsp)
+  has_slink_preload = _hsp.strip().lower() in ("1", "true", "1'b1")
+  slink_agent = (preload_mode_early == "slink") and has_slink_preload \
+      and ("slink" in (config.host.export_interfaces or []))
+  # Exported pins over a stubbed-out link are DEAD WIRES: the first pilot's
+  # driver waited forever for credits from a receiver Cheshire was built
+  # without (2026-08-22). Refuse loudly at generation instead.
+  if preload_mode_early == "slink" and not slink_agent:
+      raise ValueError(
+          "testbench.preload_mode 'slink': the host does not declare an ACTIVE "
+          "serial link (HasSlinkPreload=0). Enable the host's SerialLink feature "
+          "parameter (e.g. cheshire_isle: parameters: SerialLink: 1) - exporting "
+          "the pins alone leaves the testbench driving dead wires.")
   _host_slaves = (config.host.interfaces or {}).get("axi_slave", [])
   _hb = _host_slaves[0].get("base_addr", 0) if _host_slaves else 0
   host_base = int(_hb, 16) if isinstance(_hb, str) else int(_hb)
@@ -176,6 +202,8 @@ ${stubs_str}
         if p_info["dir"] == 'input':
             if boot_mode == "jtag" and p_name.startswith("jtag_"):
                 continue  # driven continuously by vip_ollivander_soc's ports
+            if slink_agent and p_name in ('slink_i', 'slink_rcv_clk_i'):
+                continue  # driven continuously by the VIP's serial-link twin
             if p_name == 'uart_rx_i':
                 reset_initials.append("    uart_rx_i = 1'b1; // UART RX idle-high")
             else:
@@ -307,7 +335,45 @@ def resolve_param_val(val, comp, fixed_params=None, extra_params=None):
         if digits:
             return int(digits[0])
         return 1
+
+has_elf_mems = any((m or {}).get("image", "hex") == "elf" for m in (preload_mems or []))
+
+# Section-buffer bound: an EXPLICIT KNOB with a generous default (user
+# decision, 2026-08-22, replacing a derivation from the destination-memory
+# windows). 4 MiB holds every image the fleet links today with margin; a
+# project whose ELF carries a larger loadable segment - including tomorrow's
+# nested-boot images aimed inside a macro, whose inner memory sizes the
+# parent cannot even see - raises testbench.elf_max_section_bytes in its SoC
+# definition. Deriving this from build artifacts was rejected on layering
+# (the ELF is built AFTER the testbench is rendered and TEST_APP can swap it
+# without a regenerate), and deriving it from the destination windows was
+# rejected as incomplete for exactly the nested case the knob now covers.
+elf_sec_max = int(str(testbench_cfg.get("elf_max_section_bytes", 0x400000)), 0)
 %>
+% if has_elf_mems:
+  // Entry point read at RUNTIME from the ELF header by the architected load
+  // below (elfloader DPI): the boot handoff writes THIS to the scratch
+  // registers instead of the generator's map-derived literal - with an ELF
+  // image the linker owns the entry, not the memory map.
+  logic [63:0] tb_elf_entry;
+  // DPI surface of the vendored elfloader.cpp, declared HERE because DPI
+  // imports are visible only in the importing scope and this testbench is
+  // the caller (importing them in the VIP produced vopt-7063 "failed to
+  // find in hierarchical name" on every call site). Both simulator flows
+  // compile the loader unconditionally, so the symbols always resolve.
+  import "DPI-C" function byte read_elf(input string filename);
+  import "DPI-C" function byte get_entry(output longint entry);
+  import "DPI-C" function byte get_section(output longint address, output longint len);
+  import "DPI-C" context function byte read_section(input longint address, inout byte buffer[], input longint len);
+  // STATIC section buffer, one for the whole testbench: Verilator cannot yet
+  // pass a dynamic array or queue as a DPI open-array actual (V3Task internal
+  // error, met 2026-08-22 on this very call), while a static array is the
+  // supported shape on both simulators. The size is a per-project knob
+  // (testbench.elf_max_section_bytes, default 4 MiB); the load fatals with
+  // instructions when an image carries a larger loadable segment.
+  localparam int unsigned TbElfSecBytesMax = 32'h${f"{elf_sec_max:08x}"};
+  byte tb_elf_buf [TbElfSecBytesMax];
+% endif
 % if preload_mems and preload_mode == "readmemh":
   % for mem in preload_mems:
     <%
@@ -468,6 +534,90 @@ if not uart_base:
     .HasUart          (1'b0),
     .UartBitPeriodNs  (8680.0)
 % endif
+% if slink_agent:
+<%
+    import re as _re
+    def slink_expr(name):
+        """The Slink* contract localparams may be EXPRESSIONS over the host's
+        parameters (the id width repeats Cheshire's Cfg ternary). Substituting
+        the parameter values into the raw text and emitting it as SV keeps the
+        semantics single-sourced in the isle header - the simulator evaluates
+        the same expression the isle declared. Two rounds cover value chains
+        (Slink* -> isle param -> tile expression on the NoC family); the
+        lookbehind keeps struct MEMBER names out of the substitution; and on
+        the NoC family the surviving AxiCfg* roots are package constants of
+        the generated NoC package, qualified here so the reference resolves
+        without a wildcard import (the auto-importer then sees pkg::sym)."""
+        raw = str(host_fixed.get(name, "0")).strip('"\'')
+        vals = {}
+        vals.update({k: str(v).strip('"\'') for k, v in (host_info.get("supported_params", {}) or {}).items()})
+        vals.update({k: str(v) for k, v in (config.host.parameters or {}).items()})
+        # CROSSBAR FAMILY: the AXI geometry parameters are driven at the
+        # instance by the generator (AxiOutIdWidth gets the global bus's
+        # mst_id_width, etc.) and never appear in host.parameters, so without
+        # this the substitution falls back to the ISLE HEADER DEFAULTS - the
+        # twin then mirrors a link the DUT was not built with. Found the hard
+        # way on super_crux (2026-08-22): default AxiOutIdWidth=4 resolved the
+        # twin's id width to 3 against the DUT's 2, one bit of framing skew,
+        # and the first serial-link transaction of every run hung with no
+        # error at any burst length. On the NoC family global_bus is absent
+        # and the tile re-expresses the contract over the NoC package's own
+        # constants, which are instance truth by construction.
+        _gb = getattr(config.topology, "global_bus", None)
+        if _gb is not None:
+            vals.update({
+                "AxiAddrWidth":  str(_gb.addr_width),
+                "AxiDataWidth":  str(_gb.data_width),
+                "AxiUserWidth":  str(_gb.user_width),
+                "AxiOutIdWidth": str(_gb.mst_id_width),
+            })
+        for _round in range(2):
+            for k, v in vals.items():
+                if "'{" in v:
+                    continue  # struct literals are expanded field-wise below
+                raw = _re.sub(rf'(?<!\.)\b{k}\b', v, raw)
+        # Member selects on BODY struct localparams (the NoC tile's AxiCfgJoin)
+        # cannot travel into testbench scope by name; their field expressions
+        # can - the tile declares them fully package-qualified, so replacing
+        # 'Name.field' with '(field expression)' yields TB-legal constants.
+        def _struct_fields(body):
+            """Split a '{name: expr, ...} literal on TOP-LEVEL commas only:
+            the expressions themselves may contain calls (floo_pkg::max(a, b))."""
+            inner = body[body.index("'{") + 2 : body.rindex("}")]
+            fields, depth, cur, parts = {}, 0, "", []
+            for ch in inner:
+                if ch in "([{":
+                    depth += 1
+                elif ch in ")]}":
+                    depth -= 1
+                if ch == "," and depth == 0:
+                    parts.append(cur); cur = ""
+                else:
+                    cur += ch
+            if cur.strip():
+                parts.append(cur)
+            for p in parts:
+                if ":" in p:
+                    n, e = p.split(":", 1)
+                    fields[n.strip()] = " ".join(e.split())
+            return fields
+        for sp_name, sp_val in list(host_fixed.items()):
+            sp_val = str(sp_val)
+            if "'{" not in sp_val:
+                continue
+            for f_name, f_expr in _struct_fields(sp_val).items():
+                raw = raw.replace(f"{sp_name}.{f_name}", f"({f_expr})")
+        if config.topology.type == "noc":
+            raw = _re.sub(r'(?<!:)\b(AxiCfg\w+)\b(?!\s*:)', rf'{config.project.noc_pkg_name}::\1', raw)
+        return raw
+%>\
+    ,
+    .HasSlink          (1'b1),
+    .SlinkAxiAddrWidth (${slink_expr("SlinkAxiAddrWidth")}),
+    .SlinkAxiDataWidth (${slink_expr("SlinkAxiDataWidth")}),
+    .SlinkAxiIdWidth   (${slink_expr("SlinkAxiIdWidth")}),
+    .SlinkAxiUserWidth (${slink_expr("SlinkAxiUserWidth")})
+% endif
   ) i_vip (
 % if config.clock_tree.generators > 0:
     .clk_o            (),
@@ -504,6 +654,23 @@ if not uart_base:
     .jtag_tms_o       (),
     .jtag_tdi_o       (),
     .jtag_tdo_i       (1'b0)
+% endif
+% if slink_agent:
+    ,
+    // The VIP is the off-chip end: its ddr inputs read the DUT's outputs and
+    // its ddr outputs DRIVE the DUT's inputs (which the tie-off block above
+    // deliberately skipped for exactly this reason).
+    .slink_rcv_clk_i  (slink_rcv_clk_o),
+    .slink_rcv_clk_o  (slink_rcv_clk_i),
+    .slink_i          (slink_o),
+    .slink_o          (slink_i)
+% else:
+    ,
+    // No serial-link agent: inputs tied off, outputs open.
+    .slink_rcv_clk_i  ('0),
+    .slink_rcv_clk_o  (),
+    .slink_i          ('0),
+    .slink_o          ()
 % endif
   );
 
@@ -652,12 +819,23 @@ if not uart_base:
 
   jtag_clk_lines = []
   jtag_rst_lines = []
+  # The control-write channel of the bring-up. With preload_mode 'slink' the
+  # sys-ctrl writes ride the serial link (gwaihir's slink_enable_tiles pattern):
+  # the debug module's SBA cannot be trusted into register space when the host
+  # builds the link (writes vanish behind an OKAY - the anomaly in the upstream
+  # registry), and on the crossbar family sys_ctrl sits exactly on that path.
+  # Discovered the hard way: super_crux's whole bring-up "succeeded" over SBA,
+  # every domain stayed gated, and the first slink burst into the gated L2
+  # stalled with no error at any burst length (2026-08-22).
+  ctrl_write = ("i_vip.gen_slink_agent.slink_write32" if preload_mode == "slink"
+                else "i_vip.sba_write32")
+  ctrl_channel = "the serial link" if preload_mode == "slink" else "JTAG"
   if config.gated_at_power_on:
       for dom in managed_domains:
           rn = dom.name.replace("_clk", "").upper()
           if dom.has_divider:
-              jtag_clk_lines.append(f"  i_vip.sba_write32(`SYS_CTRL_{rn}_CLK_EN_BASE_ADDR, 32'hFFFF_FFFF);")
-          jtag_rst_lines.append(f"  i_vip.sba_write32(`SYS_CTRL_{rn}_RST_BASE_ADDR, 32'h0);")
+              jtag_clk_lines.append(f"  {ctrl_write}(`SYS_CTRL_{rn}_CLK_EN_BASE_ADDR, 32'hFFFF_FFFF);")
+          jtag_rst_lines.append(f"  {ctrl_write}(`SYS_CTRL_{rn}_RST_BASE_ADDR, 32'h0);")
       if config.system_controller and config.system_controller.auto_control_groups:
           for g in config.system_controller.auto_control_groups:
               gn = g.name.upper()
@@ -665,8 +843,8 @@ if not uart_base:
                   jtag_clk_lines.append(f"  // '{g.name}' left gated (testbench.bring_up: minimal): the")
                   jtag_clk_lines.append(f"  // firmware ungates it when its own phase needs it.")
                   continue
-              jtag_clk_lines.append(f"  i_vip.sba_write32(`SYS_CTRL_{gn}_CLK_EN_BASE_ADDR, 32'hFFFF_FFFF);")
-              jtag_rst_lines.append(f"  i_vip.sba_write32(`SYS_CTRL_{gn}_RST_BASE_ADDR, 32'h0);")
+              jtag_clk_lines.append(f"  {ctrl_write}(`SYS_CTRL_{gn}_CLK_EN_BASE_ADDR, 32'hFFFF_FFFF);")
+              jtag_rst_lines.append(f"  {ctrl_write}(`SYS_CTRL_{gn}_RST_BASE_ADDR, 32'h0);")
   jtag_clk_str = "\n".join(jtag_clk_lines)
   jtag_rst_str = "\n".join(jtag_rst_lines)
   bringup_clk_str = "\n".join(bringup_clk_lines)
@@ -680,7 +858,7 @@ if not uart_base:
   #1200;
   i_vip.jtag_init();
 % if jtag_clk_str or jtag_rst_str:
-  $display("[TB] Bringing up gated domains via JTAG (clocks first)...");
+  $display("[TB] Bringing up gated domains via ${ctrl_channel} (clocks first)...");
 ${jtag_clk_str}
   // The same two-phase contract as the force path: a gated domain's FFAR flops
   // need a clocked window with reset asserted (see the rationale block above).
@@ -688,16 +866,17 @@ ${jtag_clk_str}
 ${jtag_rst_str}
   $display("[TB] Gated domains reset released after a clocked reset window.");
 % endif
-% if preload_mode == "jtag":
+% if preload_mode in ("jtag", "slink"):
   // ==========================================================================
-  // Architected image load (wip 2.1, second half): the same flat hex the
-  // readmemh path would split per bank, streamed instead through the debug
-  // module's system bus (vip_ollivander_soc.sba_load). No dotted path into
-  // the SRAM banks - interleaving happens in the DUT's own decoder hardware,
-  // the identical sequence works against silicon, and the preload targets
-  // stay eligible as Verilator hier blocks. One call per configured region;
-  // the base is resolved by the generator from the memory map, never assumed
-  // by the testbench. Runs after the gated bring-up (the image may live in a
+  // Architected image load (wip 2.1): the same flat hex the readmemh path
+  // would split per bank, streamed instead through an architected channel -
+  // the debug module's system bus (sba_load) or the serial link's AXI
+  // (slink_load), per testbench.preload_mode. No dotted path into the SRAM
+  // banks - interleaving happens in the DUT's own decoder hardware, the
+  // identical sequence works against silicon, and the preload targets stay
+  // eligible as Verilator hier blocks. One call per configured region; the
+  // base is resolved by the generator from the memory map, never assumed by
+  // the testbench. Runs after the gated bring-up (the image may live in a
   // gated tile) and before the handoff (the host must find it on wake-up).
   // ==========================================================================
   % for mem in preload_mems:
@@ -714,6 +893,49 @@ ${jtag_rst_str}
                          f"instance '{mem['instance']}' from its axi_slave interfaces")
     sba_verify_lit = "1'b1" if preload_verify else "1'b0"
 %>
+  % if mem.get('image', 'hex') == 'elf':
+  begin
+    // ELF image (image: elf): the sections come from the vendored elfloader
+    // DPI, and each loadable segment is streamed through the SAME transport a
+    // hex image would use - the loaders take (base, words) and never learn
+    // the source. The region base resolved from the map is only CHECKED
+    // against the first section (with a loud message, not a fatal): an ELF
+    // may legitimately scatter loadable segments across several memories,
+    // and its program headers own that truth, not the preload entry.
+    automatic longint elf_sec_addr, elf_sec_len, elf_entry_ll;
+    automatic logic [31:0] elf_words [];
+    automatic bit elf_first = 1'b1;
+    if (read_elf("${mem['file']}") != 0)
+      $fatal(1, "[TB] ELF load: cannot read ${mem['file']}");
+    while (get_section(elf_sec_addr, elf_sec_len) == 1) begin
+      if (elf_sec_len > TbElfSecBytesMax)
+        $fatal(1, "[TB] ELF SECTION BUFFER INSUFFICIENT: the loadable segment at 0x%h needs %0d bytes but the testbench buffer holds %0d. Raise testbench.elf_max_section_bytes in the SoC definition and regenerate. Nothing was streamed: the check runs before any DPI copy.", elf_sec_addr, elf_sec_len, TbElfSecBytesMax);
+      // Zero the span first: a section's in-memory size may exceed its file
+      // size (.bss tail), and the loader only writes the file bytes - with a
+      // REUSED static buffer the difference would otherwise stream stale
+      // bytes where a fresh new[] would have streamed zeros.
+      for (int unsigned z = 0; z < elf_sec_len; z++) tb_elf_buf[z] = 8'h00;
+      if (read_section(elf_sec_addr, tb_elf_buf, elf_sec_len) != 0)
+        $fatal(1, "[TB] ELF load: failed to read the section at 0x%h", elf_sec_addr);
+      if (elf_first && elf_sec_addr != 64'h${f"{sba_base:x}"})
+        $display("[TB] ELF load: first section at 0x%h, configured region base 0x${f"{sba_base:08x}"} - trusting the ELF program headers.", elf_sec_addr);
+      elf_first = 1'b0;
+      elf_words = new[(elf_sec_len + 3) / 4];
+      foreach (elf_words[w])
+        for (int unsigned b = 0; b < 4; b++)
+          elf_words[w][8*b +: 8] = ((4*w + b) < elf_sec_len) ? tb_elf_buf[4*w + b] : 8'h00;
+      $display("[TB] ELF section: %0d bytes (%0d words) at 0x%h...", elf_sec_len, elf_words.size(), elf_sec_addr);
+% if preload_mode == "slink":
+      i_vip.gen_slink_agent.slink_load(64'(elf_sec_addr), elf_words, elf_words.size());
+% else:
+      i_vip.sba_load(64'(elf_sec_addr), elf_words, elf_words.size(), ${sba_verify_lit});
+% endif
+    end
+    void'(get_entry(elf_entry_ll));
+    tb_elf_entry = 64'(elf_entry_ll);
+    $display("[TB] ELF load complete (entry 0x%h).", tb_elf_entry);
+  end
+  % else:
   begin
     // The flat hex is @-addressed in bytes at the region's base; the local
     // associative array keeps the image out of the DUT's hierarchy entirely.
@@ -747,22 +969,49 @@ ${jtag_rst_str}
         automatic logic [63:0] sba_addr = 64'h${f"{sba_base:x}"} + 4*w + b;
         sba_words[w][8*b +: 8] = sba_img.exists(sba_addr) ? sba_img[sba_addr] : 8'h00;
       end
+% if preload_mode == "slink":
+    $display("[TB] slink load: %0d bytes (%0d words) from ${mem['file']} to 0x${f"{sba_base:08x}"}...",
+             sba_img.num(), sba_words.size());
+    i_vip.gen_slink_agent.slink_load(64'h${f"{sba_base:x}"}, sba_words, sba_words.size());
+% else:
     $display("[TB] SBA load: %0d bytes (%0d words) from ${mem['file']} to 0x${f"{sba_base:08x}"}...",
              sba_img.num(), sba_words.size());
     i_vip.sba_load(64'h${f"{sba_base:x}"}, sba_words, sba_words.size(), ${sba_verify_lit});
+% endif
   end
+  % endif
   % endfor
 % endif
 % if is_cheshire:
+<%
+  # With an ELF image the entry point is a runtime value read from the file's
+  # header; otherwise it is the generator's map-derived literal, as before.
+  entry_expr = "tb_elf_entry[31:0]" if has_elf_mems else f"32'h{entry_point:08x}"
+%>\
+% if preload_mode == "slink":
+  // Host boot handoff OVER THE SERIAL LINK (cheshire's PRELMODE pattern):
+  // same ordering contract as the SBA variant below - entry and argc first,
+  // the boot-mode register LAST as the 'go'. The handoff rides the image's
+  // own proven channel because, with SerialLink enabled, debug-module SBA
+  // writes into the host's internal register block vanish behind an OKAY
+  // response (anomaly under investigation, see the upstream registry); the
+  // serial-link ingress reaches the same registers reliably. No readback
+  // verify here: the boot that follows is the verification.
+  i_vip.gen_slink_agent.slink_write32(${scratch_addr(0)}, ${entry_expr});
+  i_vip.gen_slink_agent.slink_write32(${scratch_addr(1)}, 32'h00000000);
+  i_vip.gen_slink_agent.slink_write32(${scratch_addr(2)}, 32'h00000002);
+  $display("[TB] slink boot handoff complete (entry 0x%h).", ${entry_expr});
+% else:
   // Host boot handoff: entry pointer and argc first, the boot-mode register
   // LAST as the 'go' - the passive preboot loop polls it, so write ordering
   // replaces the force-and-release dance; nothing is forced, nothing released.
   // Verified write: the entry pointer is read-only for the boot flow, so the
   // readback is race-free - unlike scratch[2], which the bootrom clears on use.
-  i_vip.sba_write32_verify(${scratch_addr(0)}, 32'h${f"{entry_point:08x}"});
+  i_vip.sba_write32_verify(${scratch_addr(0)}, ${entry_expr});
   i_vip.sba_write32(${scratch_addr(1)}, 32'h00000000);
   i_vip.sba_write32(${scratch_addr(2)}, 32'h00000002);
-  $display("[TB] JTAG boot handoff complete (entry 0x${f"{entry_point:08x}"}).");
+  $display("[TB] JTAG boot handoff complete (entry 0x%h).", ${entry_expr});
+% endif
 % endif
 % else:
   // Release CPU from passive boot loop by pointing scratch registers to preloaded memory (0x${f"{entry_point:08x}"})
@@ -852,8 +1101,20 @@ ${bringup_rst_str}
 % endif
 
     #${sim_timeout_ns};
-    
+
     $display("[TB] Simulation finished.");
+    $finish;
+  end
+
+  // Global watchdog (wip 2.1, wave two): the per-run timeout above is
+  // SEQUENCED after the boot steps, so a stuck architected image load used
+  // to hang forever with no verdict (found on the first slink pilot,
+  // 2026-08-22). This parallel bound covers the whole run - bring-up, load
+  // (the JTAG verify pass is the slowest at ~2.2 ms simulated) and test -
+  // and only ever fires on failure: a passing run finishes at EOT first.
+  initial begin
+    #${sim_timeout_ns + 20_000_000};
+    $display("[TB] WATCHDOG: no end-of-test within the global deadline");
     $finish;
   end
 

@@ -228,7 +228,28 @@ Standard 4-wire JTAG interface. Output enable (`_oe_o`) is provided for tristate
     *   **Ollivander Handling**: Ollivander automatically parses the Isle's SystemVerilog header. If this port is declared in the module, it is wired and exposed at the SoC top-level as `jtag_<component_name>_tdo_oe_o`. If omitted from the wrapper, Ollivander safely ignores it without causing compilation errors.
 
 
-### 2.5 Common Peripherals
+### 2.5 Serial Link (`slink`)
+Source-synchronous DDR off-chip link (pulp-platform `serial_link`). The port names and shapes below are the standard a component must expose for Ollivander to export the interface; the channel and lane geometry comes from `slink_reg_pkg`, the same package both ends of the link read, so the two sides cannot disagree.
+
+*   `slink_rcv_clk_i` (`logic [SlinkNumChan-1:0]`): received forwarded clock, one per channel.
+    *   **Ollivander Handling**: Exposed as a top-level SoC I/O pin when `"slink"` appears in the component's `export_interfaces`; without the export the ports are tied off inside the top. Pin names follow the peripheral rule (component-name prefix, omitted for the host).
+*   `slink_rcv_clk_o` (`logic [SlinkNumChan-1:0]`): transmitted forwarded clock.
+*   `slink_i` (`logic [SlinkNumChan-1:0][SlinkNumLanes-1:0]`): DDR data in.
+*   `slink_o` (`logic [SlinkNumChan-1:0][SlinkNumLanes-1:0]`): DDR data out.
+
+**Serial-link preload contract (host components).** A host that supports loading the boot image through the serial link (`testbench.preload_mode: "slink"`, configuration guide section 4.2) declares the contract below in its header, exactly as the JTAG boot contract of section 5.2. The generated testbench instantiates the VIP's off-chip twin from these values, so they must describe the AXI port the DUT-side serial link actually rides; expressions over the component's own header parameters are allowed and survive the isle-to-tile conversion on the NoC family (the tile wrapper re-declares the referenced parameters).
+
+| Localparam | Meaning |
+| :--- | :--- |
+| `HasSlinkPreload` (`bit`) | `1` declares serial-link preload support. |
+| `SlinkAxiAddrWidth` (`int unsigned`) | Address width of the serial link's AXI port. |
+| `SlinkAxiDataWidth` (`int unsigned`) | Data width of the same port. |
+| `SlinkAxiIdWidth` (`int unsigned`) | Id width of the same port. |
+| `SlinkAxiUserWidth` (`int unsigned`) | User width of the same port. |
+
+Generation-time validation: `preload_mode: "slink"` is refused unless the host both declares this contract and lists `"slink"` in `export_interfaces` - without the export the pins never reach the top level and the agent would drive dead wires.
+
+### 2.6 Common Peripherals
 All common peripheral ports are exposed as top-level SoC I/O pins. If the component is not the host, the pin names are prefixed with the component's name (e.g., `uart_security_island_tx_o`).
 
 *   **UART (`uart`)**: 
@@ -358,6 +379,26 @@ To support dynamic force-booting in simulation, a Host Isle wrapper (e.g., `ches
 *   `ForceBootVal` (`localparam string`): Force value template (e.g., `"32'h00000000"`).
 
 These parameters are read by the testbench generator to automatically drive the boot entry sequence.
+
+### 5.3 External-Master Id-Width Contract
+
+A host whose internal crossbar aggregates several masters prepends the ORIGINATING MASTER's index to every id it drives onto the SoC fabric, so its external id width is `<effective master id width> + clog2(<master count>)` - and the count grows with feature switches (on `cheshire_isle`, enabling `SerialLink` adds the fifth internal master). A fabric sized without knowing that count silently truncates the top index bits, and the responses of the high-index masters come back misrouted: the failure stays invisible exactly until one of those masters speaks, which is how the serial-link preload exposed it on 2026-08-22 (the boot image reached the L2 and the write response was delivered to the wrong master).
+
+The host therefore declares its master count as a contract localparam, and the generator sizes the interconnect FROM it - the same "fabric follows host" practice astral and gwaihir apply by deriving every downstream width from `Cfg.AxiMstIdWidth + $clog2(AxiIn.num_in)`:
+
+| Localparam | Meaning |
+| :--- | :--- |
+| `NumAxiInMasters` (`int unsigned`) | The host's COMPLETE AXI master count, as an arithmetic expression over the host's own header parameters (`NumCores + 1 + Dma + SerialLink + Vga + 1 + AxiNumMstAsync + AxiNumMstSync`, mirroring `cheshire_pkg::gen_axi_in` field by field INCLUDING its external-master term - the NoC ingress and a parent's exported masters join the same crossbar and widen the same ids). Counting only the internal masters left a one-bit undercount on the mesh, silent for the usual reason: the masters above the clog2 plateau never spoke. |
+| `AxiExtOutIdWidth` (`int unsigned`) | The resulting external id width, `<saturated master id width> + $clog2(NumAxiInMasters)` - declarative documentation of the same value the generator computes. |
+
+**The contract polices itself at elaboration.** The isle body carries an `initial` check that compares `AxiExtOutIdWidth` against `AxiSlvIdWidth` - the width cheshire itself computes from `gen_axi_in` - and `$fatal`s on any mismatch, in both simulators, at zero cost. A cheshire bump that adds a master, or a feature switch the hand-written mirror forgets, stops every build instead of silently reopening the truncation hole.
+
+**Both families size from this single source** (aligned 2026-08-22, mirroring how astral and gwaihir derive every downstream width from `Cfg.AxiMstIdWidth + $clog2(AxiIn.num_in)`):
+
+- **NoC family**: the generator (`src/core/macro_boundary.py`, `host_ext_out_id_width`) resolves `NumAxiInMasters` numerically - the driven `AxiNumMst*` values land in `host.parameters` before resolution - and imposes `3 + clog2(count)` on every network the host masters, alongside the widths the nested macros impose. The match then closes by construction: the resolved network width flows back into the host's `AxiOutIdWidth`, whose saturation at 3 reproduces the same sum.
+- **Crossbar family**: there the SoC "crossbar" IS the host's internal one - external masters enter through the host's ext-mst ports at the declared `global_bus.mst_id_width`, as extra `AxiIn` entries of the same crossbar. `crossbar_slv_id_width` sizes the slave side as `<saturated mst_id_width> + clog2(count)` from the SAME resolved contract (primed once by the generator, `host_axi_in_masters`). The older hand-maintained `crossbar_master_count` remains only as the fallback for hosts that declare no contract; its deliberately-present defaults for optional masters can only err WIDER, which the field-wise boundary assigns absorb safely (ids zero-extend outward, responses truncate back within range).
+
+A host that declares no contract keeps the legacy sizing on both families - a non-cheshire host owes nothing to this rule.
 
 ## 6. Dependency Management
 Ollivander features an automated dependency resolution engine that scans your Isles and populates the `Bender.yml` manifest. This ensures that only the files and IP packages actually instantiated in the SoC are included in the compilation flow.

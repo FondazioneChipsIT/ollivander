@@ -150,7 +150,7 @@ config = OllivanderConfig(
             ]
         },
         features={"error_slaves": ["async_axi_llc", "axi_llc"], "terminate_ports": ["async_axi_in", "async_axi_out"]},
-        parameters={"Vga": False, "Cva6ExtCieLength": 0x60000000, "Cva6ExtCieOnTop": True, "LlcCdcSyncStages": 0,
+        parameters={"Vga": False, "SerialLink": True, "Cva6ExtCieLength": 0x60000000, "Cva6ExtCieOnTop": True, "LlcCdcSyncStages": 0,
                     # The LLC-out window doubles as CVA6's cached+executable region above
                     # the CIE ceiling (see cheshire_isle.sv). This map boots from the L2 at
                     # BASE_L2, so the window covers exactly the 8 L2 tiles and nothing more:
@@ -272,6 +272,12 @@ config = OllivanderConfig(
         # this is what lets the parent's own manager tile and memories leave the
         # Verilator top unit.
         "boot_mode": "jtag",
+        # The image and the boot handoff travel the serial link (wip 2.1 wave
+        # two): no dotted path survives into the preloaded L2 tiles, and the
+        # control writes ride the same proven channel (cheshire's PRELMODE
+        # pattern; the SBA-to-internal-regs path is anomalous with SerialLink
+        # enabled - see the upstream registry).
+        "preload_mode": "slink",
         # Only the boot-critical domains are enabled by the testbench; the firmware
         # ungates each target when it needs it and powers it down afterwards.
         "bring_up": "minimal",

@@ -877,14 +877,38 @@ def validate_cross_references(config: OllivanderConfig):
     # would hang on the first DMI access with nothing on the other end. A configuration
     # error, not a runtime surprise.
     preload_mode = (config.testbench or {}).get('preload_mode', 'readmemh')
-    if preload_mode not in ('readmemh', 'jtag'):
+    if preload_mode not in ('readmemh', 'jtag', 'slink'):
         errors.append(f"[testbench] preload_mode '{preload_mode}' is not implemented: choose"
-                      f" 'readmemh' (hierarchical $readmemh, the default) or 'jtag' (streamed"
-                      f" system-bus load through the debug module).")
-    elif preload_mode == 'jtag' and (config.testbench or {}).get('boot_mode') != 'jtag':
-        errors.append(f"[testbench] preload_mode 'jtag' requires boot_mode 'jtag': the image"
-                      f" travels the debug module's system bus, which only the JTAG bring-up"
-                      f" sequence brings to life.")
+                      f" 'readmemh' (hierarchical $readmemh, the default), 'jtag' (streamed"
+                      f" system-bus load through the debug module) or 'slink' (AXI-speed load"
+                      f" through the serial link).")
+    elif preload_mode in ('jtag', 'slink') and (config.testbench or {}).get('boot_mode') != 'jtag':
+        # 'jtag' keeps everything on the debug module. 'slink' moves EVERYTHING -
+        # bring-up, image, boot handoff - onto the serial link (with SerialLink
+        # enabled the debug module's SBA writes into the host's internal register
+        # path vanish behind an OKAY, see the upstream registry), but the sequence
+        # is still anchored to the JTAG boot flow (TAP init, passive preboot loop).
+        errors.append(f"[testbench] preload_mode '{preload_mode}' requires boot_mode 'jtag':"
+                      f" the architected load rides the JTAG boot sequence (passive preboot"
+                      f" loop polling the scratch registers), which no other boot mode arms.")
+    if preload_mode == 'slink' and 'slink' not in (config.host.export_interfaces or []):
+        errors.append(f"[testbench] preload_mode 'slink' requires the host ('{config.host.name}')"
+                      f" to list 'slink' in export_interfaces: without it the serial-link pins"
+                      f" never reach the top level and the agent drives dead wires.")
+    if preload_mode == 'slink' and (config.testbench or {}).get('preload_verify'):
+        errors.append(f"[testbench] preload_verify is implemented for preload_mode 'jtag' only"
+                      f" (sbreadondata streaming): drop it, or keep this project on 'jtag'.")
+    for mem in (config.testbench or {}).get('preload_memories', []) or []:
+        image = (mem or {}).get('image', 'hex')
+        if image not in ('hex', 'elf'):
+            errors.append(f"[testbench] preload_memories: image '{image}' is not implemented:"
+                          f" choose 'hex' (flat objcopy output, the default) or 'elf'.")
+        elif image == 'elf' and preload_mode == 'readmemh':
+            # readmemh needs the per-bank hex splitting the sw build performs;
+            # an ELF has no banked form - only the streamed transports can take it.
+            errors.append(f"[testbench] preload_memories: image 'elf' requires an architected"
+                          f" preload_mode ('jtag' or 'slink'): the hierarchical readmemh path"
+                          f" only understands the split per-bank hex files.")
 
     if errors:
         raise ValueError("\n".join(f"\n{e}" for e in errors))
@@ -957,7 +981,22 @@ _ROOT_BLOCK_SPEC = {
                   # Measured ~2.8x the plain load's simulated time: meant for one
                   # verifying configuration in the fleet, not for every project.
                   "preload_verify": bool,
-                  "preload_memories": [{"instance": str, "file": str}]},
+                  # Each preload region names the target instance (resolved to its
+                  # bus base address for the architected modes), the image file,
+                  # and optionally the image format: 'hex' (default, the flat
+                  # objcopy output) or 'elf' (wip 2.1 wave two) - the testbench
+                  # then reads the file through the vendored elfloader DPI
+                  # (read_elf/get_section/read_section) and streams every
+                  # loadable segment through the configured transport, taking
+                  # the entry point from the ELF header instead of the map.
+                  "preload_memories": [{"instance": str, "file": str, "image": str}],
+                  # Capacity of the testbench's STATIC ELF section buffer in
+                  # bytes (default 4 MiB). Static because Verilator cannot yet
+                  # pass a dynamic array to a DPI open array; raise it when an
+                  # image carries a larger loadable segment (the load names
+                  # this knob in its fatal), including nested-boot images whose
+                  # inner memory sizes the parent configuration cannot see.
+                  "elf_max_section_bytes": int},
     "software_stack": {"toolchain": str, "boot_memory": str,
                        "test_app": {"name": str, "auto_generate_c": bool, "baudrate": int,
                                     "offload_targets": [str], "payload_memory": str}},

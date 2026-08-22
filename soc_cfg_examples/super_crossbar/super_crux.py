@@ -119,7 +119,10 @@ config = OllivanderConfig(
         isa="rv64imafdc_zifencei",
         abi="lp64d",
         cmodel="medany",
-        export_interfaces=["jtag", "uart", "spi", "i2c", "gpio"],
+        # 'slink' joins the exports as the opening move of the serial-link
+        # preload wave (wip ch. 2): the image will stream through it while
+        # bring-up and handoff stay on the proven JTAG path.
+        export_interfaces=["jtag", "uart", "spi", "i2c", "gpio", "slink"],
         interfaces={
             "axi_master": True,
             "axi_slave": [
@@ -128,7 +131,7 @@ config = OllivanderConfig(
         },
         parameters={
             "NumCores": 1, "RtcFreq": 1000000, "Bootrom": True, "Uart": True,
-            "I2c": True, "SpiHost": True, "Dma": True, "SerialLink": False,
+            "I2c": True, "SpiHost": True, "Dma": True, "SerialLink": True,
             "Vga": False, "Snooper": True, "IrqRouter": True,
             "Cva6ExtCieOnTop": True,
             "Cva6ExtCieLength": 0x08000000
@@ -386,6 +389,12 @@ config = OllivanderConfig(
     testbench={
         # Boot through the VIP's JTAG agent instead of hierarchical forces (wip 2.1).
         "boot_mode": "jtag",
+        # Image and boot handoff over the exported serial link (wip 2.1 wave two):
+        # the l2_shared_memory preload needs no hierarchical path, and the scratch
+        # writes avoid the SBA-to-internal-regs anomaly cheshire shows with
+        # SerialLink enabled (see the upstream registry). On the crossbar family
+        # the id widths follow the host by construction (standardization 5.3).
+        "preload_mode": "slink",
         # Only the boot-critical domains are enabled by the testbench; the firmware
         # ungates each target when it needs it and powers it down afterwards.
         "bring_up": "minimal",

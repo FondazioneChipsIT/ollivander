@@ -5,6 +5,9 @@
 // Formatted for Ollivander SoC generator
 //
 // BENDER: name="riscv-dbg"
+// BENDER: name="axi"
+// BENDER: name="apb"
+// BENDER: name="serial_link"
 //
 // The timescale is NOT optional. Without it Questa assigns the module the
 // simulator resolution as its time unit (the suppressed warning-3009 class),
@@ -12,6 +15,9 @@
 // a thousand times too fast - so every DMI op collided inside the DTM's CDC
 // and every write of a burst but the first was silently dropped.
 `timescale 1ns / 1ps
+`include "axi/typedef.svh"
+`include "axi/assign.svh"
+`include "apb/typedef.svh"
 //
 // ============================================================================
 // vip_ollivander_soc - the generic, IP-agnostic verification IP (wip 2.1)
@@ -66,7 +72,21 @@ module vip_ollivander_soc #(
   // actually programs (integer divisor, so the real rate differs from the
   // nominal baud by percents at high speed - enough to mis-sample a frame).
   parameter bit HasUart = 1'b0,
-  parameter real UartBitPeriodNs = 8680.0
+  parameter real UartBitPeriodNs = 8680.0,
+  // --------------------------------------------------------------------------
+  // Serial-link agent (wip 2.1, wave two): the off-chip TWIN of the DUT's
+  // serial link. The AXI geometry arrives from the host's Slink* contract via
+  // the generated testbench; the twin builds its own types from the widths,
+  // because the wire protocol needs a STRUCTURAL width match, not type
+  // identity - which is what keeps this VIP IP-agnostic. Channel count and
+  // lane width come from slink_reg_pkg, the same package the DUT-side
+  // instance reads, so the two sides cannot disagree.
+  // --------------------------------------------------------------------------
+  parameter bit HasSlink = 1'b0,
+  parameter int unsigned SlinkAxiAddrWidth = 48,
+  parameter int unsigned SlinkAxiDataWidth = 64,
+  parameter int unsigned SlinkAxiIdWidth   = 2,
+  parameter int unsigned SlinkAxiUserWidth = 10
 ) (
   // Clocks and resets, driven for the testbench from time zero.
   output logic       clk_o,
@@ -82,7 +102,13 @@ module vip_ollivander_soc #(
   output logic jtag_trst_no,
   output logic jtag_tms_o,
   output logic jtag_tdi_o,
-  input  logic jtag_tdo_i
+  input  logic jtag_tdo_i,
+  // Serial-link side, wired straight onto the SoC top's pins (this module is
+  // the off-chip end). Tie the inputs to '0 in testbenches without slink.
+  input  logic [slink_reg_pkg::NumChannels-1:0]                              slink_rcv_clk_i,
+  output logic [slink_reg_pkg::NumChannels-1:0]                              slink_rcv_clk_o,
+  input  logic [slink_reg_pkg::NumChannels-1:0][slink_reg_pkg::NumLanes-1:0] slink_i,
+  output logic [slink_reg_pkg::NumChannels-1:0][slink_reg_pkg::NumLanes-1:0] slink_o
 );
 
 
@@ -592,5 +618,242 @@ module vip_ollivander_soc #(
              num_words, base, use64 ? "64-bit" : "32-bit",
              verify ? ", verified" : "");
   endtask
+
+  // ==========================================================================
+  // Serial-link agent (wip 2.1, wave two): the off-chip twin.
+  // ==========================================================================
+  // Cheshire's shape, simplified: one class driver injects AXI transactions
+  // into a mirror serial_link whose DDR pins cross-connect to the DUT's; a
+  // random slave terminates the opposite direction. The class constructs and
+  // the queue-typed argument below are DELIBERATE: both were probed clean
+  // under an unthreaded and cache-free build on 2026-08-22, retiring the
+  // poison-era belief that they could not be used (the procedural JTAG
+  // driver above predates that finding and stays as is - it works).
+  if (HasSlink) begin : gen_slink_agent
+
+    typedef logic [SlinkAxiAddrWidth-1:0]   slink_addr_t;
+    typedef logic [SlinkAxiDataWidth-1:0]   slink_data_t;
+    typedef logic [SlinkAxiDataWidth/8-1:0] slink_strb_t;
+    typedef logic [SlinkAxiIdWidth-1:0]     slink_id_t;
+    typedef logic [SlinkAxiUserWidth-1:0]   slink_user_t;
+    `AXI_TYPEDEF_ALL(slink_axi, slink_addr_t, slink_id_t, slink_data_t, slink_strb_t, slink_user_t)
+
+    // The twin's config port wants REAL APB structs even though it is tied
+    // off: the module body reads the request fields unconditionally. 32-bit
+    // geometry per the slink header's own defaults.
+    typedef logic [31:0] slink_apb_addr_t;
+    typedef logic [31:0] slink_apb_data_t;
+    typedef logic [3:0]  slink_apb_strb_t;
+    `APB_TYPEDEF_REQ_T(slink_apb_req_t, slink_apb_addr_t, slink_apb_data_t, slink_apb_strb_t)
+    `APB_TYPEDEF_RESP_T(slink_apb_rsp_t, slink_apb_data_t)
+
+    slink_axi_req_t  twin_in_req, twin_out_req;
+    slink_axi_resp_t twin_in_rsp, twin_out_rsp;
+
+    // Driver side (VIP -> DUT); the terminator side below takes the structs
+    // natively, so only the driver needs a DV interface.
+    AXI_BUS_DV #(
+      .AXI_ADDR_WIDTH (SlinkAxiAddrWidth), .AXI_DATA_WIDTH (SlinkAxiDataWidth),
+      .AXI_ID_WIDTH   (SlinkAxiIdWidth),   .AXI_USER_WIDTH (SlinkAxiUserWidth)
+    ) slink_mst_dv (.clk_i (clk_o));
+
+    `AXI_ASSIGN_TO_REQ(twin_in_req, slink_mst_dv)
+    `AXI_ASSIGN_FROM_RESP(slink_mst_dv, twin_in_rsp)
+
+    // The mirror instance: same slink_reg_pkg as the DUT side, so channel
+    // count, lane width and framing agree by construction. Config registers
+    // stay at their reset defaults, exactly like the DUT side's - the link
+    // comes up from reset, which is the property the preload relies on.
+    slink #(
+      .axi_req_t (slink_axi_req_t),
+      .axi_rsp_t (slink_axi_resp_t),
+      .aw_chan_t (slink_axi_aw_chan_t),
+      .ar_chan_t (slink_axi_ar_chan_t),
+      .r_chan_t  (slink_axi_r_chan_t),
+      .w_chan_t  (slink_axi_w_chan_t),
+      .b_chan_t  (slink_axi_b_chan_t),
+      .apb_req_t (slink_apb_req_t),
+      .apb_rsp_t (slink_apb_rsp_t),
+      .NoRegCdc  (1'b1)
+    ) i_slink_twin (
+      .clk_i         (clk_o),
+      .rst_ni        (rst_no),
+      .clk_sl_i      (clk_o),
+      .rst_sl_ni     (rst_no),
+      .clk_reg_i     (clk_o),
+      .rst_reg_ni    (rst_no),
+      .testmode_i    (1'b0),
+      .axi_in_req_i  (twin_in_req),
+      .axi_in_rsp_o  (twin_in_rsp),
+      .axi_out_req_o (twin_out_req),
+      .axi_out_rsp_i (twin_out_rsp),
+      .apb_req_i     ('0),
+      .apb_rsp_o     (),
+      .ddr_rcv_clk_i (slink_rcv_clk_i),
+      .ddr_rcv_clk_o (slink_rcv_clk_o),
+      .ddr_i         (slink_i),
+      .ddr_o         (slink_o),
+      .isolated_i    ('0),
+      .isolate_o     (),
+      .clk_ena_o     (),
+      .reset_no      ()
+    );
+
+    typedef axi_test::axi_driver #(
+      .AW (SlinkAxiAddrWidth), .DW (SlinkAxiDataWidth),
+      .IW (SlinkAxiIdWidth),   .UW (SlinkAxiUserWidth),
+      .TA (MainClkPeriodNs * 0.1 * 1ns), .TT (MainClkPeriodNs * 0.9 * 1ns)
+    ) slink_drv_t;
+    slink_drv_t slink_drv = new (slink_mst_dv);
+
+    // Terminator of the twin's outbound side. A MODULE, not an axi_test
+    // rand_slave: it drives the response channel from reset without a run()
+    // task (so no X wedges the shared data-link state machines, the failure
+    // an earlier class-based revision had to dodge by starting at time zero),
+    // and it contains no constrained randomization - axi_rand_slave's
+    // rand_wait is the one construct of this agent Verilator 5.050 cannot
+    // execute ("Failed to randomize wait cycles!" at t=0), while the driver
+    // class above runs fine. Nothing reads back through the link in the
+    // preload flow, so a plain always-ready memory is also the more honest
+    // model of what this side must do.
+    axi_sim_mem #(
+      .AddrWidth (SlinkAxiAddrWidth),
+      .DataWidth (SlinkAxiDataWidth),
+      .IdWidth   (SlinkAxiIdWidth),
+      .UserWidth (SlinkAxiUserWidth),
+      .axi_req_t (slink_axi_req_t),
+      .axi_rsp_t (slink_axi_resp_t),
+      .ApplDelay (MainClkPeriodNs * 0.1 * 1ns),
+      .AcqDelay  (MainClkPeriodNs * 0.9 * 1ns)
+    ) i_slink_term_mem (
+      .clk_i              (clk_o),
+      .rst_ni             (rst_no),
+      .axi_req_i          (twin_out_req),
+      .axi_rsp_o          (twin_out_rsp),
+      .mon_w_valid_o      (),
+      .mon_w_addr_o       (),
+      .mon_w_data_o       (),
+      .mon_w_id_o         (),
+      .mon_w_user_o       (),
+      .mon_w_beat_count_o (),
+      .mon_w_last_o       (),
+      .mon_r_valid_o      (),
+      .mon_r_addr_o       (),
+      .mon_r_data_o       (),
+      .mon_r_id_o         (),
+      .mon_r_user_o       (),
+      .mon_r_beat_count_o (),
+      .mon_r_last_o       ()
+    );
+
+    initial begin
+      #1ns;  // let the reset agent drive rst_no before touching the bus
+      slink_drv.reset_master();
+    end
+
+    // One AXI write burst through the twin. INCR, 64-bit beats; the last
+    // beat's strobe masks the pad when the payload ends mid-beat. Bursts
+    // never cross a 4 KiB page: the caller below slices accordingly.
+    task automatic slink_write_beats(input logic [63:0] addr,
+                                     ref slink_data_t beats [$],
+                                     input slink_strb_t last_strb);
+      automatic slink_drv_t::ax_beat_t ax = new();
+      automatic slink_drv_t::w_beat_t  w  = new();
+      automatic slink_drv_t::b_beat_t  b;
+      // EDGE-ALIGN before the first drive, Cheshire's own discipline: the
+      // driver's first ready sample lands TT after the CALL time, and a call
+      // from an unaligned instant lets that window straddle the very edge
+      // where this link's Mealy ready consumes the beat and falls - the
+      // driver then waits forever for a handshake that already happened
+      // (one lost afternoon, 2026-08-22).
+      @(posedge clk_o);
+      ax.ax_addr  = addr[SlinkAxiAddrWidth-1:0];
+      ax.ax_len   = beats.size() - 1;
+      ax.ax_size  = $clog2(SlinkAxiDataWidth / 8);
+      ax.ax_burst = axi_pkg::BURST_INCR;
+      slink_drv.send_aw(ax);
+      for (int unsigned i = 0; i < beats.size(); i++) begin
+        w.w_data = beats[i];
+        w.w_strb = (i == beats.size() - 1) ? last_strb : '1;
+        w.w_last = (i == beats.size() - 1);
+        slink_drv.send_w(w);
+      end
+      slink_drv.recv_b(b);
+      if (b.b_resp != axi_pkg::RESP_OKAY)
+        $fatal(1, "[VIP-SLINK] write burst at 0x%h answered %0d", addr, b.b_resp);
+    endtask
+
+    // Single 32-bit write, the serial-link counterpart of sba_write32: one
+    // aligned 64-bit beat with a half strobe, the word shifted into its lane.
+    // This is the CONTROL channel of the slink mode - bring-up of the gated
+    // domains and the boot handoff both ride it, because with SerialLink
+    // enabled the debug module's SBA writes into cheshire's internal register
+    // path vanish behind an OKAY (see the upstream registry), while the same
+    // registers answer perfectly from the external AXI ingress this task uses.
+    // Gwaihir's slink_enable_tiles() is the reference for the pattern.
+    task automatic slink_write32(input logic [63:0] addr,
+                                 input logic [31:0] data);
+      automatic slink_data_t beats [$];
+      automatic logic [63:0] beat_addr = {addr[63:3], 3'b000};
+      automatic slink_strb_t strb;
+      if (addr[1:0] != 2'b00)
+        $fatal(1, "[VIP-SLINK] write32 at 0x%h is not 4-byte aligned", addr);
+      beats.delete();
+      if (addr[2]) begin
+        beats.push_back({data, 32'h0});
+        strb = slink_strb_t'(8'hF0);
+      end else begin
+        beats.push_back({32'h0, data});
+        strb = slink_strb_t'(8'h0F);
+      end
+      slink_write_beats(beat_addr, beats, strb);
+    endtask
+
+    // Streamed image load, the serial-link counterpart of sba_load: the SAME
+    // contract (base + flat word array), so the generated testbench emits the
+    // same packing whatever the transport. Words pair into 64-bit beats;
+    // bursts are capped below and sliced at 4 KiB pages as AXI demands.
+    task automatic slink_load(input logic [63:0] base,
+                              input logic [31:0] image[],
+                              input int unsigned num_words);
+      automatic slink_data_t beats [$];
+      automatic logic [63:0] addr = base;
+      automatic int unsigned w = 0;
+      automatic slink_strb_t tail_strb;
+      if (base[2:0] != 3'b000)
+        $fatal(1, "[VIP-SLINK] base 0x%h is not 8-byte aligned", base);
+      while (w < num_words) begin
+        automatic int unsigned page_left  = (13'h1000 - addr[11:0]) >> 3;
+        automatic int unsigned words_left = (num_words - w + 1) >> 1;
+        automatic int unsigned n_beats    = (words_left < page_left) ? words_left : page_left;
+        // 1 KiB bursts, cheshire upstream's own SlinkBurstBytes cap. The AXI4
+        // maximum of 256 beats is PROVEN on both families (dedicated probe,
+        // 2026-08-22: full offload to EOT on super_crux and noc_isle) - the
+        // one stall ever observed at this line was the twin-geometry framing
+        // skew plus the SBA-eaten bring-up, never the burst length. 128 is
+        // kept anyway as deliberate practice parity with upstream's VIP.
+        if (n_beats > 128) n_beats = 128;
+        beats.delete();
+        tail_strb = '1;
+        for (int unsigned i = 0; i < n_beats; i++) begin
+          automatic logic [63:0] beat;
+          beat[31:0] = image[w];
+          if (w + 1 < num_words) beat[63:32] = image[w+1];
+          else begin beat[63:32] = 32'h0; tail_strb = slink_strb_t'(8'h0F); end
+          beats.push_back(beat);
+          w += 2;
+        end
+        $display("[VIP-SLINK] burst: %0d beats at 0x%h...", n_beats, addr);
+        slink_write_beats(addr, beats, tail_strb);
+        $display("[VIP-SLINK] burst done (B received), %0d/%0d words", w, num_words);
+        addr += n_beats * 8;
+      end
+      $display("[VIP-SLINK] load complete: %0d words at 0x%h", num_words, base);
+    endtask
+
+  end else begin : gen_no_slink
+    assign slink_rcv_clk_o = '0;
+    assign slink_o         = '0;
+  end
 
 endmodule

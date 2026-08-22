@@ -489,7 +489,13 @@ testbench:
     - instance: "i_l2_shared_memory"
       # '{test_app}' resolves at generation time to the firmware actually built
       # (test_app.name or its TEST_APP override), so the preload follows the app.
-      file: "generated/sw/{test_app}.hex"
+      # The image travels as the ELF itself (wip 2.1 wave two): the testbench
+      # reads it through the vendored elfloader DPI, streams every loadable
+      # segment over the same JTAG/SBA transport the hex used, and takes the
+      # entry point from the ELF header instead of the memory map. crux is the
+      # fleet's ELF pilot; the hex form remains the default everywhere else.
+      file: "generated/sw/{test_app}.elf"
+      image: elf
 
 # ------------------------------------------------------------------------------
 # 9. SOFTWARE STACK & FIRMWARE

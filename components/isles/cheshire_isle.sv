@@ -99,6 +99,43 @@ module cheshire_isle
   parameter int unsigned SpihNumCs          = 1,
   parameter int unsigned SlinkNumChan       = 1,
   parameter int unsigned SlinkNumLanes      = 8,
+  // Serial-link preload contract (wip 2.1, wave two): the VIP instantiates an
+  // off-chip twin of this host's serial link, and the twin's AXI geometry must
+  // mirror the DUT side's EXACTLY or the wire framing disagrees. Declared as
+  // host-owned knowledge, the same pattern as the Jtag* block; the id
+  // width repeats the expression the Cfg assembly below uses for AxiMstIdWidth.
+  // Tied to the SerialLink feature switch above: exporting the pins of a link
+  // Cheshire was built without would hand the testbench dead wires - found
+  // the hard way on 2026-08-22, when the first slink pilot's driver waited
+  // forever for credits from a stubbed-out receiver.
+  localparam bit HasSlinkPreload = SerialLink,
+  localparam int unsigned SlinkAxiAddrWidth = AxiAddrWidth,
+  localparam int unsigned SlinkAxiDataWidth = AxiDataWidth,
+  localparam int unsigned SlinkAxiUserWidth = AxiUserWidth,
+  localparam int unsigned SlinkAxiIdWidth   = (AxiOutIdWidth > 0 && AxiOutIdWidth <= 3) ? AxiOutIdWidth : 3,
+  // External-master id-width contract (wip 2.1 wave two, latent-truncation
+  // fix): the internal crossbar prepends the ORIGINATING MASTER's index to
+  // every outgoing id, so the external id width is the effective master id
+  // width plus clog2 of the master count - and the count GROWS with feature
+  // switches. SerialLink added the fifth master and exposed a bit the fabric
+  // had been silently truncating for the DMA and USB masters (which never
+  // issued fabric-bound transactions in any shipped test). The sum mirrors
+  // cheshire_pkg::gen_axi_in field by field, Usb pinned at DefaultCfg's 1,
+  // INCLUDING its AxiExtNumMst term: the external masters this instance
+  // receives (the NoC ingress, the parent's exported masters) join the same
+  // crossbar and widen the same ids - counting only the internal ones left a
+  // one-bit undercount on the mesh, silent because the masters above the
+  // clog2 plateau never spoke (the same latency pattern, one week older).
+  // The generator resolves it numerically (the AxiNumMst* values are driven
+  // into host.parameters before resolution) and sizes the interconnect id
+  // width so the fabric FOLLOWS the host - astral's and gwaihir's practice.
+  // The elaboration check beside cheshire's own AxiSlvIdWidth below keeps
+  // this expression honest against cheshire_pkg::gen_axi_in forever.
+  // NOTE: single line on purpose - the generator's header parser captures a
+  // fixed_param's value up to the end of ITS line, so a wrapped expression
+  // reaches the resolver truncated (found the hard way, mesh pilot 2026-08-22).
+  localparam int unsigned NumAxiInMasters  = NumCores + 1 + Dma + SerialLink + Vga + 1 + AxiNumMstAsync + AxiNumMstSync,
+  localparam int unsigned AxiExtOutIdWidth = ((AxiOutIdWidth > 0 && AxiOutIdWidth <= 3) ? AxiOutIdWidth : 3) + $clog2(NumAxiInMasters),
   parameter int unsigned VgaRedWidth        = 5,
   parameter int unsigned VgaGreenWidth      = 6,
   parameter int unsigned VgaBlueWidth       = 5,
@@ -384,6 +421,18 @@ module cheshire_isle
 
   localparam cheshire_pkg::axi_in_t AxiIn = cheshire_pkg::gen_axi_in(Cfg);
   localparam int unsigned AxiSlvIdWidth = Cfg.AxiMstIdWidth + $clog2(AxiIn.num_in);
+
+  // The id-width contract of the header CANNOT be allowed to drift from the
+  // truth cheshire computes right above: NumAxiInMasters is a hand-written
+  // mirror of gen_axi_in, and a future cheshire bump that adds a master (or a
+  // Cfg switch this wrapper forgets to count) would silently reopen the
+  // latent-truncation hole the contract exists to close. Elaboration-time,
+  // zero cost, both simulators stop dead on a mismatch.
+  initial begin : gen_id_contract_check
+    if (AxiExtOutIdWidth != AxiSlvIdWidth)
+      $fatal(1, "cheshire_isle: id-width contract drift - AxiExtOutIdWidth=%0d (from NumAxiInMasters=%0d) but cheshire's real external width is %0d (AxiMstIdWidth=%0d + clog2(num_in=%0d)). Realign NumAxiInMasters with cheshire_pkg::gen_axi_in.",
+             AxiExtOutIdWidth, NumAxiInMasters, AxiSlvIdWidth, Cfg.AxiMstIdWidth, AxiIn.num_in);
+  end
   typedef logic [AxiSlvIdWidth:0]     llc_id_t;
   `AXI_TYPEDEF_ALL(cheshire_llc, axi_addr_t, llc_id_t, axi_data_t, axi_strb_t, axi_user_t)
 

@@ -325,6 +325,13 @@ dependencies:
   register_interface:
     git: "https://github.com/pulp-platform/register_interface.git"
     version: "0.4.7"
+  serial_link:
+    # Arrived transitively through cheshire until the VIP's serial-link agent (wip 2.1,
+    # wave two) started consuming it directly: the off-chip twin instantiates 'slink'
+    # and reads slink_reg_pkg, and a directly-consumed IP is declared, never inherited.
+    # Pinned to the revision every project's lock already resolves through cheshire.
+    git: "https://github.com/pulp-platform/serial_link.git"
+    rev: "bb06f8522c4b1f185fc09f0b9ef73fe9f19da391"
   safety_island:
     git: "https://github.com/pulp-platform/safety_island.git"
     rev: "d9feaedcec1d2fa09fbb57cd1c910fa9a821a0de"

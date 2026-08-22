@@ -374,8 +374,10 @@ module ${p_name}_${c_type}
           # The Jtag* family joins the pass-through (wip 2.1): the testbench reads the
           # host's boot capabilities from the TILE wrapper on the NoC family, so the
           # isle-declared JTAG boot contract must survive the isle-to-tile conversion
-          # exactly as the ForceBoot* one does.
-          if param_name.startswith("Preload") or param_name.startswith("ForceBoot") or param_name.startswith("Jtag") or param_name in ["HasEcc", "EccType", "HasForceBoot", "HasJtagBoot"]:
+          # exactly as the ForceBoot* one does. The Slink* preload contract (wave two)
+          # follows for the same reason; its values are EXPRESSIONS over isle params
+          # the tile header re-declares, so they keep resolving in tile scope.
+          if param_name.startswith("Preload") or param_name.startswith("ForceBoot") or param_name.startswith("Jtag") or param_name.startswith("SlinkAxi") or param_name in ["HasEcc", "EccType", "HasForceBoot", "HasJtagBoot", "HasSlinkPreload"]:
               if param_name in ["PreloadTemplate", "ForceBootPath"]:
                   clean_val = p_val.strip("\"'")
                   p_val = f'"i_isle.{clean_val}"'

@@ -157,6 +157,10 @@ host:
     terminate_ports: ["async_axi_in", "async_axi_out"]
   parameters:                 # Renamed from system_config to match HW-First semantics
     Vga: false                # Aligned standard Cheshire parameter name
+    # The serial link must be BUILT, not merely exported: preload_mode 'slink'
+    # streams the boot image through it (wip 2.1, wave two), and pins over a
+    # stubbed-out link are dead wires the generator now refuses.
+    SerialLink: true
     # The CIE window is CVA6's cached+executable slice of the external space:
     # [0x8000_0000 - length, 0x8000_0000) with OnTop. 0x5E00_0000 starts it at
     # the L2 (0x2200_0000): the host image boots from there and must stay
@@ -271,6 +275,11 @@ components:
 testbench:
   # Boot through the VIP's JTAG agent instead of hierarchical forces (wip 2.1).
   boot_mode: jtag
+  # The image streams through the serial link's AXI at bus speed (wave two of
+  # wip 2.1): bring-up and handoff stay on the JTAG path above, only the
+  # payload reroutes. This also frees the eight preloaded L2 tiles for
+  # Verilator's hierarchical blocks - the measured ~20% this wave collects.
+  preload_mode: slink
   # Only the boot-critical domains are enabled by the testbench; the firmware
   # ungates each target when it needs it and powers it down afterwards.
   bring_up: minimal
@@ -281,9 +290,19 @@ testbench:
   boot_timeout_ns: 10000000
   boot_timeout_fast_ns: 2000000
   sim_timeout_ns: 10000000
+  # ELF section-buffer capacity, set to the destination L2 tile's size: a
+  # loadable segment larger than the memory it targets could never land
+  # anyway. noc_isle is the fleet's representative of the EXPLICIT knob
+  # (crux, the other ELF project, deliberately regresses the 4 MiB default).
+  elf_max_section_bytes: 0x100000
   preload_memories:
     - instance: "i_tile_0_0.i_isle" # Hierarchical RTL path to the first L2 tile
-      file: "generated/sw/{test_app}.hex"     # Path to the compiled hex binary ({test_app} resolves to the configured app)
+      # The image travels as the ELF itself ({test_app} resolves to the
+      # configured app): noc_isle is the fleet's slink+elf representative in
+      # the format-by-transport coverage matrix (crux carries jtag+elf; hex
+      # stays covered on both transports by mesh and the two supers).
+      file: "generated/sw/{test_app}.elf"
+      image: elf
 
 # ------------------------------------------------------------------------------
 # 8. SOFTWARE STACK & FIRMWARE

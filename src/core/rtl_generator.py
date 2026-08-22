@@ -639,6 +639,14 @@ class RTLGenerator:
         core.interfaces.GLOBAL_COMP_INFO.clear()
         core.interfaces.GLOBAL_COMP_INFO.update(comp_info)
 
+        # Prime the host id-width contract now that the driven AxiNumMst* values
+        # are final: wiring and the SoC package template size the crossbar's
+        # slave-side ids from this single resolution (see host_axi_in_masters),
+        # and calling it here - once, with the search paths only the generator
+        # holds - is what lets their call sites stay path-free.
+        from core.macro_boundary import host_axi_in_masters
+        host_axi_in_masters(self.soc_config, self.env.component_paths, self.original_isle_types)
+
         wiring_matrix = build_connection_matrix(self.soc_config, comp_info)
 
         # Compilation macros are merged BY NAME, not as plain strings, with the project's own
@@ -1725,7 +1733,7 @@ class RTLGenerator:
         # dotted path survives and the boot tile becomes eligible like any other -
         # the second half of the dividend the force-free bring-up exists for.
         preload_by_dotted_path = \
-            (self.soc_config.testbench or {}).get("preload_mode", "readmemh") != "jtag"
+            (self.soc_config.testbench or {}).get("preload_mode", "readmemh") == "readmemh"
 
         # LOCAL EXCLUSIONS VS EXPORTED DECLARATIONS (wip 2.1 residual 2, second half).
         # Two kinds of exclusion end up in the same set below, and they do NOT have
@@ -2264,9 +2272,32 @@ class RTLGenerator:
             if core_sig not in port_mapping:
                 if core_sig.startswith("ext_reg_async_slv_") or core_sig.startswith("domain_clk_i") or core_sig.startswith("clk_gen_lock_i"):
                     continue
-                
+
                 p_type = p_info['type']
                 p_dir = p_info['dir']
+
+                # A port outside every export group can still be legitimately
+                # padded: chip INFRASTRUCTURE straps (clk_rst_bypass_i) reach
+                # the pad list as static entries without ever being an
+                # interface export. Before 2026-08-22 this loop never looked
+                # at the pad list or the Padrick package, so such a pad was
+                # reported missing forever AND its core port stayed dangling
+                # in the chip wrapper - validate it like any static pad.
+                if core_sig in statically_routed_wires and core_sig in padframe_fields:
+                    pad_type = padframe_fields[core_sig]['type']
+                    if norm_type(p_type) != norm_type(pad_type):
+                        fatal_errors.append(f"Width/Type mismatch on '{core_sig}': Core expects '{p_type}', Padframe provides '{pad_type}'")
+                    else:
+                        dom_name = self.get_signal_domain(core_sig, core_sig_to_domain)
+                        struct_path = (f"static_pad2soc.{dom_name}.{core_sig}" if p_dir == 'input'
+                                       else f"static_soc2pad.{dom_name}.{core_sig}")
+                        validated_connections.append({
+                            'sig_name': core_sig,
+                            'sv_type': p_type,
+                            'is_input_to_soc': p_dir == 'input',
+                            'struct_path': struct_path
+                        })
+                    continue
                 width = 1
                 for w_match in re.finditer(r'\[\s*(\d+)\s*[-:]+\s*(\d+)\s*\]', p_type):
                     width *= abs(int(w_match.group(1)) - int(w_match.group(2))) + 1

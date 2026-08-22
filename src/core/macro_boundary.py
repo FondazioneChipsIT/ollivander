@@ -116,9 +116,23 @@ def crossbar_master_count(soc_config):
 
 
 def crossbar_slv_id_width(soc_config):
-    """Slave-side AXI ID width of the crossbar: the manager ID plus the arbitration bits."""
-    return (soc_config.topology.global_bus.mst_id_width
-            + clog2(max(crossbar_master_count(soc_config), 2)))
+    """
+    Slave-side AXI ID width of the crossbar: the manager ID plus the arbitration bits.
+
+    When the host declares the 'NumAxiInMasters' contract (primed by the generator,
+    see host_axi_in_masters), the count comes from THERE - the same single source
+    the NoC family sizes from, and the id-alignment work of 2026-08-22 - with the
+    manager id saturated at 3 exactly as the host's own Cfg assembly saturates it.
+    The hand-maintained crossbar_master_count below remains as the fallback for
+    hosts without a contract, and its deliberately-present defaults for optional
+    masters can only err WIDER, which the field-wise boundary assigns absorb.
+    """
+    mst_w = soc_config.topology.global_bus.mst_id_width
+    contract = host_axi_in_masters(soc_config)
+    if contract is not None:
+        sat_w = mst_w if 0 < mst_w <= 3 else 3
+        return sat_w + clog2(max(contract, 2))
+    return mst_w + clog2(max(crossbar_master_count(soc_config), 2))
 
 
 def user_span(soc_config):
@@ -146,6 +160,83 @@ def resolve_noc_user_widths(soc_config):
     boundary check below and the network configuration cannot disagree about them.
     """
     return {"narrow": user_span(soc_config), "wide": 1}
+
+
+# Single-slot cache of the resolved host contract: (config object, count). The
+# resolution needs the component search paths, which only the generator holds;
+# wiring.py and the SoC package template consume the count through call sites
+# whose signatures carry no paths, so the generator PRIMES this once (right
+# after the AxiNumMst* driven values land in host.parameters) and the
+# consumers read it back. Single-slot on purpose: a generator process handles
+# exactly one SoC configuration, and comparing by identity cannot confuse two
+# configurations the way an id()-keyed dict could after garbage collection.
+_host_contract = (None, None)
+
+
+def host_axi_in_masters(soc_config, component_paths=None, original_types=None):
+    """
+    Resolve the host's declared 'NumAxiInMasters' contract to a number.
+
+    The host wrapper declares its AXI master count as an arithmetic expression
+    over its own header parameters, mirroring cheshire_pkg::gen_axi_in INCLUDING
+    the external-master term (AxiNumMstAsync + AxiNumMstSync, whose driven
+    values the generator writes into host.parameters before any resolution
+    runs). Called with component_paths, this resolves and caches the count;
+    called without, it returns the cached count - or None, which every caller
+    treats as "no contract declared, keep the legacy sizing".
+    """
+    global _host_contract
+    if component_paths is None:
+        cfg, count = _host_contract
+        return count if cfg is soc_config else None
+    from core.sv_parser import get_isle_info
+    host = soc_config.host
+    htype = (original_types or {}).get(host.name, host.type)
+    info = get_isle_info(htype, component_paths) or {}
+    raw = str((info.get("fixed_params", {}) or {}).get("NumAxiInMasters", "")).strip('"\'')
+    if not raw:
+        _host_contract = (soc_config, None)
+        return None
+    env = {}
+    env.update({str(k): str(v).strip('"\'') for k, v in (info.get("supported_params", {}) or {}).items()})
+    env.update({str(k): ("1" if v is True else "0" if v is False else str(v))
+                for k, v in (host.parameters or {}).items()})
+    expr = raw
+    for _ in range(2):
+        for k, v in env.items():
+            expr = re.sub(rf'(?<!\.)\b{re.escape(k)}\b', v, expr)
+    try:
+        count = int(eval(expr, {"__builtins__": None}, {}))
+    except Exception:
+        print(f"\n[ERROR] The host's 'NumAxiInMasters' contract did not resolve to a number: "
+              f"'{raw}' became '{expr}'. Its expression may only use the host wrapper's own "
+              f"header parameters.")
+        sys.exit(1)
+    _host_contract = (soc_config, count)
+    return count
+
+
+def host_ext_out_id_width(soc_config, component_paths, original_types=None):
+    """
+    The id width the HOST's external master port actually drives, from the host
+    wrapper's own contract (wip 2.1 wave two, the latent-truncation fix).
+
+    Cheshire-class hosts prepend the originating master's index to every outgoing
+    id, so their external width is the effective master id width plus clog2 of the
+    master count - and the count GROWS with feature switches (enabling the
+    serial link added the fifth master and exposed a bit the fabric had silently
+    truncated for masters that never spoke). Returns 3 + clog2(count), 3 being
+    the saturated master id width the host's own Cfg assembly uses for any
+    interconnect id width >= 3 (the schema-guaranteed minimum here is the
+    FlooNoC default of 4, so the saturation always holds).
+
+    Returns None when the host declares no contract, in which case the caller
+    keeps its legacy sizing - a non-cheshire host owes nothing to this rule.
+    """
+    count = host_axi_in_masters(soc_config, component_paths, original_types)
+    if count is None:
+        return None
+    return 3 + max(1, (count - 1).bit_length())
 
 
 def resolve_noc_id_widths(soc_config, component_paths, original_types=None, report=True):
@@ -200,6 +291,17 @@ def resolve_noc_id_widths(soc_config, component_paths, original_types=None, repo
             name = _ACCEPTED.get(net)
             if name and name in published:
                 accepted.setdefault(net, []).append((comp.name, published[name]))
+
+    # The HOST imposes too (wip 2.1 wave two): its external master port's id width
+    # follows its internal master count, so every network it masters must carry at
+    # least that width or the top index bits truncate and responses misroute - the
+    # exact failure the serial-link preload exposed on 2026-08-22 (the L2's B
+    # answer delivered to the wrong internal master, load hung on a lost response).
+    host_width = host_ext_out_id_width(soc_config, component_paths, original_types)
+    if host_width is not None:
+        host_nets = ((soc_config.host.interfaces or {}).get("noc_networks") or {}).get("master", []) or []
+        for net in host_nets:
+            imposed.setdefault(net, []).append((f"{soc_config.host.name} (host contract)", host_width))
 
     for net_name, net in networks.items():
         if net_name not in _DEFAULT_ID_WIDTH:
