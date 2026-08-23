@@ -159,7 +159,9 @@ ${stubs_str}
   testbench_cfg = config.testbench or {}
   boot_mode = testbench_cfg.get("boot_mode", "force")
   has_jtag_boot = host_fixed.get("HasJtagBoot", "0").strip('"\'') == "1"
-  if boot_mode == "jtag" and not has_jtag_boot:
+  # Both architected boots lean on the same host contract block: 'slink' needs
+  # no TAP, but the scratch offset the handoff writes to travels in it too.
+  if boot_mode in ("jtag", "slink") and not has_jtag_boot:
       boot_mode = "force"
   jtag_idcode = int(host_fixed.get("JtagIdCode", "1").strip('"\''))
   jtag_scratch_off = int(host_fixed.get("JtagScratchOffset", "0").strip('"\''))
@@ -268,7 +270,7 @@ ${reset_initials_str}
   dut (
 ${dut_ports_str}
   );
-% if boot_mode == "jtag":
+% if boot_mode in ("jtag", "slink"):
 
   // The generated raw-address twin of the firmware headers: one source of truth
   // (the memory-map RDL) for every `SYS_CTRL_* register the sequence touches.
@@ -851,12 +853,17 @@ if not uart_base:
   bringup_rst_str = "\n".join(bringup_rst_lines)
   bringup_str = bringup_clk_str + bringup_rst_str
 %>
-% if boot_mode == "jtag":
+% if boot_mode in ("jtag", "slink"):
   // ==========================================================================
-  // JTAG bring-up and boot (wip 2.1): the architected, force-free path.
+  // Architected bring-up and boot (wip 2.1): the force-free path. Under boot
+  // 'jtag' the TAP comes alive first (liveness: IDCODE, dmactive, SBA ready);
+  // under boot 'slink' JTAG is never touched - the serial link carries
+  // everything, cheshire's and gwaihir's own PRELMODE=1 shape.
   // ==========================================================================
   #1200;
+% if boot_mode == "jtag":
   i_vip.jtag_init();
+% endif
 % if jtag_clk_str or jtag_rst_str:
   $display("[TB] Bringing up gated domains via ${ctrl_channel} (clocks first)...");
 ${jtag_clk_str}
@@ -1198,8 +1205,9 @@ sys_ctrl_inst = f"dut.{host_instance_name}.i_sys_ctrl_regs" if config.topology.t
 # is a Verilator hierarchical block: a dotted path into it fails the build
 # ("Cannot access scope inside hierarchical block", met on mesh 2026-08-17).
 # Same rule as the AXI monitor and the boot forces - the testbench may look
-# inside the host only when the boot mode already requires it to be inlined.
-if config.topology.type == "noc" and boot_mode == "jtag":
+# inside the host only when the boot mode already requires it to be inlined,
+# which neither architected boot does.
+if config.topology.type == "noc" and boot_mode in ("jtag", "slink"):
     ctrl_groups = []
 group_sensitivity = " or ".join([f"{sys_ctrl_inst}.field_storage.{g}_rst.{g}_rst.value" for g in ctrl_groups])
 %>

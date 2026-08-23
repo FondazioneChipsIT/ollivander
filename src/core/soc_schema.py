@@ -866,11 +866,32 @@ def validate_cross_references(config: OllivanderConfig):
     # silent: every DMI read returns X, and X falls OPEN through every liveness check the
     # testbench agent can make (an 'if (idcode != expected)' with X compares to X, which is not
     # true). This check turns hours of waveform archaeology into one generation-time message.
-    if (config.testbench or {}).get('boot_mode') == 'jtag':
+    boot_mode = (config.testbench or {}).get('boot_mode', 'force')
+    if boot_mode not in ('force', 'jtag', 'slink'):
+        errors.append(f"[testbench] boot_mode '{boot_mode}' is not implemented: choose 'force'"
+                      f" (hierarchical forces, the default), 'jtag' (the debug-module boot,"
+                      f" with slink available as the image/control transport) or 'slink'"
+                      f" (the self-sufficient serial-link boot - no TAP is ever touched).")
+    if boot_mode == 'jtag':
         if 'jtag' not in (config.host.export_interfaces or []):
             errors.append(f"[testbench] boot_mode 'jtag' requires the host ('{config.host.name}')"
                           f" to list 'jtag' in export_interfaces: without it the TAP pins never"
                           f" reach the top level and the JTAG agent reads only X.")
+    # The slink-only boot (reference parity: cheshire's and gwaihir's PRELMODE=1
+    # branches never touch JTAG): everything - bring-up, image, handoff - rides
+    # the serial link, so the link hardware must exist and the image must travel
+    # it too. Deliberately NO jtag-export requirement: modeling a chip that needs
+    # no debugger to boot is the point of this mode.
+    if boot_mode == 'slink':
+        if 'slink' not in (config.host.export_interfaces or []):
+            errors.append(f"[testbench] boot_mode 'slink' requires the host ('{config.host.name}')"
+                          f" to list 'slink' in export_interfaces: without it the serial-link pins"
+                          f" never reach the top level and the agent drives dead wires.")
+        if (config.testbench or {}).get('preload_mode', 'readmemh') != 'slink':
+            errors.append(f"[testbench] boot_mode 'slink' requires preload_mode 'slink': with no"
+                          f" debug module initialized the image has exactly one road, and mixing"
+                          f" the hierarchical readmemh into the slink-only boot is not a covered"
+                          f" configuration.")
 
     # The system-bus load travels the debug module, which only the JTAG bring-up sequence
     # initializes: under force boot no TAP driver is even instantiated, so a 'jtag' preload
@@ -882,15 +903,17 @@ def validate_cross_references(config: OllivanderConfig):
                       f" 'readmemh' (hierarchical $readmemh, the default), 'jtag' (streamed"
                       f" system-bus load through the debug module) or 'slink' (AXI-speed load"
                       f" through the serial link).")
-    elif preload_mode in ('jtag', 'slink') and (config.testbench or {}).get('boot_mode') != 'jtag':
-        # 'jtag' keeps everything on the debug module. 'slink' moves EVERYTHING -
-        # bring-up, image, boot handoff - onto the serial link (with SerialLink
-        # enabled the debug module's SBA writes into the host's internal register
-        # path vanish behind an OKAY, see the upstream registry), but the sequence
-        # is still anchored to the JTAG boot flow (TAP init, passive preboot loop).
-        errors.append(f"[testbench] preload_mode '{preload_mode}' requires boot_mode 'jtag':"
-                      f" the architected load rides the JTAG boot sequence (passive preboot"
-                      f" loop polling the scratch registers), which no other boot mode arms.")
+    elif preload_mode == 'jtag' and boot_mode != 'jtag':
+        errors.append(f"[testbench] preload_mode 'jtag' requires boot_mode 'jtag': the system-bus"
+                      f" load travels the debug module, which only the JTAG bring-up initializes.")
+    elif preload_mode == 'slink' and boot_mode not in ('jtag', 'slink'):
+        # Both architected boots arm the passive preboot loop the slink handoff
+        # relies on. Under boot 'jtag' the TAP liveness check still runs and only
+        # the writes ride the link (the hybrid); under boot 'slink' the link is
+        # self-sufficient and JTAG is never touched (reference parity).
+        errors.append(f"[testbench] preload_mode 'slink' requires an architected boot_mode"
+                      f" ('jtag' or 'slink'): only those arm the passive preboot loop the"
+                      f" serial-link handoff writes into.")
     if preload_mode == 'slink' and 'slink' not in (config.host.export_interfaces or []):
         errors.append(f"[testbench] preload_mode 'slink' requires the host ('{config.host.name}')"
                       f" to list 'slink' in export_interfaces: without it the serial-link pins"

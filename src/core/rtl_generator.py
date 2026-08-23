@@ -1237,12 +1237,12 @@ class RTLGenerator:
             "offload_check_n": 16,
             "offload_check_xor": 0x4AFE0000,
             # The power-cycle regression (wave three step c) belongs to the
-            # ARCHITECTED boot only: under boot_mode 'force' the testbench pins
+            # ARCHITECTED boots only: under boot_mode 'force' the testbench pins
             # the power state from time zero by construction, and a firmware
             # power cycle fights the bench - found the hard way on noc_subtile,
             # whose cycle-1 payload re-load hung the interconnect for a full
             # watchdog window with no error printed.
-            "offload_power_cycles": (self.soc_config.testbench or {}).get("boot_mode") == "jtag",
+            "offload_power_cycles": (self.soc_config.testbench or {}).get("boot_mode") in ("jtag", "slink"),
             # The distinctive code every SECONDARY core of a memory_mapped cluster
             # returns (gwaihir's exact-accounting practice, wave three step b): zero
             # would be indistinguishable from a wrong code path that stores zero, so

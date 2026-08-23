@@ -36,12 +36,12 @@ In file order, `tb_<top>.sv` contains:
 
 ## 4. Boot Sequences by `boot_mode`
 
-### 4.1 `jtag` (the architected path)
+### 4.1 `jtag` and `slink` (the architected paths)
 
 The timeline, entirely through pins and registers, with nothing forced:
 
 1.  Wait for POR release, then a short settle delay.
-2.  `i_vip.jtag_init()` — TAP and debug module up.
+2.  `i_vip.jtag_init()` — TAP and debug module up. **`jtag` boot only**: under `boot_mode: slink` this step does not exist — the TAP is never touched, and the serial link carries every write of the steps below (the exact shape of the reference testbenches' `PRELMODE=1` branches, which never initialize JTAG). The hybrid — `jtag` boot with `slink` preload — keeps this step as a per-project liveness check of the debug path while the link carries the writes.
 3.  **Bring-up of gated domains, clocks first**: the testbench writes the system controller's clock-enable registers for every domain its `bring_up` mask covers (section 4.3). Domains left out are commented out explicitly in the generated code, one line each, with the reason.
 4.  **A clocked reset window** (~1 us), then reset release for the same domains. Two phases because gated domains with flip-flops using asynchronous reset sampled synchronously (FFAR) need clock edges while reset is asserted before the release is safe.
 5.  **Architected image load** (`preload_mode: jtag` or `slink`, section 5): one streamed load per preload region — `sba_load` over the debug module, or `slink_load` over the serial-link twin — after the bring-up (the image may live in a gated tile) and before the handoff (the host must find it on wake-up). Under `slink` the bring-up and handoff writes ride the serial link too.

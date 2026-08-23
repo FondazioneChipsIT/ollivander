@@ -138,8 +138,8 @@ config = OllivanderConfig(
         abi="lp64d",                # Host Application Binary Interface for the software compiler
         cmodel="medany",            # Host Code Model for the software compiler
         placement={"logical": {"x": 9, "y": 3}},
-        # 'jtag' is required by boot_mode "jtag": without it the TAP pins never reach
-        # the SoC top level and the VIP's debugger has nothing to drive.
+        # 'jtag' stays exported even though boot_mode 'slink' never drives it: the
+        # pads exist on the real chip, and the export keeps them under pad checks.
         export_interfaces=["jtag", "gpio", "slink", "uart", "spi", "i2c"],
         interfaces={
             "axi_master": True,
@@ -268,10 +268,13 @@ config = OllivanderConfig(
     # --- TESTBENCH CONFIGURATION ---
     # Instructions for the simulation environment.
     testbench={
-        # Boot through the VIP's JTAG agent instead of hierarchical forces (wip 2.1):
-        # this is what lets the parent's own manager tile and memories leave the
-        # Verilator top unit.
-        "boot_mode": "jtag",
+        # The SELF-SUFFICIENT serial-link boot (wave four): no jtag_init, the TAP
+        # is never touched - bring-up, image and handoff all ride the link, the
+        # exact shape of cheshire's and gwaihir's PRELMODE=1 branches. This
+        # project is the fleet's slink-only representative; noc_isle and
+        # super_crossbar deliberately keep the hybrid (JTAG liveness + slink
+        # transport), the one row the references' menus do not have.
+        "boot_mode": "slink",
         # The image and the boot handoff travel the serial link (wip 2.1 wave
         # two): no dotted path survives into the preloaded L2 tiles, and the
         # control writes ride the same proven channel (cheshire's PRELMODE
