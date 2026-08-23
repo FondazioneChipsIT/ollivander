@@ -499,14 +499,30 @@ An Isle that wraps a **programmable accelerator** (a compute cluster the host ca
 
 ### 8.1 Parameters Definition
 
-*   **`OffloadContract`** (`string`): The kind of boot protocol the IP implements. Currently supported: `"control_wire"` — payload and per-core boot addresses are written by the host through the slave window, the cores are released by the SoC-side fetch-enable wire, completion is signalled on `eoc_o` and the result read back from an MMIO register. (A `"memory_mapped"` kind, for snitch-style clusters driven through scratch registers and a CLINT, is planned.)
-*   **`OffloadCtrlOffs`** (`int unsigned`): Offset of the IP's control unit from the component's `axi_slave` base address.
+*   **`OffloadContract`** (`string`): The kind of boot protocol the IP implements. Two kinds are supported:
+    *   `"control_wire"` — payload and per-core boot addresses are written by the host through the slave window, the cores are released by the SoC-side fetch-enable wire, completion is signalled on `eoc_o` and the result read back from an MMIO register. The pulp-cluster style.
+    *   `"memory_mapped"` — the cores park in the IP's own bootrom at reset; the host writes the entry point to a register behind the slave window and wakes the cores through the cluster CLINT, and completion returns through per-core slots in the cluster-local memory (each slot carries `(value << 1) | 1`, done in bit 0, 31 bits of value). The snitch/spatz style; no SoC-side wire is involved at all.
+
+Parameters common to both kinds:
+
+*   **`OffloadCtrlOffs`** (`int unsigned`): Offset of the IP's control unit (control_wire) or peripheral block (memory_mapped) from the component's `axi_slave` base address.
+*   **`OffloadReturnOffs`** (`int unsigned`): control_wire: offset of the register the payload leaves its result in. memory_mapped: offset, from the component's base, of the FIRST per-core return slot (one 32-bit slot per core, consecutive).
+*   **`OffloadStackOffs`** (`int unsigned`): Top of the IP-local memory the payload may use as its stack, as an offset from the component's base address (memory_mapped payloads carve 512 B per core downward from it).
+*   **`OffloadNumCores`** (`int unsigned`): Number of cores the boot loop, the wake mask and the payload's hart demux must cover. May reference another literal parameter of the same header (e.g. `= NumCores`): the generator resolves one hop of indirection.
+*   **`OffloadIsa`** / **`OffloadAbi`** (`string`): The `-march` / `-mabi` pair the payload is cross-compiled with. Spell extensions out the way modern binutils want them (`rv32im_zicsr`, not `rv32im`), and keep the ISA conservative: any multilib of the host toolchain must be able to serve it.
+
+`control_wire` only:
+
 *   **`OffloadEocOffs`** (`int unsigned`): Offset, inside the control unit, of the EoC register the payload writes to raise `eoc_o`.
 *   **`OffloadBootAddrOffs`** / **`OffloadBootAddrStride`** (`int unsigned`): Offset of the first per-core boot-address register and the distance between consecutive ones.
-*   **`OffloadReturnOffs`** (`int unsigned`): Offset of the register the payload leaves its result in.
-*   **`OffloadStackOffs`** (`int unsigned`): Top of the IP-local memory the payload may use as its stack, as an offset from the component's base address.
-*   **`OffloadNumCores`** (`int unsigned`): Number of cores the boot-address loop and the payload's hart demux must cover. May reference another literal parameter of the same header (e.g. `= NumCores`): the generator resolves one hop of indirection.
-*   **`OffloadIsa`** / **`OffloadAbi`** (`string`): The `-march` / `-mabi` pair the payload is cross-compiled with. Spell extensions out the way modern binutils want them (`rv32im_zicsr`, not `rv32im`), and keep the ISA conservative: any multilib of the host toolchain must be able to serve it.
+
+`memory_mapped` only:
+
+*   **`OffloadEntryOffs`** (`int unsigned`): Offset, inside the peripheral block, of the entry-point register the IP's bootrom jumps through.
+*   **`OffloadWakeOffs`** (`int unsigned`): Offset, inside the peripheral block, of the CLINT set register the host writes the wake mask to.
+*   **`OffloadHartBase`** (`int unsigned`): First hart id of the cluster (snitch-family harts are numbered globally): the payload derives its core index as `mhartid - OffloadHartBase`.
+
+**Return-code convention (memory_mapped)**: core 0's slot carries the workload checksum; every SECONDARY core returns one distinctive generator-owned code (`offload_secondary_code`, single-sourced into the payload's `-D` set and the host firmware's check), and the host verifies it per-core, exactly. A dead core is caught by the done-bit poll, a wrong-path core by the code check, and the two failures print differently on purpose — gwaihir's exact-accounting practice.
 
 Two rules keep the contract robust, both inherited from hard-won constraints:
 
@@ -515,11 +531,11 @@ Two rules keep the contract robust, both inherited from hard-won constraints:
 
 ### 8.2 Eligibility and Discovery
 
-The contract alone does not make a component an offload target: the generated firmware also needs the SoC-side half, so the component's `system_config` must declare at least `fetch_enable: true` and `has_eoc_status: true` (plus `isolate: true` when the domain resets isolated, which shapes the generated bring-up prologue). Discovery is automatic — every component satisfying both halves is tested, unless `test_app.offload_targets` restricts the list. A component that declares a contract but misses the SoC-side half is reported and skipped in auto-discovery, and is a hard error when named explicitly.
+The contract alone does not make a component an offload target: the generated firmware also needs the SoC-side half, and what that half is depends on the kind. A `"control_wire"` component's `system_config` must declare at least `fetch_enable: true` and `has_eoc_status: true`; a `"memory_mapped"` component needs neither — its cores wake through the CLINT behind the slave window and report through memory, so the window itself is the whole system-side requirement. Either kind adds `isolate: true` when the domain resets isolated, which shapes the generated bring-up prologue. Discovery is automatic — every component satisfying both halves is tested, unless `test_app.offload_targets` restricts the list. A component that declares a contract but misses its SoC-side half is reported and skipped in auto-discovery, and is a hard error when named explicitly.
 
 ### 8.3 Reference Implementation
 
-`pulp_cluster_isle.sv` carries the reference `"control_wire"` contract; the authority for its offsets is the wrapped IP's own control unit (`cluster_control_unit.sv` of `cluster_peripherals`), and the header comment of the block records that derivation. When wrapping a new cluster IP, derive the offsets the same way — from the RTL of the register file behind the slave window, never from a software header of a reference project.
+`pulp_cluster_isle.sv` carries the reference `"control_wire"` contract; the authority for its offsets is the wrapped IP's own control unit (`cluster_control_unit.sv` of `cluster_peripherals`), and the header comment of the block records that derivation. `spatz_cluster_isle.sv` and `cluster_subtile.sv` carry the reference `"memory_mapped"` contracts; their authority is the IP's peripheral register description (`spatz_cluster_peripheral_reg.hjson`) plus the cluster bootrom, and their header comments record both the derivation and the bootrom patching it forced (see `patch_spatz.py` in the dependency registry). When wrapping a new cluster IP, derive the offsets the same way — from the RTL or register description behind the slave window, never from a software header of a reference project.
 
 # Part 2 - Particularities of an Isle
 

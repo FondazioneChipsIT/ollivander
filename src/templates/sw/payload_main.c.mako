@@ -70,7 +70,10 @@ int main(void) {
     uint32_t idx = hartid - (uint32_t)OFFLOAD_HART_BASE;
 
     volatile uint32_t *slots = (volatile uint32_t *)OFFLOAD_RETURN_ADDR;
-    uint32_t value = (idx == 0) ? offload_workload() : 0;
+    /* Core 0 carries the checksum; every OTHER core returns the distinctive
+     * secondary code, NOT zero - zero is what a wrong code path would store,
+     * so the host's exact per-core check could never tell them apart. */
+    uint32_t value = (idx == 0) ? offload_workload() : (uint32_t)OFFLOAD_SECONDARY_CODE;
 
     /* One store closes the protocol: result in the upper bits, done in bit 0. */
     slots[idx] = (value << 1) | 1u;

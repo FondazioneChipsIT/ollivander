@@ -156,6 +156,17 @@ int main(void) {
     /* ------------------------------------------------------------------
      * Target '${t_name}' ('${t["contract"]}' contract)
      * ------------------------------------------------------------------ */
+% if t["sys_ctrl_group"] and offload_power_cycles:
+    /* POWER-CYCLE REGRESSION (wave three step c): the whole phase runs TWICE.
+     * Cycle 0 proves the function; cycle 1 proves the domain comes back from
+     * its own power-down - re-ungate through the FFAR window, re-load the
+     * payload (the local memory forgot it), re-run, re-check exactly. This is
+     * the test the single-pass flow could never perform: an ungate sequence
+     * that only works on the slack of a cold power-on dies here. Emitted for
+     * the ARCHITECTED boot only: a force-mode bench pins the power state by
+     * construction, and cycling against it hangs the interconnect. */
+    for (uint32_t ${t_name}_cycle = 0; ${t_name}_cycle < 2u; ${t_name}_cycle++) {
+% endif
 % if t["sys_ctrl_group"]:
     ${t_name}_enable();
 % endif
@@ -230,8 +241,22 @@ int main(void) {
                 print_str(", expected ${hex(expected)}\n");
                 offload_fail("${t_name}", "wrong return value");
             }
+            /* Exact per-core accounting (gwaihir's practice): every secondary
+             * must return the distinctive code - a dead core is caught by the
+             * done-bit poll above, a WRONG-PATH core is caught here, and the
+             * two failures print differently on purpose. */
             for (uint32_t c = 1; c < ${t_name.upper()}_OFFLOAD_NUM_CORES; c++) {
-                if (${t_name}_get_return(n, c) != 0u) offload_fail("${t_name}", "secondary core returned nonzero");
+                uint32_t sret = ${t_name}_get_return(n, c);
+                if (sret != ${hex(offload_secondary_code)}u) {
+                    print_str("[OFFLOAD] ${t_name} inst ");
+                    print_hex(n);
+                    print_str(" core ");
+                    print_hex(c);
+                    print_str(" returned ");
+                    print_hex(sret);
+                    print_str(", expected ${hex(offload_secondary_code)}\n");
+                    offload_fail("${t_name}", "secondary core returned the wrong code");
+                }
             }
         }
         print_str("[OFFLOAD] ${t_name} PASS (");
@@ -244,9 +269,13 @@ int main(void) {
 % if t["sys_ctrl_group"]:
 
     /* Phase over: hand the group back to its power-on state, so the next
-     * target's phase does not pay for this one (isolate first, then reset and
-     * clock - see the helper's rationale). */
+     * cycle (and the next target) does not pay for this one (isolate first,
+     * then reset and clock - see the helper's rationale). */
     ${t_name}_disable();
+% if offload_power_cycles:
+    }
+    print_str("[OFFLOAD] ${t_name} POWER-CYCLE PASS (2 cycles)\n");
+% endif
 % endif
 
 % endfor

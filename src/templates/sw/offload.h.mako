@@ -34,13 +34,27 @@ sys_regs_type = f"{top_level_module_name}_sys_regs_t"
  * modes and their reasons are explained in rtl_generator.py. */
 #define OFFLOAD_PAYLOAD_BASE ${hex(offload_payload_base)}u
 
+/* FFAR clocked reset window (wave three step c): flip-flops with asynchronous
+ * reset sampled synchronously need clock EDGES while reset is still asserted
+ * before the release is safe - the same two-phase contract the generated
+ * testbench honors with an explicit 1 us pause. The firmware used to release
+ * back-to-back and survive on bus-latency slack alone; the power-cycle
+ * regression is exactly the place where that slack stops being enough. The
+ * spin is deliberately generous: it must cover the SLOWEST divided clock any
+ * gated domain of the fleet runs at, and it costs microseconds once per
+ * enable. The drain read before it pins the clk_en write; volatile keeps the
+ * loop alive at any optimization level. */
+#define OFFLOAD_FFAR_WINDOW_SPINS 512u
+
 % if offload_payload_ctrl_group:
 /* The payload memory sits under the '${offload_payload_ctrl_group}' auto control
- * group and powers on gated: ungate the whole group (clock on, reset released)
- * before the first payload write. The read-back drains the posted writes so no
- * later access can overtake the release. */
+ * group and powers on gated: ungate the whole group (clock on, then the FFAR
+ * window, then reset release) before the first payload write. The read-backs
+ * drain the posted writes so no later access can overtake the release. */
 static inline void offload_payload_mem_enable(void) {
     OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_clk_en.w = 0xFFFFFFFFu;
+    (void)OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_clk_en.w;
+    for (volatile uint32_t i = 0; i < OFFLOAD_FFAR_WINDOW_SPINS; i++) { }
     OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_rst.w = 0u;
     (void)OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_rst.w;
 }
@@ -89,6 +103,9 @@ P = project_name.upper()
  * gated; only the isle behind the chimney needs this bring-up. */
 static inline void ${t_name}_enable(void) {
     OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w = 0xFFFFFFFFu;
+    (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w;
+    /* FFAR clocked reset window - rationale at the macro's definition. */
+    for (volatile uint32_t i = 0; i < OFFLOAD_FFAR_WINDOW_SPINS; i++) { }
     OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w = 0u;
     (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w;
 }
@@ -110,6 +127,14 @@ static inline void ${t_name}_enable(void) {
  * ${t_name}_enable(), whose clock-then-reset order satisfies the FFAR contract
  * (async-reset flops need a clocked window with reset asserted). */
 static inline void ${t_name}_disable(void) {
+% if t["contract"] == "control_wire":
+    /* Power-on state includes the SoC-side wire: fetch_enable lives in the
+     * ALWAYS-ON controller and would survive the target's power-down - a
+     * re-enabled cluster would then start fetching from its reset-default
+     * boot address before the host reconfigures it (power-cycle trap, wave
+     * three step c). Stop the fetch first, then isolate, then cut. */
+    OFFLOAD_SYS_REGS->fetch_enable.f.${t_name}_fetch_enable = 0;
+% endif
 % if t["sys_isolate"]:
     OFFLOAD_SYS_REGS->isolate_ctrl.f.${t_name}_isolate = 1;
     for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {

@@ -70,6 +70,9 @@ else:
         '-DOFFLOAD_MM=1',
         f'-DOFFLOAD_RETURN_ADDR={hex(local_base + t["return_offs"])}',
         f'-DOFFLOAD_HART_BASE={hex(t.get("hart_base", 0))}',
+        # Secondary cores return this distinctive code (see rtl_generator's
+        # single-source comment); the host firmware checks it per-core, exactly.
+        f'-DOFFLOAD_SECONDARY_CODE={hex(offload_secondary_code)}',
     ]
 payload_defines = " ".join(common + specific)
 %>\

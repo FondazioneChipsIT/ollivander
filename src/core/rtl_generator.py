@@ -1236,6 +1236,19 @@ class RTLGenerator:
             # the round-trip (found 2026-08-10: 0xCAFE0000 came back as 0x4AFE...).
             "offload_check_n": 16,
             "offload_check_xor": 0x4AFE0000,
+            # The power-cycle regression (wave three step c) belongs to the
+            # ARCHITECTED boot only: under boot_mode 'force' the testbench pins
+            # the power state from time zero by construction, and a firmware
+            # power cycle fights the bench - found the hard way on noc_subtile,
+            # whose cycle-1 payload re-load hung the interconnect for a full
+            # watchdog window with no error printed.
+            "offload_power_cycles": (self.soc_config.testbench or {}).get("boot_mode") == "jtag",
+            # The distinctive code every SECONDARY core of a memory_mapped cluster
+            # returns (gwaihir's exact-accounting practice, wave three step b): zero
+            # would be indistinguishable from a wrong code path that stores zero, so
+            # the host checks this value per-core, exactly. Same single-source rule
+            # as the pair above; must survive the (value << 1) 31-bit round-trip.
+            "offload_secondary_code": 0x5EC0DE,
             "noc_id_widths": noc_id_widths,
             "noc_user_widths": noc_user_widths,
             "ir": ir,
