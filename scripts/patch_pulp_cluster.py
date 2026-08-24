@@ -27,7 +27,7 @@ Three repair families, each documented at its patch group below:
    Cfg.HwpeCfg handed down to hwpe_subsystem never fold, which stops every
    crossbar elaboration. Both configuration structs are made packed: every member
    is packable, all their literals are named assignment patterns, and no code
-   bit-slices the whole struct (verified across the repository 2026-08-06), so
+   bit-slices the whole struct (verified across the repository), so
    QuestaSim semantics are unchanged. This also unfreezes opentitan's
    OTClusterCfg, a literal of the same typedef. Upstream candidate, see
    docs/developer/wip/upstream_pr_candidates.md.
@@ -38,7 +38,7 @@ Three repair families, each documented at its patch group below:
    the fork adds next.
 
 These replacements lived as {file, search, replace} triples in the dependency
-registry and moved here verbatim when their volume outgrew the YAML (2026-08-06).
+registry and moved here verbatim when their volume outgrew the YAML.
 The mechanics are unchanged: replacements apply on freshly ledger-restored
 sources, every touched file is recorded in the checkout's .ollivander_patched,
 and a search string that no longer matches is reported as a stale patch, exactly

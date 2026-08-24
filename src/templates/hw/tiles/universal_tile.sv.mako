@@ -107,7 +107,7 @@
               continue # Port handled, move to next one
 
           # Passthrough ports for architecture wiring
-          # NOTE ON INSTANCE IDENTITY, REVISED 2026-08-20. It used to travel only as
+          # NOTE ON INSTANCE IDENTITY. It used to travel only as
           # the InstanceBaseAddr / InstanceWindowSize header parameters. The WINDOW
           # SIZE still does - it is identical across the instances of a component, so
           # it costs nothing - but the BASE may differ per instance, and a differing
@@ -374,7 +374,7 @@ module ${p_name}_${c_type}
           # The Jtag* family joins the pass-through (wip 2.1): the testbench reads the
           # host's boot capabilities from the TILE wrapper on the NoC family, so the
           # isle-declared JTAG boot contract must survive the isle-to-tile conversion
-          # exactly as the ForceBoot* one does. The Slink* preload contract (wave two)
+          # exactly as the ForceBoot* one does. The Slink* preload contract
           # follows for the same reason; its values are EXPRESSIONS over isle params
           # the tile header re-declares, so they keep resolving in tile scope.
           if param_name.startswith("Preload") or param_name.startswith("ForceBoot") or param_name.startswith("Jtag") or param_name.startswith("SlinkAxi") or param_name in ["HasEcc", "EccType", "HasForceBoot", "HasJtagBoot", "HasSlinkPreload"]:
@@ -1047,7 +1047,7 @@ module ${p_name}_${c_type}
 ## The type overrides used to be mirrored here as 'localparam type' declarations. They
 ## were dead: the Isle instantiation below already receives each override directly
 ## (.axi_req_t ( axi_nw_join_req_t )), and no generated tile of any example ever
-## referenced the localparam names — verified across all seven projects on 2026-08-06.
+## referenced the localparam names — verified across every example project.
 ## Dead was not harmless: Verilator counts a body 'localparam type' as part of a
 ## hier_block's parameterization, serializes it into __hierParameters.v as a typedef,
 ## and then fails on its own output with an internal error (V3LinkDot.cpp:496). That is

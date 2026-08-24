@@ -147,7 +147,23 @@ ${stubs_str}
   // time zero and with no delays, the DUT inputs that no agent owns.
   initial begin
     test_mode_i   = 1'b0;
+<%
+    # Resolved locally: this block renders BEFORE the template's main
+    # testbench_cfg/host_fixed section, so it may not lean on those names.
+    _bm_early = (config.testbench or {}).get("boot_mode", "force")
+    _hf_early = comp_info.get(config.host.name, {}).get("fixed_params", {})
+    if _bm_early == "i2c_eeprom":
+        _strap_early = int(str(_hf_early.get("BootModeI2cEeprom", "3")).strip('"\''))
+    else:
+        _strap_early = int(str(_hf_early.get("BootModeSpiFlash", "2")).strip('"\''))
+%>\
+% if _bm_early in ("spi_flash", "i2c_eeprom"):
+    // Autonomous boot strap: the bootrom's own case value for the selected
+    // source, from the host contract (BootModeSpiFlash / BootModeI2cEeprom).
+    boot_mode_i   = 2'd${_strap_early};
+% else:
     boot_mode_i   = 2'b0;
+% endif
 <%
   # wip 2.1 boot-mode resolution, hoisted here because both the reset-initials
   # block and the DUT-adjacent VIP instantiation consume it long before the
@@ -165,7 +181,7 @@ ${stubs_str}
       boot_mode = "force"
   jtag_idcode = int(host_fixed.get("JtagIdCode", "1").strip('"\''))
   jtag_scratch_off = int(host_fixed.get("JtagScratchOffset", "0").strip('"\''))
-  # Serial-link agent activation (wip 2.1 wave two): the image travels the
+  # Serial-link agent activation (wip 2.1): the image travels the
   # serial link only when the mode asks for it, the host declares the contract
   # AND the pins actually reach the top level (the schema validates the export;
   # the contract guard keeps this template robust on hosts that lack it).
@@ -184,7 +200,7 @@ ${stubs_str}
       and ("slink" in (config.host.export_interfaces or []))
   # Exported pins over a stubbed-out link are DEAD WIRES: the first pilot's
   # driver waited forever for credits from a receiver Cheshire was built
-  # without (2026-08-22). Refuse loudly at generation instead.
+  # without. Refuse loudly at generation instead.
   if preload_mode_early == "slink" and not slink_agent:
       raise ValueError(
           "testbench.preload_mode 'slink': the host does not declare an ACTIVE "
@@ -208,6 +224,10 @@ ${stubs_str}
                 continue  # driven continuously by the VIP's serial-link twin
             if boot_mode == "uart" and p_name == 'uart_rx_i':
                 continue  # driven continuously by the VIP's uart-boot agent
+            if boot_mode == "spi_flash" and p_name == 'spi_sd_i':
+                continue  # driven continuously by the boot-flash tristate glue
+            if boot_mode == "i2c_eeprom" and p_name in ('i2c_sda_i', 'i2c_scl_i'):
+                continue  # driven continuously by the boot-EEPROM open-drain glue
             if p_name == 'uart_rx_i':
                 reset_initials.append("    uart_rx_i = 1'b1; // UART RX idle-high")
             else:
@@ -343,7 +363,7 @@ def resolve_param_val(val, comp, fixed_params=None, extra_params=None):
 has_elf_mems = any((m or {}).get("image", "hex") == "elf" for m in (preload_mems or []))
 
 # Section-buffer bound: an EXPLICIT KNOB with a generous default (user
-# decision, 2026-08-22, replacing a derivation from the destination-memory
+# decision, replacing a derivation from the destination-memory
 # windows). 4 MiB holds every image the fleet links today with margin; a
 # project whose ELF carries a larger loadable segment - including tomorrow's
 # nested-boot images aimed inside a macro, whose inner memory sizes the
@@ -371,7 +391,7 @@ elf_sec_max = int(str(testbench_cfg.get("elf_max_section_bytes", 0x400000)), 0)
   import "DPI-C" context function byte read_section(input longint address, inout byte buffer[], input longint len);
   // STATIC section buffer, one for the whole testbench: Verilator cannot yet
   // pass a dynamic array or queue as a DPI open-array actual (V3Task internal
-  // error, met 2026-08-22 on this very call), while a static array is the
+  // error, met on this very call), while a static array is the
   // supported shape on both simulators. The size is a per-project knob
   // (testbench.elf_max_section_bytes, default 4 MiB); the load fatals with
   // instructions when an image carries a larger loadable segment.
@@ -510,6 +530,109 @@ if not uart_base:
   % endfor
 % endif
 
+% if boot_mode == "spi_flash":
+<%
+    _flash_model = str(host_fixed.get("BootSpiFlashModel", "s25fs512s")).strip('"\'')
+    _flash_fparam = str(host_fixed.get("BootSpiFlashFileParam", "mem_file_name")).strip('"\'')
+    _flash_cs    = int(str(host_fixed.get("BootSpiFlashCs", "1")).strip('"\''))
+    _gpt_app     = (config.get("software_stack", {}) or {}).get("test_app", {}).get("name", "hello_world")
+%>\
+  // ===========================================================================
+  // Off-chip boot flash: the device the bootrom fetches from. The
+  // MODEL IS NAMED BY THE HOST CONTRACT (BootSpiFlashModel - it ships with the
+  // host's own dependency graph and boots from the contract's chip select),
+  // instantiated here and never in the VIP, which stays IP-agnostic. The four
+  // data lines are the industry quad-SPI footprint (SI/SO/WPNeg/RESETNeg);
+  // the tristate glue merges the SoC top's split in/out/enable wires onto
+  // the model's bidirectional pins.
+  // ===========================================================================
+  // bufif1 + pullup on EVERY line, upstream's own pad model: a bare 1'bz on
+  // an undriven line is what a first take shipped, and the flash held itself
+  // in reset - WPNeg and RESETNeg float whenever the SoC is not driving them,
+  // and only the pull-up makes "not driven" read as the benign level.
+  wire       tb_boot_flash_sck, tb_boot_flash_csb;
+  wire [3:0] tb_boot_flash_sd;
+  bufif1 (tb_boot_flash_sck, spi_sck_o, spi_sck_en_o);
+  pullup (tb_boot_flash_sck);
+  bufif1 (tb_boot_flash_csb, spi_csb_o[${_flash_cs}], spi_csb_en_o[${_flash_cs}]);
+  pullup (tb_boot_flash_csb);
+  for (genvar sd = 0; sd < 4; sd++) begin : gen_boot_flash_sd
+    bufif1 (tb_boot_flash_sd[sd], spi_sd_o[sd], spi_sd_en_o[sd]);
+    pullup (tb_boot_flash_sd[sd]);
+  end
+  assign spi_sd_i = tb_boot_flash_sd;
+
+  // The image is handed to the MODEL'S OWN preload (the contract names the
+  // file parameter): the model blank-fills its array to the erased-flash
+  // pattern from an initial block, so a testbench-side $readmemh merely
+  // races that fill at time 0 - a first take lost the race and the bootrom
+  // scanned an all-FF device forever. UserPreload makes the model itself do
+  // fill-then-load, in order. The path resolves through the logs/generated
+  // symlink, like every other preload image.
+  ${_flash_model} #(
+    .UserPreload      ( 1 ),
+    .${_flash_fparam} ( "generated/sw/${_gpt_app}.gpt.memh" )
+  ) i_boot_flash (
+    .SI       ( tb_boot_flash_sd[0] ),
+    .SO       ( tb_boot_flash_sd[1] ),
+    .WPNeg    ( tb_boot_flash_sd[2] ),
+    .RESETNeg ( tb_boot_flash_sd[3] ),
+    .SCK      ( tb_boot_flash_sck ),
+    .CSNeg    ( tb_boot_flash_csb )
+  );
+
+  initial $display("[TB] boot flash image: generated/sw/${_gpt_app}.gpt.memh (model-native preload)");
+
+% endif
+% if boot_mode == "i2c_eeprom":
+<%
+    _eeprom_model = str(host_fixed.get("BootI2cEepromModel", "M24FC1025")).strip('"\'')
+    _eeprom_mem   = str(host_fixed.get("BootI2cEepromMemPath", "MemoryBlock")).strip('"\'')
+    _eeprom_count = int(str(host_fixed.get("BootI2cEepromCount", "2")).strip('"\''))
+    _gpt_app     = (config.get("software_stack", {}) or {}).get("test_app", {}).get("name", "hello_world")
+%>\
+  // ===========================================================================
+  // Off-chip boot EEPROM: the second autonomous source. Same
+  // charter as the flash block above - the HOST CONTRACT names the model and
+  // the generated testbench instantiates it, never the VIP. The bus is true
+  // open-drain: bufif1 puts the SoC's out value on the line only while the
+  // SoC drives, the pullup makes "nobody driving" read as the recessive 1,
+  // and the model's SDA pulls low against the same pullup. Upstream's own
+  // fixture instantiates the chips in an array with the index on A0 (A2 is
+  // a non-configurable 1 per the datasheet) and preloads chip 0 only.
+  // ===========================================================================
+  wire tb_boot_eeprom_scl, tb_boot_eeprom_sda;
+  bufif1 (tb_boot_eeprom_scl, i2c_scl_o, i2c_scl_en_o);
+  pullup (tb_boot_eeprom_scl);
+  bufif1 (tb_boot_eeprom_sda, i2c_sda_o, i2c_sda_en_o);
+  pullup (tb_boot_eeprom_sda);
+  assign i2c_scl_i = tb_boot_eeprom_scl;
+  assign i2c_sda_i = tb_boot_eeprom_sda;
+
+  for (genvar ee = 0; ee < ${_eeprom_count}; ee++) begin : gen_boot_eeprom
+    ${_eeprom_model} i_boot_eeprom (
+      .A0    ( ee[0]              ),
+      .A1    ( 1'b0               ),
+      .A2    ( 1'b1               ),
+      .WP    ( 1'b0               ),
+      .SDA   ( tb_boot_eeprom_sda ),
+      .SCL   ( tb_boot_eeprom_scl ),
+      .RESET ( rst_ni             )
+    );
+  end
+
+  initial begin
+    // UNLIKE the flash model, this one never touches its array from an
+    // initial block (no blank fill, no native preload), so the testbench-side
+    // fill+readmemh is race-free here - and the only option. The 0x9a overlay
+    // pattern and the chip-0-only load mirror upstream's own preload task.
+    for (int k = 0; k < $size(gen_boot_eeprom[0].i_boot_eeprom.${_eeprom_mem}); k++)
+      gen_boot_eeprom[0].i_boot_eeprom.${_eeprom_mem}[k] = 8'h9a;
+    $readmemh("generated/sw/${_gpt_app}.gpt.memh", gen_boot_eeprom[0].i_boot_eeprom.${_eeprom_mem});
+    $display("[TB] boot EEPROM chip 0 preloaded from generated/sw/${_gpt_app}.gpt.memh");
+  end
+
+% endif
   // ===========================================================================
   // Verification IP (wip 2.1): every testbench agent in one bench
   // ===========================================================================
@@ -571,7 +694,7 @@ if not uart_base:
         # mst_id_width, etc.) and never appear in host.parameters, so without
         # this the substitution falls back to the ISLE HEADER DEFAULTS - the
         # twin then mirrors a link the DUT was not built with. Found the hard
-        # way on super_crux (2026-08-22): default AxiOutIdWidth=4 resolved the
+        # way on super_crux: default AxiOutIdWidth=4 resolved the
         # twin's id width to 3 against the DUT's 2, one bit of framing skew,
         # and the first serial-link transaction of every run hung with no
         # error at any burst length. On the NoC family global_bus is absent
@@ -771,12 +894,12 @@ if not uart_base:
   # on a reset EDGE or when its level is sampled at a clock EDGE. A domain that
   # powers on gated gives them neither: the reset is born asserted (no edge) and
   # the clock is off. Releasing clock and reset in the same instant - what this
-  # block did until 2026-08-14 - therefore leaves the whole domain UNRESET.
+  # block once did - therefore leaves the whole domain UNRESET.
   # Four-state simulators mask this (the X->1 transition of the reset wire at
   # time zero counts as a posedge, so every FFAR loads its reset value anyway);
   # under Verilator's two-state semantics there is no X->1, the flops keep their
   # zero-init, and every snitch core in the noc example woke up with pc_q=0 -
-  # an Illegal Instruction storm at PC 0 (root-caused 2026-08-14 by bisection:
+  # an Illegal Instruction storm at PC 0 (root-caused by bisection:
   # the same tile boots cleanly with 300 ns between clock and reset release).
   # The firmware's own bring-up helpers already order it this way; the testbench
   # must too. The inter-phase delay is generous to cover divided domain clocks.
@@ -812,7 +935,7 @@ if not uart_base:
   # target_component_type keeps the ISLE type the description wrote. Comparing only
   # the current type therefore never matched on a NoC, so a 'minimal' bring-up left
   # the group owning the boot memory gated and the host hung on its first fetch
-  # (noc_isle, 2026-08-19). original_isle_types is the map the generator keeps for
+  # (noc_isle). original_isle_types is the map the generator keeps for
   # exactly this reason - rtl_ir_builder resolves control groups through it too.
   boot_mem_types = set()
   for _c in ([config.host] + (config.components or [])):
@@ -845,7 +968,7 @@ if not uart_base:
   # registry), and on the crossbar family sys_ctrl sits exactly on that path.
   # Discovered the hard way: super_crux's whole bring-up "succeeded" over SBA,
   # every domain stayed gated, and the first slink burst into the gated L2
-  # stalled with no error at any burst length (2026-08-22).
+  # stalled with no error at any burst length.
   if boot_mode == "uart":
       ctrl_write, ctrl_channel = "i_vip.gen_uart_boot.uart_write32", "the UART debug server"
   elif preload_mode == "slink":
@@ -985,7 +1108,7 @@ ${jtag_rst_str}
     // including a hand-built one that never met that Makefile. Gap bytes are
     // zero-filled explicitly - the linker emitted nothing there, and an
     // unset key would read X. (These constructs briefly appeared to crash
-    // the threaded runtime of Verilator on 2026-08-21; that crash was later
+    // the threaded runtime of Verilator; that crash was later
     // proven to be ccache poisoning of the precompiled-header build, not a
     // defect of the code below.) Two traps for editors of this comment: no
     // package-colon-colon-symbol spellings (the auto-importer reads
@@ -1059,6 +1182,15 @@ ${jtag_rst_str}
   $display("[TB] JTAG boot handoff complete (entry 0x%h).", ${entry_expr});
 % endif
 % endif
+% elif boot_mode in ("spi_flash", "i2c_eeprom"):
+  // ==========================================================================
+  // AUTONOMOUS boot: nothing to drive. The strap selects the boot
+  // source, the device model below holds the GPT image, and the bootrom
+  // does everything a finished product would: GPT scan, load of the ZSL-type
+  // partition into the host's internal scratchpad, jump. The bench only
+  // waits for the firmware's end-of-test byte.
+  // ==========================================================================
+  $display("[TB] Autonomous ${"SPI-flash" if boot_mode == "spi_flash" else "I2C-EEPROM"} boot: strap set, waiting for the bootrom...");
 % else:
   // Release CPU from passive boot loop by pointing scratch registers to preloaded memory (0x${f"{entry_point:08x}"})
   #1200;
@@ -1152,10 +1284,10 @@ ${bringup_rst_str}
     $finish;
   end
 
-  // Global watchdog (wip 2.1, wave two): the per-run timeout above is
+  // Global watchdog (wip 2.1): the per-run timeout above is
   // SEQUENCED after the boot steps, so a stuck architected image load used
-  // to hang forever with no verdict (found on the first slink pilot,
-  // 2026-08-22). This parallel bound covers the whole run - bring-up, load
+  // to hang forever with no verdict (found on the first slink pilot).
+  // This parallel bound covers the whole run - bring-up, load
   // (the JTAG verify pass is the slowest at ~2.2 ms simulated) and test -
   // and only ever fires on failure: a passing run finishes at EOT first.
   initial begin
@@ -1242,7 +1374,7 @@ if config.system_controller and config.system_controller.auto_control_groups:
 sys_ctrl_inst = f"dut.{host_instance_name}.i_sys_ctrl_regs" if config.topology.type == "noc" else "dut.i_sys_ctrl_regs"
 # On a NoC the register storage sits INSIDE the host tile, which under jtag boot
 # is a Verilator hierarchical block: a dotted path into it fails the build
-# ("Cannot access scope inside hierarchical block", met on mesh 2026-08-17).
+# ("Cannot access scope inside hierarchical block", met on mesh).
 # Same rule as the AXI monitor and the boot forces - the testbench may look
 # inside the host only when the boot mode already requires it to be inlined,
 # which neither architected boot does.

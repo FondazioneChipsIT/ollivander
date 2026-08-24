@@ -93,7 +93,7 @@ module cluster_subtile
   input  logic                                    clk_i,
   input  logic                                    rst_ni,
   input  logic                                    test_mode_i,
-  // INSTANCE IDENTITY AS A PORT, not a parameter (changed 2026-08-20). The window
+  // INSTANCE IDENTITY AS A PORT, not a parameter. The window
   // base differs per instance, and for Verilator a differing parameter value makes
   // a DISTINCT module: sixteen identical cluster tiles became sixteen hierarchical
   // specializations, elaborated and compiled sixteen times over, and elaboration is

@@ -249,7 +249,7 @@ class RTLGenerator:
         """
         hw_dir = self.env.outdir_path / self.env.hw_sub
 
-        # SYS-REGS FIRST (the s_apb_paddr width contract, 2026-08-23): the tile
+        # SYS-REGS FIRST (the s_apb_paddr width contract): the tile
         # wrappers rendered in this phase instantiate the System Controller's
         # regblock, whose APB address width only PeakRDL knows - it derives it
         # from the register map size. The RDL is pure configuration, so it can
@@ -1242,7 +1242,7 @@ class RTLGenerator:
                 # physical banks the lower half exposes interleaved (dyn_mem_addr_map.sv
                 # re-scrambles the same low address bits), so a payload written there lands
                 # scattered across the physical words holding the host image - the fence.i
-                # writeback then corrupts the code the host is running (found 2026-08-07:
+                # writeback then corrupts the code the host is running (symptom:
                 # Illegal Instruction right after the first fence.i on crux). The second
                 # quarter stays inside the image's own view on such memories and is merely
                 # conservative on a flat one; the host stack is capped at the payload base
@@ -1272,10 +1272,10 @@ class RTLGenerator:
             # bakes the expected result from the same two numbers (main_offload.c.mako).
             # The whitening constant must keep bit 31 CLEAR: the memory_mapped return
             # slots carry (value << 1) | 1 in 32 bits, so only 31 bits of value survive
-            # the round-trip (found 2026-08-10: 0xCAFE0000 came back as 0x4AFE...).
+            # the round-trip (symptom: 0xCAFE0000 comes back as 0x4AFE...).
             "offload_check_n": 16,
             "offload_check_xor": 0x4AFE0000,
-            # The power-cycle regression (wave three step c) belongs to the
+            # The power-cycle regression belongs to the
             # ARCHITECTED boots only: under boot_mode 'force' the testbench pins
             # the power state from time zero by construction, and a firmware
             # power cycle fights the bench - found the hard way on noc_subtile,
@@ -1283,7 +1283,7 @@ class RTLGenerator:
             # watchdog window with no error printed.
             "offload_power_cycles": (self.soc_config.testbench or {}).get("boot_mode") in ("jtag", "slink", "uart"),
             # The distinctive code every SECONDARY core of a memory_mapped cluster
-            # returns (gwaihir's exact-accounting practice, wave three step b): zero
+            # returns (gwaihir's exact-accounting practice): zero
             # would be indistinguishable from a wrong code path that stores zero, so
             # the host checks this value per-core, exactly. Same single-source rule
             # as the pair above; must survive the (value << 1) 31-bit round-trip.
@@ -1428,7 +1428,7 @@ class RTLGenerator:
                 # bench (classes, timing), so pooling its 'require' with the RTL ones
                 # put it among the manifest's RTL sources and - worse - into the list a
                 # MACRO EXPORTS, making a parent compile another project's bench as if
-                # it were hardware (found 2026-08-19 in crux_isle.sv's export header).
+                # it were hardware (found in crux_isle.sv's export header).
                 # Same principle as the local/exported split in generate_verilator_config:
                 # an artifact of MY bench is not a property of MY hardware.
                 if tpl_name == "tb/tb_soc.sv.mako":
@@ -1756,7 +1756,7 @@ class RTLGenerator:
         mesh), preload targets stay for their $readmemh paths, and every other
         non-external component whose wrapper survives the parameter rules becomes its
         own child library — valuable even at one instance apiece, because each child
-        verilates in its own bounded lane and is reused within the build (between-build reuse is deliberately disabled in sim.mk, 2026-08-18).
+        verilates in its own bounded lane and is reused within the build (between-build reuse is deliberately disabled in sim.mk).
 
         A config with no hier_block entries remains valid input and simply degenerates
         to a flat build.
@@ -1804,8 +1804,8 @@ class RTLGenerator:
         # force-mode donor silently cost its parent a promoted block (super_noc
         # promotes mesh_subtile_manager_tile today only because the donor happens to
         # boot by jtag). So the export carries the structural exclusions alone, and
-        # the PARENT decides what its own testbench forbids. Tested by construction
-        # from 2026-08-19: mesh_subtile boots by force while super_noc boots by jtag,
+        # the PARENT decides what its own testbench forbids. Tested by construction:
+        # mesh_subtile boots by force while super_noc boots by jtag,
         # so a regression here shows up as a drop in the parent's block count.
         tb_excluded = set()
         if host_reachable_by_tb:
@@ -1818,8 +1818,8 @@ class RTLGenerator:
             serializes it into __hierParameters.v as a typedef and then fails on its
             own output (V3LinkDot.cpp:496 internal error, reported upstream).
 
-            Two forms trip it, both established by probe rather than assumed
-            (2026-08-06): a real `parameter type` in the header — which the crossbar's
+            Two forms trip it, both established by probe rather than assumed:
+            a real `parameter type` in the header — which the crossbar's
             sync isles carry, since the generator injects the SoC's AXI types there —
             and a body `localparam type`, which Verilator counts as parameterization
             too. The templates no longer emit the latter, so the check guards against
@@ -1982,7 +1982,7 @@ class RTLGenerator:
                     lines.append(f'hier_block -module "{module}"')
 
         # THE MACRO DESCENT (both topologies): promote the internals every macro
-        # declared. Since the local/exported split (2026-08-19) those declarations are
+        # declared. Since the local/exported split those declarations are
         # everything STRUCTURALLY eligible in the child, including the modules the
         # child's own testbench keeps inlined - the child's boot mode and preload list
         # are its business, mine are mine. What the child still withholds are the
@@ -2024,7 +2024,7 @@ class RTLGenerator:
         # rand_verif_pkg::rand_wait contains an event control ('repeat (cycles)
         # @(posedge clk)'), and a hierarchical child whose subtree elaborates the
         # package fails with "Unsupported: --lib-create with --timing and delays"
-        # (met 2026-08-17: cheshire_isle was the only isle affected, and the task
+        # (met on cheshire_isle, the only isle affected; the task
         # is never called by generated code - proven by rebuilding the subtree
         # with this very stub, which verilates clean even under --no-timing).
         # The stub lands next to the .vlt, outside every Bender-visible tree, and
@@ -2057,7 +2057,7 @@ class RTLGenerator:
         # That is why the parameter-free dummy tile was the only block that ever
         # boxed here. The option merely needs to name a parseable file; parameter
         # declarations are not required, and Verilator would generate the same empty
-        # content. Measured on the mesh example (2026-08-20): every declared block
+        # content. Measured on the mesh example: every declared block
         # boxes, against one before.
         params_path = vlt_dir / f"{top_level_module_name}_hier_params.v"
         write_if_changed(params_path, "\n".join([
@@ -2069,7 +2069,7 @@ class RTLGenerator:
             "// the tool itself would emit. NOTE: no comment line here may start with",
             "// the word 'verilator' - that spelling is read as a pragma (BADVLTPRAGMA).",
             "//",
-            "// SAFETY CONDITION, measured 2026-08-20: this file may stay empty only",
+            "// SAFETY CONDITION, established by measurement: this file may stay empty only",
             "// while no hierarchical block declares a 'parameter type' overridden per",
             "// instance. In that one case the engine writes a real parameters file per",
             "// specialization (each carrying its typedef) and this one, forwarded from",
@@ -2331,10 +2331,10 @@ class RTLGenerator:
                 # A port outside every export group can still be legitimately
                 # padded: chip INFRASTRUCTURE straps (clk_rst_bypass_i) reach
                 # the pad list as static entries without ever being an
-                # interface export. Before 2026-08-22 this loop never looked
-                # at the pad list or the Padrick package, so such a pad was
-                # reported missing forever AND its core port stayed dangling
-                # in the chip wrapper - validate it like any static pad.
+                # interface export. Without consulting the pad list and the
+                # Padrick package here, such a pad would be reported missing
+                # forever AND its core port would dangle in the chip wrapper -
+                # validate it like any static pad.
                 if core_sig in statically_routed_wires and core_sig in padframe_fields:
                     pad_type = padframe_fields[core_sig]['type']
                     if norm_type(p_type) != norm_type(pad_type):
@@ -2460,7 +2460,7 @@ class RTLGenerator:
                 # bracket escapes were doubled from birth (8342ebe), which demanded
                 # literal backslashes: the dims group degenerated to the empty match
                 # and a port with unpacked dims was silently never registered as an
-                # IR signal (fixed 2026-08-11; no shipped example exposes such a
+                # IR signal (fixed defensively; no shipped example exposes such a
                 # port, so no generated output changes).
                 m_name = re.search(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$", remaining)
                 if m_name:

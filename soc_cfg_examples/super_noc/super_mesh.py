@@ -268,15 +268,15 @@ config = OllivanderConfig(
     # --- TESTBENCH CONFIGURATION ---
     # Instructions for the simulation environment.
     testbench={
-        # The SELF-SUFFICIENT serial-link boot (wave four): no jtag_init, the TAP
+        # The SELF-SUFFICIENT serial-link boot: no jtag_init, the TAP
         # is never touched - bring-up, image and handoff all ride the link, the
         # exact shape of cheshire's and gwaihir's PRELMODE=1 branches. This
         # project is the fleet's slink-only representative; noc_isle and
         # super_crossbar deliberately keep the hybrid (JTAG liveness + slink
         # transport), the one row the references' menus do not have.
         "boot_mode": "slink",
-        # The image and the boot handoff travel the serial link (wip 2.1 wave
-        # two): no dotted path survives into the preloaded L2 tiles, and the
+        # The image and the boot handoff travel the serial link (wip 2.1):
+        # no dotted path survives into the preloaded L2 tiles, and the
         # control writes ride the same proven channel (cheshire's PRELMODE
         # pattern; the SBA-to-internal-regs path is anomalous with SerialLink
         # enabled - see the upstream registry).
@@ -310,8 +310,8 @@ config = OllivanderConfig(
         "verilator": {"compile_jobs": 64},
         # compile_jobs 64: measured -26/-27% on both supers' cold builds (the
         # -j48 emission-truncation hazard cannot reach phase 2, which is pure
-        # g++). threads stays at the default 4: 8 was tried on 2026-08-21 and
-        # reverted - it segfaults super_crux's top at time zero (isolated to
+        # g++). threads stays at the default 4: 8 was tried and reverted -
+        # it segfaults super_crux's top at time zero (isolated to
         # the thread count alone, jobs exonerated) and bought nothing on
         # super_mesh (22m20 vs 21m44); see wip 5.2.
     },

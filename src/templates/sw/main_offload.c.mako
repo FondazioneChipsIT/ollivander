@@ -157,7 +157,7 @@ int main(void) {
      * Target '${t_name}' ('${t["contract"]}' contract)
      * ------------------------------------------------------------------ */
 % if t["sys_ctrl_group"] and offload_power_cycles:
-    /* POWER-CYCLE REGRESSION (wave three step c): the whole phase runs TWICE.
+    /* POWER-CYCLE REGRESSION: the whole phase runs TWICE.
      * Cycle 0 proves the function; cycle 1 proves the domain comes back from
      * its own power-down - re-ungate through the FFAR window, re-load the
      * payload (the local memory forgot it), re-run, re-check exactly. This is

@@ -68,11 +68,11 @@ For topology-agnostic memory wrappers (e.g., L2 memory wrapper `l2_isle.sv`), th
 
 The base address may equally be declared as the **port** `input logic [63:0] instance_base_addr_i`, which is the preferred form and takes precedence when a header declares both: it keeps repeated isles a single module under hierarchical verilation instead of one child library per instance, and it is the only form that can carry a relocatable `MACRO_BASE_ADDR + offset`. `InstanceWindowSize` has no port form. `l2_isle.sv` is the shipped example of the port form (its four localparams and its `mapping_rules` became `assign`ed wires); `pulp_cluster_isle` keeps the parameter, since its base reaches the IP through the struct parameter `Cfg.ClusterBaseAddr` and from there into four child parameter overrides. Section 1.6 owns the full rule.
 
-These are the **instance identity parameters** (section 1.6 owns the full definition): the generator fills them from the component's `axi_slave` window whenever the header declares them, so the local address decoding and interleaving rules computed within the Isle scale correctly. They replaced the historical `L2BaseAddr`/`L2MemSize` pair on 2026-08-11.
+These are the **instance identity parameters** (section 1.6 owns the full definition): the generator fills them from the component's `axi_slave` window whenever the header declares them, so the local address decoding and interleaving rules computed within the Isle scale correctly. They replace the historical `L2BaseAddr`/`L2MemSize` pair.
 
 The same mechanism serves compute components that decode part of their own slave region internally:
 
-*   `InstanceBaseAddr` also serves the compute clusters: `pulp_cluster_isle` exposes it (it was `ClusterBaseAddr` until 2026-08-11) to align the cluster's internal decode (TCDM, peripherals, external escape) with the region the SoC description maps it at — an internal decode left at the IP default would silently route every external access to the wrong rule.
+*   `InstanceBaseAddr` also serves the compute clusters: `pulp_cluster_isle` exposes it (formerly `ClusterBaseAddr`) to align the cluster's internal decode (TCDM, peripherals, external escape) with the region the SoC description maps it at — an internal decode left at the IP default would silently route every external access to the wrong rule.
 
 Like every entry of the standard parameter vocabulary, these are matched **by parameter name, per instance**: each component that exposes the parameter receives the base of its own `axi_slave` mapping, so a design may instantiate any number of such components, each decoding its own region. When a **crossbar-family** SoC is built as a macro (`build_mode: "macro"`), `InstanceBaseAddr` is emitted as `MACRO_BASE_ADDR + <base>`: this family keeps global addresses inside the macro, so the decode relocates with it wherever the parent maps it. The **NoC family** does the opposite — its border adapters rebase incoming traffic to project-local addresses, so its identity values stay local (see Part 3).
 
@@ -85,7 +85,7 @@ A subtile that decodes its own window declares the following pair in its header,
 *   `InstanceBaseAddr` (`parameter longint unsigned`): the base address of THIS instance's slave window. The generator computes `base_addr + index * size_per_instance`, with the same x-major instance enumeration the FlooGen address map and the auto-control-group bit-selects use, so the three mechanisms can never disagree. In macro builds the value stays **project-local**: the macro's border adapters rebase incoming traffic before any tile sees it.
 *   `InstanceWindowSize` (`parameter longint unsigned`): the per-instance window extent (`size_per_instance`, or `size` for a single instance).
 
-The declared parameter type travels through the SV parser to the generated tile wrapper (2026-08-11): a plain built-in type (`bit`, `int unsigned`, `longint unsigned`, `logic[N:M]`, `string`) is re-declared as written, so 64-bit identity values cross the tile boundary intact; only package-scoped or otherwise exotic types still fall back to value-based inference.
+The declared parameter type travels through the SV parser to the generated tile wrapper: a plain built-in type (`bit`, `int unsigned`, `longint unsigned`, `logic[N:M]`, `string`) is re-declared as written, so 64-bit identity values cross the tile boundary intact; only package-scoped or otherwise exotic types still fall back to value-based inference.
 
 **The base address may be declared as a PORT instead of a parameter, and that is now the preferred form.** A component that writes `input logic [63:0] instance_base_addr_i` in its header receives its window base as a driven value rather than an elaborated one; the generator connects it per instance exactly as it would have filled `InstanceBaseAddr`, and if a header declares both the port wins. There is no port form for `InstanceWindowSize`, which stays a parameter: it is an extent rather than an identity, and it is the same for every instance of one component, so nothing is gained by driving it.
 
@@ -372,17 +372,25 @@ Ollivander infers the required size of the Host's interrupt aggregators by inspe
 
 This auto-sizing mechanism ensures that the Host's interrupt interface is always correctly dimensioned to match the system's connectivity, removing the burden of manual calculation from the user.
 
-### 5.2 Simulation Force-Boot Parameters
+### 5.2 Simulation Boot Contracts (force and jtag)
 To support dynamic force-booting in simulation, a Host Isle wrapper (e.g., `cheshire_isle.sv`) can optionally expose standard parameters defining the startup control:
 *   `HasForceBoot` (`localparam bit`): Set to `1` if this host supports software force-booting in simulation.
 *   `ForceBootPath` (`localparam string`): Hierarchical path from the host wrapper top to the entry point scratch register (e.g., `"i_cheshire_soc.i_regs.field_storage.scratch[0].scratch.value"`).
 *   `ForceBootVal` (`localparam string`): Force value template (e.g., `"32'h00000000"`).
 
-These parameters are read by the testbench generator to automatically drive the boot entry sequence.
+**JTAG-boot contract.** A host that supports the architected debug-module boot (`testbench.boot_mode: "jtag"`, configuration guide section 4.1) declares three more localparams. The **slink boot consults this block too**: its handoff writes the same scratch registers, it just never touches the TAP.
+
+| Localparam | Meaning |
+| :--- | :--- |
+| `HasJtagBoot` (`bit`) | `1` declares the architected preboot loop (scratch-register polling) and the debug-module boot road. |
+| `JtagIdCode` (`longint unsigned`) | The IDCODE the TAP must return; the VIP's liveness check compares against it explicitly, because an undriven TDO reads X and X falls open through every implicit comparison. |
+| `JtagScratchOffset` (`longint unsigned`) | Offset, inside the host's address window, of the scratch registers the boot handoff writes (entry pointer, argument, go word) and the preboot loop polls. |
+
+These parameters are read by the testbench generator to automatically drive the boot entry sequence. The **uart boot road deliberately has no contract block**: it needs only the `uart` export — the protocol, its opcodes and its baudrate are baked into the host's boot ROM, so there is nothing a wrapper could declare that the ROM does not already own.
 
 ### 5.3 External-Master Id-Width Contract
 
-A host whose internal crossbar aggregates several masters prepends the ORIGINATING MASTER's index to every id it drives onto the SoC fabric, so its external id width is `<effective master id width> + clog2(<master count>)` - and the count grows with feature switches (on `cheshire_isle`, enabling `SerialLink` adds the fifth internal master). A fabric sized without knowing that count silently truncates the top index bits, and the responses of the high-index masters come back misrouted: the failure stays invisible exactly until one of those masters speaks, which is how the serial-link preload exposed it on 2026-08-22 (the boot image reached the L2 and the write response was delivered to the wrong master).
+A host whose internal crossbar aggregates several masters prepends the ORIGINATING MASTER's index to every id it drives onto the SoC fabric, so its external id width is `<effective master id width> + clog2(<master count>)` - and the count grows with feature switches (on `cheshire_isle`, enabling `SerialLink` adds the fifth internal master). A fabric sized without knowing that count silently truncates the top index bits, and the responses of the high-index masters come back misrouted: the failure stays invisible exactly until one of those masters speaks — typically at the first serial-link preload, when the boot image reaches the L2 and the write response comes back to the wrong master.
 
 The host therefore declares its master count as a contract localparam, and the generator sizes the interconnect FROM it - the same "fabric follows host" practice astral and gwaihir apply by deriving every downstream width from `Cfg.AxiMstIdWidth + $clog2(AxiIn.num_in)`:
 
@@ -393,12 +401,33 @@ The host therefore declares its master count as a contract localparam, and the g
 
 **The contract polices itself at elaboration.** The isle body carries an `initial` check that compares `AxiExtOutIdWidth` against `AxiSlvIdWidth` - the width cheshire itself computes from `gen_axi_in` - and `$fatal`s on any mismatch, in both simulators, at zero cost. A cheshire bump that adds a master, or a feature switch the hand-written mirror forgets, stops every build instead of silently reopening the truncation hole.
 
-**Both families size from this single source** (aligned 2026-08-22, mirroring how astral and gwaihir derive every downstream width from `Cfg.AxiMstIdWidth + $clog2(AxiIn.num_in)`):
+**Both families size from this single source** (mirroring how astral and gwaihir derive every downstream width from `Cfg.AxiMstIdWidth + $clog2(AxiIn.num_in)`):
 
 - **NoC family**: the generator (`src/core/macro_boundary.py`, `host_ext_out_id_width`) resolves `NumAxiInMasters` numerically - the driven `AxiNumMst*` values land in `host.parameters` before resolution - and imposes `3 + clog2(count)` on every network the host masters, alongside the widths the nested macros impose. The match then closes by construction: the resolved network width flows back into the host's `AxiOutIdWidth`, whose saturation at 3 reproduces the same sum.
 - **Crossbar family**: there the SoC "crossbar" IS the host's internal one - external masters enter through the host's ext-mst ports at the declared `global_bus.mst_id_width`, as extra `AxiIn` entries of the same crossbar. `crossbar_slv_id_width` sizes the slave side as `<saturated mst_id_width> + clog2(count)` from the SAME resolved contract (primed once by the generator, `host_axi_in_masters`). The older hand-maintained `crossbar_master_count` remains only as the fallback for hosts that declare no contract; its deliberately-present defaults for optional masters can only err WIDER, which the field-wise boundary assigns absorb safely (ids zero-extend outward, responses truncate back within range).
 
 A host that declares no contract keeps the legacy sizing on both families - a non-cheshire host owes nothing to this rule.
+
+### 5.4 Autonomous-Boot Contract
+
+A host whose bootrom can fetch the firmware from an external memory device by itself (`testbench.boot_mode: "spi_flash"` / `"i2c_eeprom"`, configuration guide section 4.1) declares the contract below in its header. Everything in it is HOST KNOWLEDGE the generator would otherwise have to hardcode: where the bootrom loads the image (its internal scratchpad - the parent map treats the host window as opaque, so only the host can say), which behavioral device models its own dependency graph ships (the generated testbench instantiates the named model; the VIP stays IP-agnostic), which strap value selects each source (the bootrom's own case values), and the exact geometry of the GPT image its ROM scans for (the generated software Makefile renders its `sgdisk`/`dd` recipe FROM these values). `cheshire_isle` declares the full block.
+
+| Localparam | Meaning |
+| :--- | :--- |
+| `HasAutonomousBoot` (`bit`) | `1` declares the autonomous boot roads. |
+| `BootSpmOffset` / `BootSpmSize` (`longint unsigned`) | The internal scratchpad the bootrom loads into, as an offset inside the host's address window plus its size: the generated linker script links the autonomous firmware for this region instead of the project's boot memory. |
+| `BootSpiFlashModel` (`string`) | Module name of the behavioral SPI NOR flash model (ships with the host's own Bender graph). |
+| `BootSpiFlashFileParam` (`string`) | The model's preload-file PARAMETER name. The image must go through the model's own preload mechanism: the model blank-fills its array from an initial block, and a testbench-side `$readmemh` races that fill at time zero and loses silently. |
+| `BootSpiFlashCs` (`int unsigned`) | The chip select the bootrom boots from (the project must build the SPI master with enough chip selects to cover it). |
+| `BootModeSpiFlash` (`int unsigned`) | The `boot_mode_i` strap value for the SPI-flash source. |
+| `BootI2cEepromModel` (`string`) | Module name of the behavioral I2C EEPROM model. |
+| `BootI2cEepromMemPath` (`string`) | The model's memory ARRAY name - the flash's opposite: this model has no native preload and never initializes its array, so the testbench-side fill-and-load is the only way and is race-free there. |
+| `BootI2cEepromCount` (`int unsigned`) | How many chips sit on the bus (upstream's fixture fact: two, the index on the `A0` pin, the image preloaded on chip 0). |
+| `BootModeI2cEeprom` (`int unsigned`) | The `boot_mode_i` strap value for the I2C-EEPROM source. |
+| `BootZslTypeGuid` (`string`) | The partition type GUID the bootrom's GPT scan boots from (`sgdisk` spelling); the software flow stamps it on the firmware partition of the boot image. |
+| `BootImgPayloadLba` / `BootImgPadLbas` (`int unsigned`) | Image geometry, bootrom knowledge too: the LBA the firmware partition starts at, and the padding the image is sized with (upstream's own test-image recipe). |
+
+Generation-time validation: the autonomous modes are refused unless the matching interface is exported (`"spi"` / `"i2c"` in `export_interfaces`), and they take NO `preload_mode`/`preload_memories` - the image travels inside the boot device.
 
 ## 6. Dependency Management
 Ollivander features an automated dependency resolution engine that scans your Isles and populates the `Bender.yml` manifest. This ensures that only the files and IP packages actually instantiated in the SoC are included in the compilation flow.

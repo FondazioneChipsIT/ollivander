@@ -15,7 +15,7 @@
 //
 // The private icache slices the requested 32-bit word out of its 128-bit lines only under this
 // symbol; without it, pri_icache_controller.sv serves word 0 of the line for EVERY fetch, and
-// the cores execute each line's first instruction four times (found 2026-08-07, first time a
+// the cores execute each line's first instruction four times (exposed the first time a
 // cluster core ever fetched in an Ollivander SoC). With iCachePrivateDataWidth = 32 in the Cfg
 // below it is a hard functional requirement of the IP; astral defines it globally in its own
 // compile flow (bender-common.mk), which is why the reference never shows the failure.
@@ -64,7 +64,7 @@ module pulp_cluster_isle
   // verilation constraint, scalars and strings only (never 'localparam type'). A
   // comment line here must also never BEGIN with the tool's own name: Verible's
   // reflow once produced one, and the tool reads such comments as its pragmas
-  // (BADVLTPRAGMA, found 2026-08-08 by the first Verilator sweep of this header).
+  // (BADVLTPRAGMA, found by the first Verilator sweep of this header).
   //
   // "control_wire" contract: payload code and per-core boot addresses are placed by the
   // host through the slave port, cores are released by the SoC-side fetch-enable wire,

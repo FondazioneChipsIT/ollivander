@@ -34,7 +34,7 @@ sys_regs_type = f"{top_level_module_name}_sys_regs_t"
  * modes and their reasons are explained in rtl_generator.py. */
 #define OFFLOAD_PAYLOAD_BASE ${hex(offload_payload_base)}u
 
-/* FFAR clocked reset window (wave three step c): flip-flops with asynchronous
+/* FFAR clocked reset window: flip-flops with asynchronous
  * reset sampled synchronously need clock EDGES while reset is still asserted
  * before the release is safe - the same two-phase contract the generated
  * testbench honors with an explicit 1 us pause. The firmware used to release
@@ -131,8 +131,8 @@ static inline void ${t_name}_disable(void) {
     /* Power-on state includes the SoC-side wire: fetch_enable lives in the
      * ALWAYS-ON controller and would survive the target's power-down - a
      * re-enabled cluster would then start fetching from its reset-default
-     * boot address before the host reconfigures it (power-cycle trap, wave
-     * three step c). Stop the fetch first, then isolate, then cut. */
+     * boot address before the host reconfigures it (power-cycle trap).
+     * Stop the fetch first, then isolate, then cut. */
     OFFLOAD_SYS_REGS->fetch_enable.f.${t_name}_fetch_enable = 0;
 % endif
 % if t["sys_isolate"]:

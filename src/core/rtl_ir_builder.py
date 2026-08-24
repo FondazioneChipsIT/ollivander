@@ -40,7 +40,7 @@ def get_instance_window(comp, inst_idx=0):
 def get_type_param_fill(p, comp, soc_config, pkg):
     """Package-qualified type a component's TYPE parameter is filled with, or None.
 
-    Extracted verbatim from build_crossbar_ir's dispatch (2026-08-14) so that the
+    Extracted verbatim from build_crossbar_ir's dispatch so that the
     isle-staging pass can ask the same question the instantiation site answers: the
     hier-block work (wip 5.1) replaces `parameter type` in the staged isle copies
     with a generated per-isle types package, and its typedefs must be exactly these
@@ -131,7 +131,7 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                 # every fleet project's multi-port memory happened to match the
                 # header default (2 on l2_isle), so the omission was invisible
                 # until crux_mini's single-port memory elaborated with DOUBLED
-                # formal CDC widths against single-element actuals (2026-08-23).
+                # formal CDC widths against single-element actuals.
                 slvs = (comp.interfaces or {}).get('axi_slave', [])
                 if isinstance(slvs, dict):
                     slvs = [slvs]
@@ -214,7 +214,7 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                 elif isinstance(p_v, int) and p_v > 0x7FFFFFFF:
                     # An unsized decimal literal is SIGNED 32-bit in SV: past 2^31-1 it
                     # sign-extends when overriding a wider parameter (see the identical
-                    # guard in build_noc_ir and the 2026-08-11 LlcOutRegionStart case).
+                    # guard in build_noc_ir and the LlcOutRegionStart case).
                     inst.parameters[p_k] = f"64'h{p_v:X}"
                 else:
                     inst.parameters[p_k] = str(p_v)
@@ -295,7 +295,7 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                 if m:
                     inst.connections.append(PortConnection(m.group(1).strip(), m.group(2).strip()))
 
-        # INSTANCE IDENTITY ON A PORT (2026-08-20). The twin of the InstanceBaseAddr
+        # INSTANCE IDENTITY ON A PORT. The twin of the InstanceBaseAddr
         # parameter above, for isles that take the base at run time instead: it MUST
         # be connected explicitly, because the tie-off below would otherwise drive it
         # to '0 and the isle would decode its window at address zero - a valid design
@@ -389,8 +389,8 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                             # An unsized decimal literal is a SIGNED 32-bit value in SV:
                             # anything past 2^31-1 would sign-extend when it overrides a
                             # wider parameter (LlcOutRegionStart=0xD000_0000 became
-                            # 0xFFFF_FFFF_D000_0000 and broke CVA6's execute region,
-                            # found 2026-08-11). Size everything past the boundary.
+                            # 0xFFFF_FFFF_D000_0000 and broke CVA6's execute region).
+                            # Size everything past the boundary.
                             formatted_val = f"64'h{p_val:X}" if p_val > 0x7FFFFFFF else str(p_val)
                         else:
                             formatted_val = str(p_val)
@@ -459,15 +459,15 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 # port-name matching is involved. One route for every self-mapping
                 # component: the snitch cluster arrays and the memory isles alike
                 # (the former per-component L2 override with its name heuristic was
-                # absorbed here, 2026-08-11). Values stay PROJECT-LOCAL in macro
+                # absorbed here). Values stay PROJECT-LOCAL in macro
                 # builds too: the NoC border adapters rebase incoming traffic (they
                 # subtract MACRO_BASE_ADDR before any tile sees it, noc_soc_top
                 # .sv.mako) - the crossbar family keeps global addresses instead,
                 # see the same parameter in build_crossbar_ir. Left at the '0
                 # default, every window access missed the internal decode and hung
-                # the host (found 2026-08-10).
+                # the host.
                 supported = c_info.get("supported_params", {})
-                # THE BASE MAY ARRIVE AS A PORT INSTEAD OF A PARAMETER (2026-08-20).
+                # THE BASE MAY ARRIVE AS A PORT INSTEAD OF A PARAMETER.
                 # A subtile that needs the window base only at run time declares
                 # 'instance_base_addr_i' and the constant is DRIVEN, not elaborated:
                 # every instance then shares one module, where a per-instance

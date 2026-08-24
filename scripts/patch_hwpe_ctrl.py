@@ -25,7 +25,7 @@ rename pass cannot reach them (re-ordering this list recreates the
 self-assignment defect it once caused).
 
 These replacements lived as {file, search, replace} triples in the dependency
-registry and moved here verbatim when their volume outgrew the YAML (2026-08-06).
+registry and moved here verbatim when their volume outgrew the YAML.
 The mechanics are unchanged: replacements apply on freshly ledger-restored
 sources, every touched file is recorded in the checkout's .ollivander_patched,
 and a search string that no longer matches is reported as a stale patch, exactly

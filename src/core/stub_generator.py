@@ -312,9 +312,28 @@ def resolve_active_dependencies(files, seeds, outdir_path, global_options, fast_
                 is_fast = is_fast_compile_target(defining_file, outdir_path, fast_check_tool)
                 
                 if is_fast:
+                    # Bench sources (the generated testbench and the shipped VIP,
+                    # both living in a 'tb/' directory) are COMPILED by the fast
+                    # flow but never ELABORATED: vopt targets the SoC top alone.
+                    # Their instances therefore must not become STUB targets -
+                    # the boot-device models the autonomous testbench
+                    # instantiates have non-ANSI headers (port names in the
+                    # header, directions in the body) that no faithful blackbox
+                    # can be regenerated from, and nothing ever elaborates them
+                    # here. Instances that resolve to fast-compile files (the
+                    # VIP, the DUT top) are still traced, so those files stay
+                    # in the compile list and keep their syntax coverage.
+                    bench_src = Path(defining_file).parent.name == 'tb'
                     for inst in insts:
-                        if inst not in visited:
-                            queue.append(inst)
+                        if inst in visited:
+                            continue
+                        if bench_src:
+                            def_files = module_to_file.get(inst, [])
+                            if not def_files or not all(
+                                    is_fast_compile_target(df, outdir_path, fast_check_tool)
+                                    for df in def_files):
+                                continue
+                        queue.append(inst)
                     for imp in imports:
                         if imp not in visited:
                             queue.append(imp)
@@ -927,15 +946,24 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
         draw_progress_bar(idx + 1, total_hier, prefix="  -> Analyzing module hierarchies    ", suffix=f"({idx+1}/{total_hier})")
         if is_fast_compile_target(f_clean, outdir_path, fast_check_tool):
             f_path = Path(f_clean.replace('$ROOT', '.'))
+            # Bench sources (the generated testbench and the shipped VIP, both in
+            # a 'tb/' directory) are COMPILED by the fast flow but never
+            # ELABORATED (vopt targets the SoC top alone), so their instances
+            # must not become stub targets: the boot-device models the
+            # autonomous testbench instantiates have non-ANSI headers (names in
+            # the header, directions in the body) that no faithful blackbox can
+            # be regenerated from, and nothing here ever elaborates them.
+            # Definitions and package imports are still collected.
+            bench_src = f_path.parent.name == 'tb'
             if f_path.is_file():
                 try:
                     tree = pyslang.syntax.SyntaxTree.fromFile(str(f_path))
-                    
+
                     def traverse_fast(node):
                         if node is None:
                             return
                         node_type = type(node).__name__
-                        
+
                         if node_type == "ModuleDeclarationSyntax":
                             kind_name = node.kind.name
                             name_text = ""
@@ -944,9 +972,9 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
                             if name_text:
                                 if kind_name in ("ModuleDeclaration", "InterfaceDeclaration"):
                                     defined_modules.add(name_text)
-                                    
+
                         elif node_type == "HierarchyInstantiationSyntax":
-                            if hasattr(node, 'type') and node.type:
+                            if hasattr(node, 'type') and node.type and not bench_src:
                                 inst_modules.add(node.type.valueText)
                         elif node_type == "PackageImportItemSyntax":
                             if hasattr(node, 'package') and node.package:

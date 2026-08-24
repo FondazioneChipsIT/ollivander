@@ -271,7 +271,12 @@ components:
     interfaces:
       axi_slave:
         - ports: 2             # Automatically splits the crossbar routing into an array of 2 AXI ports
-          base_addr: 0x88000000
+          # Inside the host's CIE window [0x7800_0000, 0x8000_0000), astral's own
+          # L2 base: cached+executable for CVA6 through the DESIGNED attribute
+          # mechanism, and OUT of the LlcOutRegion - the old 0x8800_0000 parking
+          # spot shadowed cheshire's DRAM rule (two decode rules matched every L2
+          # access) and borrowed its attributes by accident.
+          base_addr: 0x78000000
           size: 0x00200000
           sync_domain: false
       regbus_slave:
@@ -377,7 +382,7 @@ components:
       # interrupt the moment the bootrom enables mie, and land in the fallback park
       # with poisoned state) and permanently 1 afterwards (mtimecmp resets to 0),
       # which would break the parking either way. The offload model wakes the cluster
-      # exclusively through its internal CLINT, like the gwaihir reference (2026-08-07).
+      # exclusively through its internal CLINT, like the gwaihir reference.
       mtip_i: { source: "none" }
       # 'none' explicitly ties the interrupt input to 0 to avoid floating wires
       meip_i: { source: "none" }
@@ -489,7 +494,7 @@ testbench:
     - instance: "i_l2_shared_memory"
       # '{test_app}' resolves at generation time to the firmware actually built
       # (test_app.name or its TEST_APP override), so the preload follows the app.
-      # The image travels as the ELF itself (wip 2.1 wave two): the testbench
+      # The image travels as the ELF itself (wip 2.1): the testbench
       # reads it through the vendored elfloader DPI, streams every loadable
       # segment over the same JTAG/SBA transport the hex used, and takes the
       # entry point from the ELF header instead of the memory map. crux is the
@@ -516,7 +521,7 @@ software_stack:
     baudrate: 2000000
 
 # Simulator flags & options (power-user section, docs/soc_configuration_guide.md ch. 6).
-# The crossbar family runs Verilator single-threaded ON MEASUREMENT (2026-08-21, 2x2 on
+# The crossbar family runs Verilator single-threaded ON MEASUREMENT (2x2 on
 # this very project): four threads cost 8m39s against 7m35s without, because the design
 # is eight mostly single-instance isles - boxed blocks evaluate inline on the calling
 # thread, so there is nothing to spread, only synchronization to pay. The mesh family

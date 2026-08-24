@@ -82,7 +82,7 @@
               # DECERR slave). 'size_per_instance' covers ONE instance, so the region
               # must span the whole array - with one instance's size, every access
               # beyond instance 0 was silently swallowed inside the host, B response
-              # and all (found 2026-08-10: 15 of 16 mesh clusters unreachable).
+              # and all (symptom: 15 of 16 mesh clusters unreachable).
               if 'size' in slv:
                   size = slv['size']
               else:

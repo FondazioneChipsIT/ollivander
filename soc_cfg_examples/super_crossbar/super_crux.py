@@ -119,9 +119,9 @@ config = OllivanderConfig(
         isa="rv64imafdc_zifencei",
         abi="lp64d",
         cmodel="medany",
-        # 'slink' joins the exports as the opening move of the serial-link
-        # preload wave (wip ch. 2): the image will stream through it while
-        # bring-up and handoff stay on the proven JTAG path.
+        # 'slink' joins the exports for the serial-link preload (wip ch. 2):
+        # the image will stream through it while bring-up and handoff stay
+        # on the proven JTAG path.
         export_interfaces=["jtag", "uart", "spi", "i2c", "gpio", "slink"],
         interfaces={
             "axi_master": True,
@@ -185,7 +185,9 @@ config = OllivanderConfig(
             clock_domain="l2",
             system_config={"is_l2_mem": True},
             interfaces={
-                "axi_slave": [{"ports": 2, "base_addr": 0x88000000, "size": 0x00200000, "sync_domain": False}],
+                # Inside the host's CIE window [0x7800_0000, 0x8000_0000), astral's
+                # own L2 base (see crux.yml for the shadowing rationale).
+                "axi_slave": [{"ports": 2, "base_addr": 0x78000000, "size": 0x00200000, "sync_domain": False}],
                 "regbus_slave": [{"base_addr": 0x2000B000, "size": 0x00001000, "sync_domain": False}]
             }
         ),
@@ -282,7 +284,7 @@ config = OllivanderConfig(
                 # lines - the host CLINT's mtip is X while Cheshire is still booting and
                 # permanently 1 afterwards (mtimecmp resets to 0), which breaks the
                 # parking either way. The offload model wakes the cluster exclusively
-                # through its internal CLINT (same rationale as crux, 2026-08-07).
+                # through its internal CLINT (same rationale as crux).
                 "mtip_i": {"source": "none"},
                 "meip_i": {"source": "none"}
             }
@@ -389,7 +391,7 @@ config = OllivanderConfig(
     testbench={
         # Boot through the VIP's JTAG agent instead of hierarchical forces (wip 2.1).
         "boot_mode": "jtag",
-        # Image and boot handoff over the exported serial link (wip 2.1 wave two):
+        # Image and boot handoff over the exported serial link (wip 2.1):
         # the l2_shared_memory preload needs no hierarchical path, and the scratch
         # writes avoid the SBA-to-internal-regs anomaly cheshire shows with
         # SerialLink enabled (see the upstream registry). On the crossbar family
@@ -420,8 +422,8 @@ config = OllivanderConfig(
         "verilator": {"compile_jobs": 64},
         # compile_jobs 64: measured -26/-27% on both supers' cold builds (the
         # -j48 emission-truncation hazard cannot reach phase 2, which is pure
-        # g++). threads stays at the default 4: 8 was tried on 2026-08-21 and
-        # reverted - it segfaults super_crux's top at time zero (isolated to
+        # g++). threads stays at the default 4: 8 was tried and reverted -
+        # it segfaults super_crux's top at time zero (isolated to
         # the thread count alone, jobs exonerated) and bought nothing on
         # super_mesh (22m20 vs 21m44); see wip 5.2.
     },

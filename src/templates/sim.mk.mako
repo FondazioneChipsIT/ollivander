@@ -95,7 +95,7 @@ QUESTA_GUI_FLAGS ?= -voptargs=+acc${q_gui_extra}
 # ==============================================================================
 # Capped at 32: three hierarchical builds at -j48 produced TRUNCATED generated
 # C++ (a hier-block .cpp cut mid-expression, g++ 'expected )' at end of input;
-# spatz_cc and the mesh cluster tile, 2026-08-1x). Never observed at or below
+# spatz_cc and the mesh cluster tile). Never observed at or below
 # -j32; the build-time cost of the cap is minutes, a corrupt build costs a run.
 VERILATOR_JOBS ?= ${sim("verilator", "verilate_jobs", default=32)}
 # Parallelism of the COMPILE phase, a separate hazard domain: the -j48 truncation
@@ -108,7 +108,7 @@ VERILATOR_COMPILE_JOBS ?= ${sim("verilator", "compile_jobs", default=32)}
 # run still prints its UART output and the testbench's EOT.
 VERILATOR_THREADS ?= ${sim("verilator", "threads", default=4)}
 # --threads and -DVL_TIME_CONTEXT are a COUPLED PAIR and switch together, in
-# whichever direction. Measured as a full 2x2 on crux (2026-08-21): the boxed
+# whichever direction. Measured as a full 2x2 on crux: the boxed
 # children need the define exactly when the model is threaded (without it the
 # parent and children disagree on where simulated time lives and the run
 # segfaults at time zero inside a timing coroutine), and need it ABSENT exactly
@@ -137,11 +137,11 @@ VERILATOR_KEEP_WORK ?= ${"1" if sim("verilator", "keep_work", default=False) els
 # Everything that used to be listed here instead - IP testbenches, class-based
 # verification drivers, the astral pads - was dead in a generated SoC for BOTH
 # simulators, and is now removed at the source, in each IP's manifest, from the
-# dependency registry (2026-08-06). A tool-specific exclusion is the last resort: if
+# dependency registry. A tool-specific exclusion is the last resort: if
 # a file is useless, it is useless to QuestaSim too.
 # rand_verif_pkg is that last resort's second tenant, and genuinely tool-specific:
 # its rand_wait task carries an event control, which Verilator rejects inside a
-# hierarchical child (--lib-create with --timing and delays, met 2026-08-17 on
+# hierarchical child (--lib-create with --timing and delays, met on
 # cheshire_isle). A timing-free stub generated next to the .vlt replaces it in this
 # flow only (see prep-sim-verilator); QuestaSim keeps compiling the real package.
 VERILATOR_FLIST_EXCLUDE ?= behavioral/tc_pad\.sv|common_verification/src/rand_verif_pkg\.sv${vl_excl_extra}
@@ -162,7 +162,7 @@ VERILATOR_WARN ?= -Wno-fatal -Wno-TIMESCALEMOD -Wno-ASCRANGE -Wno-SYMRSVDWORD -W
 #   libraries (declared in the generated sim/verilator/$(TOP_MOD).vlt) and the monolithic build costs
 #   hours and tens of GB instead of minutes and ~3 GB per unit;
 # - --threads 4 cuts the run from 19m37s to 6m33s on mesh, UART and EOT unchanged. It was
-#   deliberately absent until 2026-08-20 on a measurement taken when nothing was actually
+#   deliberately absent at first, on a measurement taken when nothing was actually
 #   boxed (see the .vlt note below): back then it inflated verilation, and the top was
 #   elaborating the whole design. Eight threads gave a further 29% only, not worth being
 #   more sensitive to a shared machine's load, and peak memory was 3.5 GB at both.
@@ -271,8 +271,8 @@ BENDER_TARGETS ?= ${bender_targets_str}${bt_extra}
 
 # Fallback when bender is neither on PATH nor loadable as a module: it is installed
 # into the generator's virtual environment bin/, the same place getting_started.md
-# tells a user to put a manual install - never into the project directory, where the
-# 2026-08-07 audit found a stray binary polluting git status (it is not ignored there,
+# tells a user to put a manual install - never into the project directory, where an
+# audit once found a stray binary polluting git status (it is not ignored there,
 # and the installer's tarball timestamps make it look months old).
 BENDER_PREREQ :=
 ifeq (, $(shell command -v $(BENDER) 2> /dev/null))
@@ -559,7 +559,7 @@ run-sim:
 	@# (zero replication multiplier) produced no message at all on either crux or mesh.
 	@# Clear cached optimized designs before every simulation launch: vsim's
 	@# auto-vopt staleness check is unreliable - it reloaded pre-recompile
-	@# images repeatedly on 2026-08-16 ("Loading existing optimized design"),
+	@# images repeatedly ("Loading existing optimized design"),
 	@# silently simulating code that no longer existed. Re-optimizing on every
 	@# run costs minutes; trusting a stale image costs a debugging day.
 	@rm -rf work/_opt* 2>/dev/null || true
@@ -581,7 +581,7 @@ gui:
 	@ln -snf ../generated logs/generated
 	@# Clear cached optimized designs before every simulation launch: vsim's
 	@# auto-vopt staleness check is unreliable - it reloaded pre-recompile
-	@# images repeatedly on 2026-08-16 ("Loading existing optimized design"),
+	@# images repeatedly ("Loading existing optimized design"),
 	@# silently simulating code that no longer existed. Re-optimizing on every
 	@# run costs minutes; trusting a stale image costs a debugging day.
 	@rm -rf work/_opt* 2>/dev/null || true
@@ -616,12 +616,12 @@ prep-sim-verilator: update-hw
 
 build-sim-verilator: prep-sim-verilator build-sw
 	@printf "\n[MAKE] Building Verilator model (hierarchical)...\n"
-	@# NO REUSE BETWEEN BUILDS (development-phase policy, 2026-08-18). Verilator's
+	@# NO REUSE BETWEEN BUILDS (development-phase policy). Verilator's
 	@# hierarchical cache validates neither its own outputs (a build aborted
 	@# mid-write leaves truncated headers the next run fails on: "unterminated
-	@# #ifndef", met 2026-08-17) nor the children's sources (a child whose RTL
-	@# changed is silently relinked stale, met 2026-08-18): both bit within one
-	@# day. Rebuilding from scratch costs little - the top re-verilates on any
+	@# #ifndef") nor the children's sources (a child whose RTL
+	@# changed is silently relinked stale): both observed in practice.
+	@# Rebuilding from scratch costs little - the top re-verilates on any
 	@# change anyway and ccache absorbs the C++ of unchanged children (measured:
 	@# 1h25 warm vs 1h44 cold on comparable SoCs) - so between-build reuse stays
 	@# off until a reliable invalidation exists (wip 5.2). Hierarchical verilation
@@ -641,7 +641,7 @@ build-sim-verilator: prep-sim-verilator build-sw
 	@# dozens of .cpp files: as soon as the .mk appears, make considers the dependency
 	@# satisfied and (under -j) starts compiling sources that are still being written.
 	@# gcc then stops mid-file at "expected primary-expression at end of input" on a file
-	@# that is complete and well-formed on disk a moment later - met 2026-08-19 on
+	@# that is complete and well-formed on disk a moment later - met on
 	@# spatz_cc inside crux_isle in a build started from an empty tree, and most likely
 	@# the true cause of the "unterminated #ifndef" blamed on cache staleness the day
 	@# before. Asking for every child .mk first and only then for 'hier_build' removes

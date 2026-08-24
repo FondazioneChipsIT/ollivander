@@ -31,7 +31,19 @@ CFLAGS  = -march=${config.host.isa or "rv64imafdc"} -mabi=${config.host.abi or "
 LDFLAGS = -T linker.ld -nostartfiles -Wl,--gc-sections${" " + fw_ldflags if fw_ldflags else ""}
 
 .PHONY: all clean
+<%
+_boot_mode = (config.get("testbench", {}) or {}).get("boot_mode", "force")
+_autonomous = _boot_mode in ("spi_flash", "i2c_eeprom")
+_hf = comp_info.get(config.host.name, {}).get("fixed_params", {}) if _autonomous else {}
+_zsl_guid = str(_hf.get("BootZslTypeGuid", "")).strip('"\'')
+_img_lba  = int(str(_hf.get("BootImgPayloadLba", "42")).strip('"\'')) if _autonomous else 42
+_img_pad  = int(str(_hf.get("BootImgPadLbas", "85")).strip('"\'')) if _autonomous else 85
+%>\
+% if _autonomous:
+all: ${app_name}.hex ${app_name}.gpt.memh
+% else:
 all: ${app_name}.hex
+% endif
 
 % if app_name == "offload":
 # ------------------------------------------------------------------------------
@@ -98,12 +110,31 @@ ${app_name}.elf: main.c
 # The flat hex must be ONE contiguous span: the generated testbench's SBA
 # preload packs it with a num()-based word count, which silently truncates
 # the tail if the @-blocks have a gap. objcopy emits one block per section,
-# and section ALIGNMENT leaves real slivers between them (crux: 6 bytes
-# between @8800094a and @88000950), so --gap-fill closes them with zeros -
+# and section ALIGNMENT leaves real slivers between them (on crux, 6 bytes
+# between two adjacent section blocks), so --gap-fill closes them with zeros -
 # the same bytes a debugger-side loader would write. The awk check stays as
 # the contract's enforcer: it fails the BUILD on any residual gap, instead
 # of a runtime check in the testbench, where the robust SV constructs crash
 # Verilator 5.050's threaded scheduler (see tb_soc.sv.mako, image load).
+% if _autonomous:
+# The autonomous boot image: a GPT whose second partition carries
+# the firmware under the type GUID the bootrom scans for (the host contract's
+# BootZslTypeGuid) - upstream cheshire's own test-image recipe, dummy
+# partitions included, so the GPT parsing is exercised and not just humored.
+# sgdisk lives in /usr/sbin on this host class, often outside make's PATH.
+SGDISK ?= $(shell command -v sgdisk || echo /usr/sbin/sgdisk)
+
+${app_name}.gpt.bin: ${app_name}.elf
+	$(OBJCOPY) -O binary $< ${app_name}.flash.raw
+	rm -f $@
+	truncate -s $$(( ($$(stat --printf="%s" ${app_name}.flash.raw)/512 + ${_img_pad})*512 )) $@
+	$(SGDISK) -Z --clear -g --set-alignment=1 --new=1:37:$$((${_img_lba}-2)) --new=2:${_img_lba}:-9 --typecode=2:${_zsl_guid} --new=3:-5:-2 $@ > /dev/null
+	dd if=${app_name}.flash.raw of=$@ bs=512 seek=${_img_lba} conv=notrunc 2> /dev/null
+
+${app_name}.gpt.memh: ${app_name}.gpt.bin
+	$(OBJCOPY) -I binary -O verilog $< $@
+
+% endif
 ${app_name}.hex: ${app_name}.elf
 	$(OBJCOPY) -O verilog --gap-fill 0x00 $< $@
 	@awk '/^@/ { a = strtonum("0x" substr($$1, 2)); \

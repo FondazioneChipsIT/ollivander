@@ -37,7 +37,7 @@ def _clean_param_val(val: Any) -> str:
     # A QUOTED value is a string literal, never a number: normalizing would chew
     # any SV-literal-looking text inside it ("32'h00000000" used to come out as
     # plain 0, which surfaced as `localparam string X = 0` once the declared
-    # parameter types started travelling to the generated tile, 2026-08-11).
+    # parameter types started travelling to the generated tile).
     if val_str.startswith('"'):
         return val_str
     # Handle Verilog-style literals like 1'b1, 32'hFF, 8'd10

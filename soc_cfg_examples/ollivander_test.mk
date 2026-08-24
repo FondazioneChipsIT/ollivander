@@ -20,7 +20,7 @@
 
 SHELL := /bin/bash
 
-TEST_PROJECTS    ?= crossbar crossbar_isle crossbar_mini noc noc_isle noc_subtile super_crossbar super_noc
+TEST_PROJECTS    ?= crossbar crossbar_isle crossbar_micro crossbar_mini noc noc_isle noc_subtile super_crossbar super_noc
 TEST_CLEAN       ?= 0
 TEST_CLEAN_SETUP ?= 0
 # Enable full testbench simulation run (compiles firmware, compiles simulator models,
@@ -35,7 +35,7 @@ FAST_CHECK_TOOLS ?= questa
 # The pass criterion is identical for every backend: the captured run log must show
 # '[UART]:' output AND 'EOT received'. Both halves are load-bearing: UART-only let a
 # run that died mid-firmware pass as green (the offload prints its greeting long
-# before its verdict - first false positive caught on 2026-08-12, a Verilator run
+# before its verdict - first false positive: a Verilator run
 # that timed out after the greeting was recorded SUCCESS).
 SIM_TOOLS ?= questa
 

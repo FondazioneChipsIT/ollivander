@@ -121,7 +121,7 @@ def crossbar_slv_id_width(soc_config):
 
     When the host declares the 'NumAxiInMasters' contract (primed by the generator,
     see host_axi_in_masters), the count comes from THERE - the same single source
-    the NoC family sizes from, and the id-alignment work of 2026-08-22 - with the
+    the NoC family sizes from, and the id-alignment convention - with the
     manager id saturated at 3 exactly as the host's own Cfg assembly saturates it.
     The hand-maintained crossbar_master_count below remains as the fallback for
     hosts without a contract, and its deliberately-present defaults for optional
@@ -219,7 +219,7 @@ def host_axi_in_masters(soc_config, component_paths=None, original_types=None):
 def host_ext_out_id_width(soc_config, component_paths, original_types=None):
     """
     The id width the HOST's external master port actually drives, from the host
-    wrapper's own contract (wip 2.1 wave two, the latent-truncation fix).
+    wrapper's own contract (wip 2.1, the latent-truncation fix).
 
     Cheshire-class hosts prepend the originating master's index to every outgoing
     id, so their external width is the effective master id width plus clog2 of the
@@ -292,10 +292,10 @@ def resolve_noc_id_widths(soc_config, component_paths, original_types=None, repo
             if name and name in published:
                 accepted.setdefault(net, []).append((comp.name, published[name]))
 
-    # The HOST imposes too (wip 2.1 wave two): its external master port's id width
+    # The HOST imposes too (wip 2.1): its external master port's id width
     # follows its internal master count, so every network it masters must carry at
     # least that width or the top index bits truncate and responses misroute - the
-    # exact failure the serial-link preload exposed on 2026-08-22 (the L2's B
+    # exact failure a serial-link preload exposes (the L2's B
     # answer delivered to the wrong internal master, load hung on a lost response).
     host_width = host_ext_out_id_width(soc_config, component_paths, original_types)
     if host_width is not None:

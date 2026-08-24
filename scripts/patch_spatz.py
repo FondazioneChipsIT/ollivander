@@ -17,12 +17,12 @@ It is removed for BOTH simulators rather than filtered out of the Verilator file
 list alone: Verilator cannot elaborate the class package, QuestaSim merely tolerates
 it, and neither needs it. The package and its consumers go TOGETHER - removing the
 package alone leaves QuestaSim compiling testbenches whose classes have vanished,
-which is exactly how this was got wrong first (2026-08-06).
+which is exactly how this gets got wrong.
 
 It also repairs the cluster BOOTROM (hw/system/spatz_cluster/src/generated/bootrom.sv)
 on two independent counts, both found by the offload bring-up (wip 2.2 phase 2b):
 
-1. PC-RELATIVE ENTRY SEQUENCE (2026-08-07). The shipped ROM bakes its generation
+1. PC-RELATIVE ENTRY SEQUENCE. The shipped ROM bakes its generation
    config's absolute TCDM base into BOOTDATA and derives the entry-point register's
    address from it - wrong at any other instantiation base, unfixable-by-value for
    two instances. The words at offsets 'hbc-'hd4 are replaced with hand-assembled
@@ -32,13 +32,13 @@ on two independent counts, both found by the offload bring-up (wip 2.2 phase 2b)
    cluster_base + 'h3_0000 via BootAddr for exactly this arithmetic. Upstream
    candidate: adopt a PC-relative bootrom like snitch_cluster's.
 
-2. SUB-LINE ADDRESS SLICING (2026-08-10). The ROM returns whole 512-bit lines and
+2. SUB-LINE ADDRESS SLICING. The ROM returns whole 512-bit lines and
    ignores addr[5:0] BY DESIGN, expecting a 512-bit reader to slice; our isle runs
    the cluster's DMA bus at the SoC's 64-bit width, so the connection silently
    truncates rdata to the line's low 64 bits and EVERY instruction fetch returns
    word 0/1 of its 64-byte line (the cores then execute a branch-free stream of
    accidental ALU ops and march linearly through the ROM into the data - observed
-   at instruction-port level, probes of 2026-08-10). The repair latches addr[5:0]
+   with instruction-port probes). The repair latches addr[5:0]
    and shifts the line by the byte offset, making the ROM correct for ANY reader
    width. Upstream candidate: same shift, or a width assertion at the boundary.
 

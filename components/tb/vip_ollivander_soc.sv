@@ -73,7 +73,7 @@ module vip_ollivander_soc #(
   // nominal baud by percents at high speed - enough to mis-sample a frame).
   parameter bit HasUart = 1'b0,
   parameter real UartBitPeriodNs = 8680.0,
-  // UART debug-boot agent (wave five): the external agent the bootrom's own
+  // UART debug-boot agent: the external agent the bootrom's own
   // serial debug server expects - the poorest agent silicon can count on, no
   // debugger and no link partner. The protocol runs at the baudrate BAKED
   // INTO THE ROM (115200 via the integer divisor), which is NOT the console
@@ -82,7 +82,7 @@ module vip_ollivander_soc #(
   parameter bit HasUartBoot = 1'b0,
   parameter real UartBootBitPeriodNs = 8680.0,
   // --------------------------------------------------------------------------
-  // Serial-link agent (wip 2.1, wave two): the off-chip TWIN of the DUT's
+  // Serial-link agent (wip 2.1): the off-chip TWIN of the DUT's
   // serial link. The AXI geometry arrives from the host's Slink* contract via
   // the generated testbench; the twin builds its own types from the widths,
   // because the wire protocol needs a STRUCTURAL width match, not type
@@ -238,7 +238,7 @@ module vip_ollivander_soc #(
         // byte between protocol framing and the test verdict turns any agent
         // or firmware bug into a FALSE PASS - the protocol's read-path data
         // and the bootrom's unsolicited Eoc report can both carry 0x04
-        // legitimately. Decoupled 2026-08-23, wave five.
+        // legitimately.
         $display("[TB] EOT received. Simulation finished.");
         $finish;
       end else if (rx_char == 8'h0A) begin // Newline (\n)
@@ -254,7 +254,7 @@ module vip_ollivander_soc #(
   end
 
   // --------------------------------------------------------------------------
-  // UART debug-boot agent (wave five): a procedural replica of the protocol
+  // UART debug-boot agent: a procedural replica of the protocol
   // cheshire's bootrom serves INSIDE its passive preboot loop (uart_debug.c;
   // the VIP counterpart is vip_cheshire_soc's uart_debug_* family). Wire
   // format 8N1, bytes LSB-first; multi-byte fields little-endian. The agent
@@ -758,13 +758,13 @@ module vip_ollivander_soc #(
   endtask
 
   // ==========================================================================
-  // Serial-link agent (wip 2.1, wave two): the off-chip twin.
+  // Serial-link agent (wip 2.1): the off-chip twin.
   // ==========================================================================
   // Cheshire's shape, simplified: one class driver injects AXI transactions
   // into a mirror serial_link whose DDR pins cross-connect to the DUT's; a
   // random slave terminates the opposite direction. The class constructs and
   // the queue-typed argument below are DELIBERATE: both were probed clean
-  // under an unthreaded and cache-free build on 2026-08-22, retiring the
+  // under an unthreaded and cache-free build, retiring the
   // poison-era belief that they could not be used (the procedural JTAG
   // driver above predates that finding and stays as is - it works).
   if (HasSlink) begin : gen_slink_agent
@@ -902,8 +902,7 @@ module vip_ollivander_soc #(
       // driver's first ready sample lands TT after the CALL time, and a call
       // from an unaligned instant lets that window straddle the very edge
       // where this link's Mealy ready consumes the beat and falls - the
-      // driver then waits forever for a handshake that already happened
-      // (one lost afternoon, 2026-08-22).
+      // driver then waits forever for a handshake that already happened.
       @(posedge clk_o);
       ax.ax_addr  = addr[SlinkAxiAddrWidth-1:0];
       ax.ax_len   = beats.size() - 1;
@@ -965,8 +964,8 @@ module vip_ollivander_soc #(
         automatic int unsigned words_left = (num_words - w + 1) >> 1;
         automatic int unsigned n_beats    = (words_left < page_left) ? words_left : page_left;
         // 1 KiB bursts, cheshire upstream's own SlinkBurstBytes cap. The AXI4
-        // maximum of 256 beats is PROVEN on both families (dedicated probe,
-        // 2026-08-22: full offload to EOT on super_crux and noc_isle) - the
+        // maximum of 256 beats is PROVEN on both families (dedicated probe:
+        // full offload to EOT on super_crux and noc_isle) - the
         // one stall ever observed at this line was the twin-geometry framing
         // skew plus the SBA-eaten bring-up, never the burst length. 128 is
         // kept anyway as deliberate practice parity with upstream's VIP.

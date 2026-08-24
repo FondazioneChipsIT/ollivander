@@ -26,6 +26,23 @@ for comp in all_comps:
             base_addr = hex(b_addr) if isinstance(b_addr, int) else str(b_addr)
             size = hex(b_size) if isinstance(b_size, int) else str(b_size)
         break
+
+# AUTONOMOUS BOOT: the bootrom's GPT flow loads the firmware into
+# the host's INTERNAL scratchpad and jumps there, so the image must be linked
+# for that memory - located by the host's contract (BootSpmOffset/Size, the
+# JtagScratchOffset convention), not by any component of the parent map.
+boot_mode = (config.get("testbench", {}) or {}).get("boot_mode", "force")
+if boot_mode in ("spi_flash", "i2c_eeprom"):
+    host_fixed = comp_info.get(config.host.name, {}).get("fixed_params", {})
+    spm_off  = int(str(host_fixed.get("BootSpmOffset", "0")).strip('"\''))
+    spm_size = int(str(host_fixed.get("BootSpmSize", "0")).strip('"\''))
+    host_slvs = (config.host.interfaces or {}).get("axi_slave", [])
+    if isinstance(host_slvs, dict):
+        host_slvs = [host_slvs]
+    hb = host_slvs[0].get("base_addr", 0) if host_slvs else 0
+    hb = int(hb, 0) if isinstance(hb, str) else int(hb)
+    base_addr = hex(hb + spm_off)
+    size = hex(spm_size)
 %>
 OUTPUT_ARCH("riscv")
 ENTRY(_start)

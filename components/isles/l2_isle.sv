@@ -92,7 +92,7 @@ module l2_isle
   input  logic                            clk_i            ,
   input  logic                            rst_ni           ,
   input  logic                            pwr_on_rst_ni    ,
-  // INSTANCE IDENTITY AS A PORT (2026-08-20, for uniformity with cluster_subtile).
+  // INSTANCE IDENTITY AS A PORT (for uniformity with cluster_subtile).
   // A differing parameter value is a distinct module for Verilator, so a memory
   // instantiated N times would be elaborated and compiled N times; nothing here
   // needs the base at elaboration time - the mapping rules below are DRIVEN into
@@ -201,7 +201,7 @@ typedef struct packed {
 // low half and the linear high half of that port's sub-window - emitted by a
 // generate loop: the historical hand-written 4-entry literal hardcoded NumPort == 2
 // and refused to elaborate the single-port instance crux_mini introduced
-// (vopt-13174, 2026-08-23); at two ports the loop reproduces the same four rules.
+// (vopt-13174); at two ports the loop reproduces the same four rules.
 map_rule_t [NumRules-1:0] MappingRules;
 for (genvar p = 0; p < NumPort; p++) begin : gen_map_rules
   logic [63:0] port_interl_base, port_non_interl_base;

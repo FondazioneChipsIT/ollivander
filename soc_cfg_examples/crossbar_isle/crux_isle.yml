@@ -251,7 +251,9 @@ components:
     interfaces:
       axi_slave:
         - ports: 2             # Automatically splits the crossbar routing into an array of 2 AXI ports
-          base_addr: 0x88000000
+          # Inside the host's CIE window [0x7800_0000, 0x8000_0000), astral's own
+          # L2 base (see crux.yml for the shadowing rationale).
+          base_addr: 0x78000000
           size: 0x00200000
           sync_domain: false
       regbus_slave:
@@ -356,7 +358,7 @@ components:
       # CLINT's mtip is X while Cheshire is still booting and permanently 1 afterwards
       # (mtimecmp resets to 0), which would break the parking either way. The offload
       # model wakes the cluster exclusively through its internal CLINT (same rationale
-      # as crux, 2026-08-07).
+      # as crux).
       mtip_i: { source: "none" }
       # 'none' explicitly ties the interrupt input to 0 to avoid floating wires
       meip_i: { source: "none" }
@@ -466,7 +468,7 @@ software_stack:
     baudrate: 2000000
 
 # Simulator flags & options (power-user section, docs/soc_configuration_guide.md ch. 6).
-# The crossbar family runs Verilator single-threaded ON MEASUREMENT (2026-08-21, 2x2 on
+# The crossbar family runs Verilator single-threaded ON MEASUREMENT (2x2 on
 # this very project): four threads cost 8m39s against 7m35s without, because the design
 # is eight mostly single-instance isles - boxed blocks evaluate inline on the calling
 # thread, so there is nothing to spread, only synchronization to pay. The mesh family

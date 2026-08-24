@@ -14,7 +14,7 @@ class UniqueKeySafeLoader(yaml.SafeLoader):
     Plain safe_load silently keeps the LAST value of a duplicated key, which is never
     what the file means and disables the earlier entry without a trace: the spatz
     registry entry carried two 'pre_build_cmds' keys and one of its patch scripts
-    stopped running the day the second was added (found 2026-08-07). Used for every
+    stopped running the day the second was added. Used for every
     YAML file Ollivander owns - the dependency registry, the environment overlays and
     the SoC descriptions; files produced by other tools (Bender manifests and locks)
     keep the permissive loader, since their content is not ours to police.

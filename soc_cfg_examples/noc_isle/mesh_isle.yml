@@ -158,7 +158,7 @@ host:
   parameters:                 # Renamed from system_config to match HW-First semantics
     Vga: false                # Aligned standard Cheshire parameter name
     # The serial link must be BUILT, not merely exported: preload_mode 'slink'
-    # streams the boot image through it (wip 2.1, wave two), and pins over a
+    # streams the boot image through it (wip 2.1), and pins over a
     # stubbed-out link are dead wires the generator now refuses.
     SerialLink: true
     # The CIE window is CVA6's cached+executable slice of the external space:
@@ -275,10 +275,10 @@ components:
 testbench:
   # Boot through the VIP's JTAG agent instead of hierarchical forces (wip 2.1).
   boot_mode: jtag
-  # The image streams through the serial link's AXI at bus speed (wave two of
-  # wip 2.1): bring-up and handoff stay on the JTAG path above, only the
+  # The image streams through the serial link's AXI at bus speed (wip 2.1):
+  # bring-up and handoff stay on the JTAG path above, only the
   # payload reroutes. This also frees the eight preloaded L2 tiles for
-  # Verilator's hierarchical blocks - the measured ~20% this wave collects.
+  # Verilator's hierarchical blocks - a measured ~20% gain.
   preload_mode: slink
   # Only the boot-critical domains are enabled by the testbench; the firmware
   # ungates each target when it needs it and powers it down afterwards.

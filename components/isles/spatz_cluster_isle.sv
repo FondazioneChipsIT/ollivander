@@ -181,15 +181,15 @@ module spatz_cluster_isle
   // (where the cores boot, see BootAddr at the instantiation below) and the SoC boot
   // memory (where the offload payload lands). The value this isle shipped with was
   // carfield's L2 window (48'h78000000) - a fossil of the wrapper's origin that
-  // nothing could expose until 2026-08-07, the first time code ever ran on these
-  // cores in an Ollivander SoC: with no fetchable region, pc_q never left X. Like the
+  // nothing could expose before code ever ran on these cores in an Ollivander
+  // SoC: with no fetchable region, pc_q never left X. Like the
   // cluster base and hart base, these are hardwired to the crux placement until the
   // isle is parametrized (see wip).
   function automatic snitch_pma_pkg::rule_t [snitch_pma_pkg::NrMaxRules-1:0] get_cached_regions();
     automatic snitch_pma_pkg::rule_t [snitch_pma_pkg::NrMaxRules-1:0] cached_regions;
     cached_regions = '{default: '0};
     cached_regions[0] = '{base: 48'h51030000, mask: 48'hfffffffff000}; // internal bootrom, 4 KB
-    cached_regions[1] = '{base: 48'h88000000, mask: 48'hffffffe00000}; // boot memory (L2), 2 MB
+    cached_regions[1] = '{base: 48'h78000000, mask: 48'hffffffe00000}; // boot memory (L2), 2 MB - astral's own base
     return cached_regions;
   endfunction
 

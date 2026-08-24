@@ -21,7 +21,7 @@ is not a reason to keep feeding either tool sources nobody uses.
 2/3. The tcdm_interface and mem_interface verification clusters: a driver/monitor
    class package plus the testbenches that use it. Driver and consumers are removed
    TOGETHER - removing the package alone breaks QuestaSim, which still compiles the
-   consumers (learned the hard way on 2026-08-06).
+   consumers (learned the hard way).
 4. The snitch_ssr fixtures and testbenches, referenced by nothing.
 5. The tcdm interconnect testbench, same.
 

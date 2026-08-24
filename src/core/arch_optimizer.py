@@ -165,8 +165,8 @@ def autoconfigure_host(soc_config):
     # Inject standard RegBus types to prevent SystemVerilog from flattening
     # parameterized structs into bits.
     #
-    # NoC ONLY. On a NoC the host is reached through its TILE wrapper, which since
-    # 2026-08-17 resolves these package types at the isle instantiation instead of
+    # NoC ONLY. On a NoC the host is reached through its TILE wrapper, which
+    # resolves these package types at the isle instantiation instead of
     # re-exposing them as `parameter type` (a typed wrapper cannot be a Verilator
     # hier_block, and six pass-through types were keeping the host tile inlined in
     # the top unit). Injecting them here anyway would make the top override

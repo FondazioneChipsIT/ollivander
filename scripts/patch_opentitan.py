@@ -19,7 +19,7 @@ Two repair families:
 2. A dead verification cluster in the 'test' target: the astral testbenches, their
    tb/util helpers, the vendored jtag_test (riscv-dbg carries its own copy, which is
    the one its testbenches use) and pad_alsaqr, which only those testbenches
-   instantiate. Verified inert on 2026-08-06: nothing outside the cluster references
+   instantiate. Verified inert: nothing outside the cluster references
    any of them, and the only external consumer of tb/util/uart.sv is pulp_cluster's
    own tb cluster, removed in the same pass (patch_pulp_cluster.py). Removed for BOTH
    simulators - Verilator refuses part of it, QuestaSim merely tolerates all of it,

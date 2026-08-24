@@ -619,7 +619,7 @@ class Component(StrictModel):
 # ==============================================================================
 # SIMULATION FLAGS & OPTIONS (power-user section)
 # ==============================================================================
-# Design decided on 2026-08-21. The section is for users who know the tools:
+# The section is for users who know the tools:
 # every value is RAW (the text the tool receives - no abstraction layer that
 # would have to track the tools' own option sets), user lists are ADDITIVE on
 # top of the structural sets Ollivander derives (they cannot remove a guard;
@@ -633,7 +633,7 @@ class Component(StrictModel):
 # coupled pairs - `threads` is the one visible knob of a coupled pair, and the
 # generator emits the -DVL_TIME_CONTEXT that MUST accompany --threads (or
 # neither, for 0/1): the two were measured broken in every mixed combination
-# (see wip 5.2, the 2x2 of 2026-08-21).
+# (see wip 5.2).
 
 class SimulationFirmware(StrictModel):
     """Flags of the firmware build (generated sw/Makefile), one riscv-gcc for all."""
@@ -867,13 +867,16 @@ def validate_cross_references(config: OllivanderConfig):
     # testbench agent can make (an 'if (idcode != expected)' with X compares to X, which is not
     # true). This check turns hours of waveform archaeology into one generation-time message.
     boot_mode = (config.testbench or {}).get('boot_mode', 'force')
-    if boot_mode not in ('force', 'jtag', 'slink', 'uart'):
+    if boot_mode not in ('force', 'jtag', 'slink', 'uart', 'spi_flash', 'i2c_eeprom'):
         errors.append(f"[testbench] boot_mode '{boot_mode}' is not implemented: choose 'force'"
                       f" (hierarchical forces, the default), 'jtag' (the debug-module boot,"
                       f" with slink available as the image/control transport), 'slink'"
                       f" (the self-sufficient serial-link boot - no TAP is ever touched) or"
                       f" 'uart' (the bootrom's own serial debug server - no debugger, no"
-                      f" link partner, the poorest agent silicon can count on).")
+                      f" link partner, the poorest agent silicon can count on) or one of the"
+                      f" AUTONOMOUS modes 'spi_flash' / 'i2c_eeprom' (the bootrom fetches the"
+                      f" GPT image from a device model by itself - the"
+                      f" finished-product-on-a-bench scenario).")
     if boot_mode == 'jtag':
         if 'jtag' not in (config.host.export_interfaces or []):
             errors.append(f"[testbench] boot_mode 'jtag' requires the host ('{config.host.name}')"
@@ -894,7 +897,7 @@ def validate_cross_references(config: OllivanderConfig):
                           f" debug module initialized the image has exactly one road, and mixing"
                           f" the hierarchical readmemh into the slink-only boot is not a covered"
                           f" configuration.")
-    # The UART debug boot (wave five): the bootrom's serial debug server does
+    # The UART debug boot: the bootrom's serial debug server does
     # bring-up writes, image upload and the EXEC jump on one line - the image
     # therefore has exactly one road here too. The ROM pins the protocol at
     # 115200, so this is the SLOW road: pair it with a small project (the
@@ -907,6 +910,22 @@ def validate_cross_references(config: OllivanderConfig):
         if (config.testbench or {}).get('preload_mode', 'readmemh') != 'uart':
             errors.append(f"[testbench] boot_mode 'uart' requires preload_mode 'uart': the"
                           f" debug server is the only transport this boot initializes.")
+    # The autonomous flash boot: no agent drives the chip - the bench preloads
+    # a behavioral flash model (named by the host's contract) and the bootrom
+    # does the rest. The image is the GPT the sw flow builds, so the preload
+    # machinery of the other modes has no role here.
+    if boot_mode in ('spi_flash', 'i2c_eeprom'):
+        _autoboot_if = 'spi' if boot_mode == 'spi_flash' else 'i2c'
+        if _autoboot_if not in (config.host.export_interfaces or []):
+            errors.append(f"[testbench] boot_mode '{boot_mode}' requires the host"
+                          f" ('{config.host.name}') to list '{_autoboot_if}' in"
+                          f" export_interfaces: without it the boot device model has"
+                          f" no pins to sit on.")
+        if (config.testbench or {}).get('preload_mode', 'readmemh') != 'readmemh' \
+                or (config.testbench or {}).get('preload_memories'):
+            errors.append(f"[testbench] boot_mode '{boot_mode}' takes no preload: the image"
+                          f" travels inside the GPT the sw flow builds and the bootrom"
+                          f" fetches it by itself - drop preload_mode and preload_memories.")
 
     # The system-bus load travels the debug module, which only the JTAG bring-up sequence
     # initializes: under force boot no TAP driver is even instantiated, so a 'jtag' preload
@@ -1027,7 +1046,7 @@ _ROOT_BLOCK_SPEC = {
                   # Each preload region names the target instance (resolved to its
                   # bus base address for the architected modes), the image file,
                   # and optionally the image format: 'hex' (default, the flat
-                  # objcopy output) or 'elf' (wip 2.1 wave two) - the testbench
+                  # objcopy output) or 'elf' - the testbench
                   # then reads the file through the vendored elfloader DPI
                   # (read_elf/get_section/read_section) and streams every
                   # loadable segment through the configured transport, taking
@@ -1497,7 +1516,7 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
                         break
             # Multi-instance components: a placement box generates an ARRAY of
             # instances at 'size_per_instance' strides, and the offload firmware
-            # drives every one of them in parallel (decided 2026-08-10). Anything
+            # drives every one of them in parallel. Anything
             # single-instance keeps num_instances = 1 and the stride at zero.
             num_inst = 1
             placement = comp.placement or {}

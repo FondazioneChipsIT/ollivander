@@ -81,6 +81,53 @@ module cheshire_isle
   // Expected TAP IDCODE, checked by the VIP's jtag_init liveness handshake:
   // Cheshire's own '{version: 4'h1, part_num: 16'hc5e5, manufacturer: 11'h6d9, _one: 1}.
   localparam longint unsigned JtagIdCode = 64'h1c5e_5db3,
+  // Autonomous-boot contract: the bootrom's GPT flow loads the
+  // ZSL-type partition into the host's INTERNAL scratchpad and jumps there,
+  // so the generated sw flow must link the autonomous firmware for that
+  // memory - whose location only the host knows (the parent map treats this
+  // window as opaque). Offsets from the host's window base, same convention
+  // as JtagScratchOffset. Authority: cheshire's own linkage (spm at
+  // 0x1000_0000, length 0x10000, sw/link/cheshire_addrs.ldh) and params.h
+  // (__BOOT_SPM_MAX_LBAS = 96 -> the GPT payload may not exceed 48 KiB).
+  localparam bit HasAutonomousBoot = 1,
+  localparam longint unsigned BootSpmOffset = 64'h1000_0000,
+  localparam longint unsigned BootSpmSize   = 64'h0001_0000,
+  // The external memory DEVICES the bootrom can boot from are host-owned
+  // knowledge too: the behavioral models ship with the host's own dependency
+  // (cheshire's Bender graph carries them under its simulation target), and
+  // the GENERATED TESTBENCH instantiates the named model - never the VIP,
+  // which stays IP-agnostic by charter. Strings name the model module and
+  // its preload-file parameter: the image MUST go through the model's own
+  // UserPreload mechanism, because the model blank-fills its array from an
+  // initial block and a testbench-side $readmemh races it at time 0, losing
+  // silently (the image reads back all-FF). The integers are wiring
+  // facts of the bootrom (which chip select it boots from, which strap
+  // value selects each source - cheshire_bootrom.c's own bootmode case).
+  localparam string       BootSpiFlashModel   = "s25fs512s",
+  localparam string       BootSpiFlashFileParam = "mem_file_name",
+  localparam int unsigned BootSpiFlashCs      = 1,
+  localparam int unsigned BootModeSpiFlash    = 2,
+  localparam string       BootI2cEepromModel  = "M24FC1025",
+  // The EEPROM model is the flash's opposite: it has NO native preload and
+  // never initializes its array, so the contract names the ARRAY (for the
+  // testbench-side fill+readmemh, race-free there) instead of a file
+  // parameter. Count is upstream's fixture fact: two chips on the bus, the
+  // index on A0, the image on chip 0.
+  localparam string       BootI2cEepromMemPath = "MemoryBlock",
+  localparam int unsigned BootI2cEepromCount  = 2,
+  localparam int unsigned BootModeI2cEeprom   = 3,
+  // The partition type GUID the bootrom's GPT scan boots from (params.h's
+  // __BOOT_ZSL_TYPE_GUID, sgdisk spelling): the generated sw flow stamps it
+  // on the firmware partition of the boot image.
+  localparam string       BootZslTypeGuid     = "0269B26A-FD95-4CE4-98CF-941401412C62",
+  // Image geometry, bootrom knowledge too (upstream's own test-image recipe):
+  // the LBA the firmware partition starts at and the padding the image is
+  // sized with. The generated sw flow renders its sgdisk/dd recipe FROM these
+  // - hardcoding them in the generic template would leak this host's layout
+  // into every project's build, the same class of leak as a model name in
+  // the VIP.
+  localparam int unsigned BootImgPayloadLba   = 42,
+  localparam int unsigned BootImgPadLbas      = 85,
   // ForceBootPath: Hierarchical path from host wrapper top to the entry point scratch register
   localparam string ForceBootPath = "i_cheshire_soc.i_regs.field_storage.scratch[0].scratch.value",
   // ForceBootVal: Force value template (32-bit hex)
@@ -99,21 +146,21 @@ module cheshire_isle
   parameter int unsigned SpihNumCs          = 1,
   parameter int unsigned SlinkNumChan       = 1,
   parameter int unsigned SlinkNumLanes      = 8,
-  // Serial-link preload contract (wip 2.1, wave two): the VIP instantiates an
+  // Serial-link preload contract (wip 2.1): the VIP instantiates an
   // off-chip twin of this host's serial link, and the twin's AXI geometry must
   // mirror the DUT side's EXACTLY or the wire framing disagrees. Declared as
   // host-owned knowledge, the same pattern as the Jtag* block; the id
   // width repeats the expression the Cfg assembly below uses for AxiMstIdWidth.
   // Tied to the SerialLink feature switch above: exporting the pins of a link
-  // Cheshire was built without would hand the testbench dead wires - found
-  // the hard way on 2026-08-22, when the first slink pilot's driver waited
-  // forever for credits from a stubbed-out receiver.
+  // Cheshire was built without would hand the testbench dead wires - the
+  // symptom is a driver waiting forever for credits from a stubbed-out
+  // receiver.
   localparam bit HasSlinkPreload = SerialLink,
   localparam int unsigned SlinkAxiAddrWidth = AxiAddrWidth,
   localparam int unsigned SlinkAxiDataWidth = AxiDataWidth,
   localparam int unsigned SlinkAxiUserWidth = AxiUserWidth,
   localparam int unsigned SlinkAxiIdWidth   = (AxiOutIdWidth > 0 && AxiOutIdWidth <= 3) ? AxiOutIdWidth : 3,
-  // External-master id-width contract (wip 2.1 wave two, latent-truncation
+  // External-master id-width contract (wip 2.1, latent-truncation
   // fix): the internal crossbar prepends the ORIGINATING MASTER's index to
   // every outgoing id, so the external id width is the effective master id
   // width plus clog2 of the master count - and the count GROWS with feature
@@ -133,7 +180,7 @@ module cheshire_isle
   // this expression honest against cheshire_pkg::gen_axi_in forever.
   // NOTE: single line on purpose - the generator's header parser captures a
   // fixed_param's value up to the end of ITS line, so a wrapped expression
-  // reaches the resolver truncated (found the hard way, mesh pilot 2026-08-22).
+  // reaches the resolver truncated, and the width contract silently degrades.
   localparam int unsigned NumAxiInMasters  = NumCores + 1 + Dma + SerialLink + Vga + 1 + AxiNumMstAsync + AxiNumMstSync,
   localparam int unsigned AxiExtOutIdWidth = ((AxiOutIdWidth > 0 && AxiOutIdWidth <= 3) ? AxiOutIdWidth : 3) + $clog2(NumAxiInMasters),
   parameter int unsigned VgaRedWidth        = 5,
@@ -151,7 +198,14 @@ module cheshire_isle
   // high must cover exactly that memory here and nothing more: anything else in
   // the window becomes CACHED for the host, and polling device memory (e.g. the
   // offload return slots in a cluster TCDM) through a cache spins on a stale
-  // line forever. Defaults are the upstream DefaultCfg values.
+  // line forever. Fleet practice: EXTERNAL memories live BELOW
+  // 0x8000_0000 inside the CIE window (Cva6ExtCieOnTop=1, astral's shape), and
+  // this window either backs a real DRAM path (the hyperbus llc_port) or is
+  // sized exactly to the memory it serves (super_mesh) - a window wider than
+  // its backing memory also SHADOWS every crossbar component mapped inside it
+  // in the internal decode (two rules match, and only the decode loop's
+  // last-match order routes correctly). Defaults are the upstream
+  // DefaultCfg values.
   parameter longint unsigned LlcOutRegionStart = 64'h8000_0000,
   parameter longint unsigned LlcOutRegionEnd   = 64'h1_0000_0000,
   // Outstanding transaction limits for AXI isolators

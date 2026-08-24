@@ -1,22 +1,20 @@
 # ==============================================================================
-# OLLIVANDER UNIFIED SoC ARCHITECTURE SCHEMA - crux_mini CONFIGURATION
+# OLLIVANDER UNIFIED SoC ARCHITECTURE SCHEMA - crux_micro CONFIGURATION
 # ==============================================================================
-# The smallest SoC of the example fleet, and deliberately so: a bare
-# Cheshire host plus one L2 memory, nothing else. It
-# serves three purposes at once:
-#   - the getting-started example: every block below is the minimum a real
-#     project needs, with none of the optional machinery;
-#   - the first regression of the generator's near-empty configuration
-#     space (no clusters, no gated domains, no control groups, NO padframe -
-#     phases 7 and 8 are skipped entirely, standalone variant of the path
-#     the macro projects exercise);
-#   - the fleet's fast vehicle for boot-road testing: light enough that
-#     slow transports (the UART debug boot) stay affordable.
+# The fleet's AUTONOMOUS-BOOT witness (wave six, 2026-08-24): crux_mini minus
+# the debugger. The bootrom fetches the firmware BY ITSELF from an SPI NOR
+# flash model - GPT scan, load of the ZSL partition into the host's internal
+# scratchpad, jump - and the bench only preloads the device model and waits
+# for the end-of-test byte. This is the finished-product-on-a-bench scenario:
+# no JTAG export, no preload, no external agent of any kind. It is also the
+# first project born with the reference-coherent memory map: the L2 lives
+# inside the host's CIE window below 0x8000_0000 (astral's shape), not parked
+# in the LlcOutRegion.
 # ==============================================================================
 
 project:
-  name: "crux_mini"
-  description: "Minimal Cheshire SoC: one host, one memory, no padframe"
+  name: "crux_micro"
+  description: "Autonomous-boot Cheshire SoC: no debugger, no preload, no padframe"
   author: "Ollivander Generator"
   vendor: "Chips-IT"
   library: "SoC"
@@ -55,8 +53,7 @@ system_settings:
 # ------------------------------------------------------------------------------
 # 3. CLOCK & RESET DOMAINS
 # ------------------------------------------------------------------------------
-# No on-chip clock generators (the testbench drives the clocks directly, the
-# same shape the mesh family uses); two domains, neither gated nor divided.
+# Same shape as crux_mini: no on-chip generators, two ungated domains.
 clock_tree:
   generators: 0
   domains:
@@ -86,9 +83,7 @@ system_controller:
   jedec_id: 0x00000000
   clk_gen_status_regs: false
 
-# NOTE: no 'padframe' block, on purpose. The schema makes it optional; without
-# it the generator skips Padrick and the chip wrapper (phases 7 and 8) and the
-# project stops at the SoC top - which is also all the testbench instantiates.
+# NOTE: no 'padframe' block, on purpose - same rationale as crux_mini.
 
 # ------------------------------------------------------------------------------
 # 5. HOST SYSTEM (Manager)
@@ -101,9 +96,10 @@ host:
   isa: "rv64imafdc_zifencei"
   abi: "lp64d"
   cmodel: "medany"
-  # uart carries the console (and the boot); jtag is the
-  # architected boot and debug road.
-  export_interfaces: ["jtag", "uart"]
+  # uart carries the console (and the end-of-test byte); spi carries the boot
+  # flash. NO jtag: an autonomous product needs no debugger, and dropping the
+  # export is the point of this project.
+  export_interfaces: ["uart", "spi"]
   interfaces:
     axi_master: true
     axi_slave:
@@ -115,15 +111,17 @@ host:
     RtcFreq: 1000000
     Bootrom: true
     Uart: true
-    # Everything optional is off: this host is the minimum that boots.
     I2c: false
-    SpiHost: false
+    # The flash boots from chip select 1 (the host contract's BootSpiFlashCs),
+    # so the SPI master needs two chip selects.
+    SpiHost: true
+    SpihNumCs: 2
     Dma: false
     SerialLink: false
     Vga: false
     # The CIE window [0x7800_0000, 0x8000_0000): the DESIGNED way to make the
-    # external L2 cached+idempotent+executable for CVA6 (fleet practice;
-    # astral's own values).
+    # external L2 cached+idempotent+executable for CVA6 (fleet practice since
+    # wave six; astral's own values).
     Cva6ExtCieOnTop: true
     Cva6ExtCieLength: 0x08000000
   interrupts:
@@ -139,7 +137,7 @@ host:
 # ------------------------------------------------------------------------------
 components:
   - name: "l2_shared_memory"
-    description: "Level 2 shared SRAM with ECC - the boot and work memory"
+    description: "Level 2 shared SRAM with ECC - the work memory"
     type: "l2_isle"
     clock_domain: "host"
     system_config:
@@ -149,7 +147,7 @@ components:
       # both sides run on the same clock here, the CDC just adds latency.
       axi_slave:
         # Inside the host's CIE window [0x7800_0000, 0x8000_0000), astral's own
-        # L2 base (see crux.yml for the shadowing rationale).
+        # L2 base (see crux.yml for the wave-six shadowing rationale).
         - base_addr: 0x78000000
           size: 0x00100000
           sync_domain: false
@@ -162,23 +160,18 @@ components:
 # 7. TESTBENCH
 # ------------------------------------------------------------------------------
 testbench:
-  # The UART debug boot: the bootrom's own serial debug server
-  # receives the image and the EXEC jump - no debugger, no link partner. This
-  # is the fleet's uart representative, and the reason this project is small:
-  # the protocol runs at the ROM-baked 115200, so the upload cost is pure
-  # simulated time and only a light SoC keeps it affordable.
-  boot_mode: uart
-  preload_mode: uart
+  # AUTONOMOUS boot (wave six): the strap selects the SPI-flash source, the
+  # generated testbench instantiates the flash model the host contract names,
+  # preloaded with the GPT image the sw flow builds, and the bootrom does the
+  # rest. NO preload_mode / preload_memories: the image travels inside the
+  # boot device, and the firmware is linked for the host's internal
+  # scratchpad (BootSpmOffset/Size), not for the L2.
+  boot_mode: spi_flash
   boot_timeout_ns: 10000000
   boot_timeout_fast_ns: 2000000
-  # The uart road is pure simulated time: ~29 ms of protocol upload at the
-  # ROM-baked 115200 plus the console output. Cheap in wall clock on this SoC
-  # (~146 us/s measured while the design idles on UART bits), but the deadline
-  # must cover it.
-  sim_timeout_ns: 50000000
-  preload_memories:
-    - instance: "i_l2_shared_memory"
-      file: "generated/sw/{test_app}.hex"
+  # The measured flash boot reaches end-of-test at 4.86 ms simulated (63 s of
+  # wall clock); 20 ms gives a 4x margin without letting a silent hang run long.
+  sim_timeout_ns: 20000000
 
 # ------------------------------------------------------------------------------
 # 8. SOFTWARE STACK & FIRMWARE
@@ -189,11 +182,7 @@ software_stack:
   test_app:
     name: "hello_world"
     auto_generate_c: true
-    # ONE baudrate for console and boot protocol, deliberately: the debug
-    # server's EXEC ACK is still shifting out at the ROM-baked 115200 when the
-    # firmware starts, and a firmware that immediately reprograms the divisor
-    # to a faster console corrupts that in-flight byte (0xb0 instead of the
-    # ACK). The references never meet this: their console baud
-    # EQUALS the boot baud - so does this project's. Cost: ~3.5 ms simulated
-    # for the hello-world output, cheap on a SoC this small.
+    # Console-only line (the boot needs no UART): the ROM-independent choice
+    # would be free, but 115200 keeps the console timing identical to the
+    # rest of the mini class.
     baudrate: 115200

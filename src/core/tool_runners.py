@@ -206,7 +206,7 @@ def _pack_hwif_pkg(pkg_sv: Path):
     tile as a port. When that tile is a hierarchical block, V3ProtectLib must build the
     DPI marshalling of every port of the child library, and on an unpacked struct port
     it segfaults instead of erroring (Verilator 5.050, SIGSEGV in
-    V3Task::assignInternalToDpi via ProtectVisitor::handleOutput, met 2026-08-17 on
+    V3Task::assignInternalToDpi via ProtectVisitor::handleOutput, seen on
     mesh_manager_tile). The hwif package contains hardware-only members (logic vectors
     and nested structs of them), so the packed layout is bit-identical and every
     consumer keeps accessing fields by name; unlike the storage transform, ALL typedefs
@@ -243,7 +243,7 @@ def run_peakrdl_sysregs(top_level_module_name, reg_dir: Path, hw_dir: Path):
     the full run in Phase 6 behind the Bender fetch). It exists so the
     top-level render can read the REAL s_apb_paddr width from the artifact
     instead of assuming 8: the assumption held on every fleet project by
-    coincidence and broke on crux_mini's 16-byte register file (2026-08-23).
+    coincidence and broke on crux_mini's 16-byte register file.
     Phase 6 regenerates the same file identically (and applies the Verilator
     packing passes); this pass deliberately skips them.
     """

@@ -33,7 +33,7 @@ module sram_isle
   // to make the generator fill it PER INSTANCE, and a differing parameter value
   // is a distinct module for Verilator: eight identical memory tiles became eight
   // hierarchical specializations, verilated and compiled eight times over
-  // (measured on noc, 2026-08-20). An unused parameter is not free.
+  // (measured on noc). An unused parameter is not free.
   parameter int unsigned SramDataWidth  = 128,
   parameter int unsigned SramNumWords   = 1024,
   parameter type         axi_req_t      = logic,
