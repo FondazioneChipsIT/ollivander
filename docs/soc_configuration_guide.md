@@ -389,7 +389,7 @@ Instructs the simulation environment on how to initialize the SoC. Since Ollivan
 | Field                       | Type    | Description                                                    |
 | :-------------------------- | :------ | :------------------------------------------------------------- |
 | `preload_memories`          | List    | Memory regions to initialize with the firmware image.           |
-| `boot_mode`                 | String  | How the testbench boots the host: `"force"` (default), `"jtag"` or `"slink"`. See section 4.1. |
+| `boot_mode`                 | String  | How the testbench boots the host: `"force"` (default), `"jtag"`, `"slink"` or `"uart"`. See section 4.1. |
 | `preload_mode`              | String  | How the image reaches the memories: `"readmemh"` (default), `"jtag"` or `"slink"`. See section 4.2. |
 | `preload_verify`            | Boolean | `jtag` preload only: re-read and compare the whole image (default `false`). See section 4.2. |
 | `elf_max_section_bytes`     | Integer | Capacity of the static ELF section buffer (default 4 MiB). See section 4.2. |
@@ -416,7 +416,7 @@ testbench:
       file: "generated/sw/hello_world.hex"
 ```
 
-### 4.1 Boot modes: `force`, `jtag` and `slink`
+### 4.1 Boot modes: `force`, `jtag`, `slink` and `uart`
 
 `boot_mode` selects how the generated testbench brings the SoC out of reset and starts the firmware. It is one of two independent axes: how the *image* reaches the memories is `preload_mode` (section 4.2), and the two compose — `jtag` boot with `readmemh` preload is a supported (and shipped) combination.
 
@@ -432,11 +432,13 @@ Requirements for `"jtag"`, both checked or supplied by the generator:
 
 *   `"slink"` is the **self-sufficient serial-link boot**: no `jtag_init`, the TAP is never touched — bring-up of the gated domains, the image and the boot handoff all ride the serial link through the VIP's twin agent. It is the exact shape of the reference testbenches' serial-link branches (cheshire's and gwaihir's `PRELMODE=1`, which never initialize JTAG), and it models a chip that needs no debugger to boot. Requirements: the host builds and exports its serial link (`SerialLink: true` plus `"slink"` in `export_interfaces`) and `preload_mode: "slink"`; the JTAG export is deliberately **not** required. The host contract block (`HasJtagBoot`, `JtagScratchOffset`) is still consulted — the handoff needs the scratch offset — but no TAP pin is driven.
 
+*   `"uart"` boots through the **bootrom's own serial debug server**: in the passive preboot loop the ROM listens on the UART alongside the scratch registers, and the VIP's uart-boot agent speaks its protocol — ACK challenge, block writes of the image, then an EXEC command that jumps the host straight to the entry (no scratch-register handoff exists on this road). It models the poorest external agent silicon can count on — no debugger, no link partner, one serial line — and it is a road **neither reference exercises in regression** (gwaihir's CI disabled it for cost on their mesh). The protocol runs at the baudrate **baked into the ROM** (115200 through the integer divisor), so the upload is pure simulated time: pair this mode with a small project (`crux_mini` is the fleet's representative, measured at ~146 us/s while the design idles on UART bits — about four wall-clock minutes for a hello-world boot), and keep `software_stack.baudrate` at 115200 — a firmware that immediately reprograms the divisor to a faster console corrupts the EXEC acknowledge still shifting out at the ROM's rate. Requirements: `"uart"` in `export_interfaces` and `preload_mode: "uart"`.
+
 The `jtag` boot composes with the `slink` *preload* into a hybrid the references do not have: the TAP liveness check (`jtag_init`: IDCODE, dmactive, SBA readiness) still runs, keeping the debug path under per-project regression, while every write rides the link. Choose the hybrid when the chip exports JTAG anyway (the liveness comes free); choose `slink` boot for reference parity or when modeling a debugger-less bring-up.
 
-Among the example projects, four run `boot_mode: "jtag"` (`crossbar`, `noc`, `noc_isle`, `super_crossbar` — the last two as the hybrid with `preload_mode: slink`), `super_noc` runs the self-sufficient `"slink"` boot, and `crossbar_isle` and `noc_subtile` deliberately stay on `"force"`: it is the schema default and a supported feature, and it would lose regression coverage if no example exercised it.
+Among the example projects, four run `boot_mode: "jtag"` (`crossbar`, `noc`, `noc_isle`, `super_crossbar` — the last two as the hybrid with `preload_mode: slink`), `super_noc` runs the self-sufficient `"slink"` boot, `crux_mini` runs the `"uart"` debug boot, and `crossbar_isle` and `noc_subtile` deliberately stay on `"force"`: it is the schema default and a supported feature, and it would lose regression coverage if no example exercised it. Every boot mode has at least one fleet witness.
 
-### 4.2 Preload modes: `readmemh`, `jtag` and `slink`
+### 4.2 Preload modes: `readmemh`, `jtag`, `slink` and `uart`
 
 `preload_mode` selects the road the compiled image takes into the `preload_memories` regions.
 
@@ -444,11 +446,13 @@ Among the example projects, four run `boot_mode: "jtag"` (`crossbar`, `noc`, `no
 *   `"jtag"` streams the *flat* hex through the debug module's System Bus Access, from inside the JTAG boot sequence: one `sba_load` call per `preload_memories` entry, its base address resolved by the generator from the component's `axi_slave` interface, autoincrement addressing, 64-bit beats where the debug module declares them, and one sticky-error check per stream. Interleaving happens in the SoC's own decoder hardware, and the identical sequence would work against silicon. Because no dotted path reaches the DUT, the preload target stays eligible as a Verilator hierarchical block — the practical reason to choose this mode. It requires `boot_mode: "jtag"` (validated at generation time: the system bus only exists once the debug module is up).
 *   `"slink"` loads at AXI speed through the host's serial link: the VIP instantiates an off-chip twin of the host's own `serial_link` instance (same register package, so framing agrees by construction) and drives the image as AXI write bursts — 1 KiB each, cheshire upstream's own practice — through the DDR pins. In this mode *everything* rides the link: the gated-domain bring-up writes, the image, and the boot handoff, because with the serial link built into the host (`SerialLink: true`, required and validated together with the `slink` export) the debug module's SBA writes into the host's internal register path complete with an OKAY but never land — an upstream anomaly under investigation; the link's external AXI ingress reaches the same registers reliably. It requires an architected `boot_mode` — `"jtag"` (the hybrid: TAP liveness check, link transport) or `"slink"` (self-sufficient, section 4.1) — because only those arm the passive preboot loop the handoff writes into. Like `jtag`, no dotted path reaches the DUT, so every preload target stays eligible for Verilator's hierarchical blocks — on `noc_isle` this releases all eight L2 tiles at once.
 
+*   `"uart"` streams the image through the debug server's block writes (256-byte bursts, each acknowledged and closed by the protocol's own EOT byte). Available under `boot_mode: "uart"` only — the server is what that boot sequence challenges — and like the other architected roads it plants no dotted path in the DUT.
+
 With `preload_verify: true` the testbench re-reads the whole image through the same channel (`sbreadondata` streaming) and compares word by word, failing fatally on the first mismatch. It costs ~2.8x the plain load's simulated time, so the intended use is one verifying configuration in the regression fleet rather than every project. It is implemented for `jtag` only.
 
 **ELF images.** With `image: elf` on a preload region, the testbench reads the file through the vendored cheshire `elfloader` DPI (`components/tb/elfloader.cpp`, compiled unconditionally by both simulator flows) and streams **every loadable segment** through whichever transport the project configured — the loaders never learn the source format. Two things change with respect to a hex image: the **entry point comes from the ELF header at runtime** instead of the generator's map-derived literal (with a multi-segment ELF the linker owns that truth), and the sections pass through a **static staging buffer** whose capacity is the `elf_max_section_bytes` knob (default 4 MiB) — static because Verilator cannot yet pass dynamic arrays to DPI open arrays. A segment larger than the buffer stops the run with a fatal that names the knob; nothing is streamed partially. The first section's address is checked against the configured region's base with a loud message (not a fatal): an ELF may legitimately scatter loadable segments across several memories, which is precisely its advantage over the flat hex.
 
-Among the examples the two axes compose into a deliberate coverage matrix: `crossbar_isle` and `noc_subtile` stay on `readmemh` (the schema default), `mesh` runs `jtag`+hex and `crux` runs `jtag`+ELF, the serial-link trio runs `slink` — `super_noc` and `super_crux` with hex, `noc_isle` with ELF.
+Among the examples the two axes compose into a deliberate coverage matrix: `crossbar_isle` and `noc_subtile` stay on `readmemh` (the schema default), `mesh` runs `jtag`+hex and `crux` runs `jtag`+ELF, the serial-link trio runs `slink` — `super_noc` and `super_crux` with hex, `noc_isle` with ELF — and `crux_mini` runs `uart`+hex.
 
 ### 4.3 `bring_up`: how much of the SoC the testbench powers up
 

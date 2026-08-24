@@ -1,0 +1,8 @@
+# Copyright 2026 Fondazione Chips-IT.
+# Licensed under the Solderpad Hardware License, Version 0.51, see LICENSE for details.
+# SPDX-License-Identifier: SHL-0.51
+#
+
+paths:
+  # The {outdir} placeholder is dynamically replaced by the generator
+  bender_manifest: "Bender.yml"

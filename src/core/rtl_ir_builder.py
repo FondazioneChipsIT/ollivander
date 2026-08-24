@@ -125,6 +125,18 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                     inst.parameters[p] = 'AxiSlvIdWidth'
                 else:
                     inst.parameters[p] = 'AxiIdWidth'
+            elif p == 'NumPort':
+                # The AXI slave port count this instance actually exposes, from the
+                # description's 'ports' entry (default 1). Never driven before:
+                # every fleet project's multi-port memory happened to match the
+                # header default (2 on l2_isle), so the omission was invisible
+                # until crux_mini's single-port memory elaborated with DOUBLED
+                # formal CDC widths against single-element actuals (2026-08-23).
+                slvs = (comp.interfaces or {}).get('axi_slave', [])
+                if isinstance(slvs, dict):
+                    slvs = [slvs]
+                if slvs:
+                    inst.parameters[p] = slvs[0].get('ports', 1)
             # TYPE parameters: filled by the shared role-based helper above, so the
             # isle-staging pass (wip 5.1 hier-block work) computes the same answer.
             elif (type_fill := get_type_param_fill(p, comp, soc_config, pkg)) is not None:

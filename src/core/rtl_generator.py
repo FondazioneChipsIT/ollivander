@@ -248,7 +248,49 @@ class RTLGenerator:
         and parameters, enforcing the "Hardware-First" philosophy.
         """
         hw_dir = self.env.outdir_path / self.env.hw_sub
-        
+
+        # SYS-REGS FIRST (the s_apb_paddr width contract, 2026-08-23): the tile
+        # wrappers rendered in this phase instantiate the System Controller's
+        # regblock, whose APB address width only PeakRDL knows - it derives it
+        # from the register map size. The RDL is pure configuration, so it can
+        # be rendered and compiled BEFORE anything else; the parsed width then
+        # feeds the tile template here and the top template in Phase 3.
+        # DELIBERATELY NO FALLBACK: the predecessor of this pass fell back to a
+        # guessed width silently and stayed dead for weeks because the guess
+        # matched the fleet by coincidence - a written width and a guessed one
+        # are indistinguishable in the generated files, so a pass that cannot
+        # produce the real number must stop the generation, not guess.
+        self._sys_regs_addr_width = None
+        if self.soc_config.system_controller:
+            from core.tool_runners import run_peakrdl_sysregs
+            reg_dir = self.env.outdir_path / self.env.reg_sub
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            hw_dir.mkdir(parents=True, exist_ok=True)
+            tpl_path = self.find_file_in_paths("reg/soc_regs.rdl.mako", self.env.template_paths)
+            tpl = Template(filename=str(tpl_path), lookup=self.template_lookup)
+            rdl_text = tpl.render(
+                config=self.soc_config,
+                top_level_module_name=self.top_level_module_name,
+                sys_ctrl=self.soc_config.system_controller.model_dump(exclude_none=True),
+                components=[c.model_dump(exclude_none=True) for c in self.soc_config.components] if self.soc_config.components else [],
+                domains=[d.model_dump(exclude_none=True) for d in self.soc_config.clock_tree.domains],
+                fmt_reg=fmt_reg, fmt_dom=fmt_dom, fmt_rst=fmt_rst, camel_case=camel_case,
+                gen_version=self.gen_version, git_hash=self.git_hash)
+            write_if_changed(reg_dir / f"{self.top_level_module_name}_regs.rdl", rdl_text)
+            run_peakrdl_sysregs(self.top_level_module_name, reg_dir, hw_dir)
+            info = get_isle_info(f"{self.top_level_module_name}_sys_regs", [hw_dir])
+            p_info = (info or {}).get("ports", {}).get("s_apb_paddr")
+            m = re.search(r'\[\s*([0-9]+)\s*:\s*([0-9]+)\s*\]', (p_info or {}).get("decl", ""))
+            if not m:
+                print("\n[ERROR] The early sys-regs pass could not read the regblock's APB address"
+                      "\n        width (s_apb_paddr of the generated module): without it every"
+                      "\n        instantiation slice would be a guess. Check that PeakRDL is"
+                      "\n        installed in the venv and that the generated"
+                      f"\n        {self.top_level_module_name}_regs.rdl elaborates.")
+                sys.exit(1)
+            self._sys_regs_addr_width = int(m.group(1)) - int(m.group(2)) + 1
+            print(f"  -> System-controller APB address width: {self._sys_regs_addr_width} (parsed from the generated regblock)")
+
         if self.soc_config.topology.type == "noc":
             all_comps_for_type_tracking = [self.soc_config.host] + (self.soc_config.components if self.soc_config.components else [])
             for c in all_comps_for_type_tracking:
@@ -509,7 +551,7 @@ class RTLGenerator:
                     print(f"  -> Rendering Tile {tpl_path.name} into {out_file.name}")
                     try:
                         template = Template(filename=str(tpl_path), lookup=self.template_lookup)
-                        rendered_code = template.render(comp=c, config=self.soc_config, search_paths=self.env.search_paths, original_type=isle_type, peakrdl_pragma=peakrdl_pragma, require_file=self.require_file_helper, require_bender=self.require_bender_helper, top_level_module_name=self.top_level_module_name, gen_version=self.gen_version, git_hash=self.git_hash)
+                        rendered_code = template.render(comp=c, config=self.soc_config, search_paths=self.env.search_paths, original_type=isle_type, peakrdl_pragma=peakrdl_pragma, require_file=self.require_file_helper, require_bender=self.require_bender_helper, top_level_module_name=self.top_level_module_name, sys_regs_addr_width=self._sys_regs_addr_width, gen_version=self.gen_version, git_hash=self.git_hash)
                         self.required_local_files.update(self.req_pattern.findall(rendered_code))
                         if out_file.suffix == '.sv':
                             rendered_code = auto_import_sv_packages(rendered_code)
@@ -1079,18 +1121,15 @@ class RTLGenerator:
         reg_dir = self.env.outdir_path / self.env.reg_sub
         tb_dir = self.env.outdir_path / self.env.tb_sub
 
-        sys_regs_addr_width = 8
-        try:
-            sys_regs_info = get_isle_info(f"{top_level_module_name}_sys_regs", [reg_dir])
-            if sys_regs_info and "ports" in sys_regs_info:
-                p_info = sys_regs_info["ports"].get("s_apb_paddr")
-                if p_info:
-                    decl = p_info.get("decl", "")
-                    m_range = re.search(r'\[\s*([0-9]+)\s*:\s*([0-9]+)\s*\]', decl)
-                    if m_range:
-                        sys_regs_addr_width = int(m_range.group(1)) - int(m_range.group(2)) + 1
-        except Exception as e:
-            print(f"[WARNING] Could not parse system registers address width: {e}. Falling back to 8.")
+        # The regblock's true APB address width: parsed ONCE by the early
+        # sys-regs pass in Phase 1 (see generate_dynamic_isles), which stops
+        # the generation if it cannot read the real number - the historical
+        # fallback-8 here was dead code that happened to match the fleet, the
+        # exact failure mode a silent default invites. Projects without a
+        # System Controller never instantiate the regblock, so any value works
+        # for them; None would only ever be rendered into a file that also
+        # fails to elaborate, which is the loud failure we want.
+        sys_regs_addr_width = self._sys_regs_addr_width if self._sys_regs_addr_width else 8
         
         # Resolved once here rather than inside each template, so that the SoC package
         # and the FlooGen configuration cannot end up with different ID widths for the
@@ -1242,7 +1281,7 @@ class RTLGenerator:
             # power cycle fights the bench - found the hard way on noc_subtile,
             # whose cycle-1 payload re-load hung the interconnect for a full
             # watchdog window with no error printed.
-            "offload_power_cycles": (self.soc_config.testbench or {}).get("boot_mode") in ("jtag", "slink"),
+            "offload_power_cycles": (self.soc_config.testbench or {}).get("boot_mode") in ("jtag", "slink", "uart"),
             # The distinctive code every SECONDARY core of a memory_mapped cluster
             # returns (gwaihir's exact-accounting practice, wave three step b): zero
             # would be indistinguishable from a wrong code path that stores zero, so

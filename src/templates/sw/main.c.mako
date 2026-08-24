@@ -120,7 +120,7 @@ int main(void) {
 % if uart_base:
     uart_init(${divisor});
 % endif
-    print_str("Just take it and give it a wave...\n\x04");
+    print_str("Just take it and give it a wave...\n\x03");
 
 % if config.system_controller and config.system_controller.scratch_registers > 0:
     /* Example: Accessing the System Controller using PeakRDL generated C-Structs. */

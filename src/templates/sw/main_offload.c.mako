@@ -279,7 +279,7 @@ int main(void) {
 % endif
 
 % endfor
-    print_str("[OFFLOAD] All targets passed.\n\x04");
+    print_str("[OFFLOAD] All targets passed.\n\x03");
 
     return 0;
 }

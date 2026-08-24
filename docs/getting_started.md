@@ -1,6 +1,10 @@
 # Getting Started: Integrating Ollivander
 
-This guide explains the recommended workflow for integrating the Ollivander SoC Generator into a new hardware project. 
+This guide explains the recommended workflow for integrating the Ollivander SoC Generator into a new hardware project.
+
+> [!TIP]
+> Before integrating, read one working configuration end to end: `soc_cfg_examples/crossbar_mini/crux_mini.yml` is the fleet's minimal example — a bare Cheshire host, one memory, no padframe — and every block in it is the minimum a real project needs. The larger examples then show each optional feature in isolation.
+
 
 Because Ollivander is a flexible generator designed to weave together both standard and custom hardware IPs, the best practice is to include it as a **Git Submodule** rather than copying its source code directly into your repository.
 

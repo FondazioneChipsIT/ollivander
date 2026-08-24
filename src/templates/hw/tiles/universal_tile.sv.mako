@@ -939,7 +939,7 @@ module ${p_name}_${c_type}
   ${top_level_module_name}_sys_regs i_sys_ctrl_regs (
     .clk            ( clk_i ),
     .arst_n         ( rst_ni ), // Async active-low reset
-    .s_apb_paddr    ( pcrs_apb_req.paddr[4:0] ),
+    .s_apb_paddr    ( pcrs_apb_req.paddr[${sys_regs_addr_width-1}:0] ),
     .s_apb_pprot    ( pcrs_apb_req.pprot ),
     .s_apb_psel     ( pcrs_apb_req.psel ),
     .s_apb_penable  ( pcrs_apb_req.penable ),

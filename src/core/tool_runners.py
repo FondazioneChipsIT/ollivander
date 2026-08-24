@@ -235,6 +235,33 @@ def _pack_hwif_pkg(pkg_sv: Path):
         print("  -> Packed the hwif package structs (verilator protect-lib compatibility).")
 
 
+def run_peakrdl_sysregs(top_level_module_name, reg_dir: Path, hw_dir: Path):
+    """
+    Early, minimal regblock pass on the System Controller's OWN RDL - the one
+    file of the register flow that is self-contained (generated from the
+    configuration, no third-party includes, unlike the memory map that keeps
+    the full run in Phase 6 behind the Bender fetch). It exists so the
+    top-level render can read the REAL s_apb_paddr width from the artifact
+    instead of assuming 8: the assumption held on every fleet project by
+    coincidence and broke on crux_mini's 16-byte register file (2026-08-23).
+    Phase 6 regenerates the same file identically (and applies the Verilator
+    packing passes); this pass deliberately skips them.
+    """
+    rdl_file = reg_dir / f"{top_level_module_name}_regs.rdl"
+    if not rdl_file.is_file():
+        return
+    peakrdl_exe = shutil.which("peakrdl")
+    if not peakrdl_exe:
+        venv_peakrdl = Path(sys.executable).parent / "peakrdl"
+        if venv_peakrdl.is_file() and os.access(venv_peakrdl, os.X_OK):
+            peakrdl_exe = str(venv_peakrdl)
+    if not peakrdl_exe:
+        return
+    cmd_sv = [peakrdl_exe, "regblock", str(rdl_file), "--cpuif", "apb4-flat",
+              "--default-reset", "arst_n", "-o", str(hw_dir)]
+    subprocess.run(cmd_sv, check=True, capture_output=True, text=True)
+
+
 def run_peakrdl(soc_config, reg_dir: Path, hw_dir: Path, sw_dir: Path, registry_dependencies: dict = None, bender_dir: Path = None, custom_rdl_paths: list = None):
     """
     Invokes PeakRDL to generate RTL and C headers from SystemRDL specifications.

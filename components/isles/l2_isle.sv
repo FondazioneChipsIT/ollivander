@@ -197,29 +197,23 @@ typedef struct packed {
 
 // Derived from the port, so signals rather than localparams: dyn_mem_top takes the
 // rule array on an input, and a constant driven from the top is elaborated once for
-// every instance instead of once per instance.
-logic [63:0] l2_port0_interl_base, l2_port0_non_interl_base;
-logic [63:0] l2_port1_interl_base, l2_port1_non_interl_base;
-assign l2_port0_interl_base     = instance_base_addr_i;
-assign l2_port0_non_interl_base = instance_base_addr_i + InstanceWindowSize / 2;
-assign l2_port1_interl_base     = instance_base_addr_i + InstanceWindowSize;
-assign l2_port1_non_interl_base = instance_base_addr_i + InstanceWindowSize + InstanceWindowSize / 2;
-
+// every instance instead of once per instance. Two rules per port - the interleaved
+// low half and the linear high half of that port's sub-window - emitted by a
+// generate loop: the historical hand-written 4-entry literal hardcoded NumPort == 2
+// and refused to elaborate the single-port instance crux_mini introduced
+// (vopt-13174, 2026-08-23); at two ports the loop reproduces the same four rules.
 map_rule_t [NumRules-1:0] MappingRules;
-assign MappingRules = '{
-  '{idx       : dyn_mem_pkg::INTERLEAVE,
-    start_addr: l2_port0_interl_base,
-    end_addr  : l2_port0_interl_base + InstanceWindowSize/2},
-  '{idx       : dyn_mem_pkg::NONE_INTER,
-    start_addr: l2_port0_non_interl_base,
-    end_addr  : l2_port0_non_interl_base + InstanceWindowSize/2},
-  '{idx       : dyn_mem_pkg::INTERLEAVE,
-    start_addr: l2_port1_interl_base,
-    end_addr  : l2_port1_interl_base + InstanceWindowSize/2},
-  '{idx       : dyn_mem_pkg::NONE_INTER,
-    start_addr: l2_port1_non_interl_base,
-    end_addr  : l2_port1_non_interl_base + InstanceWindowSize/2}
-};
+for (genvar p = 0; p < NumPort; p++) begin : gen_map_rules
+  logic [63:0] port_interl_base, port_non_interl_base;
+  assign port_interl_base     = instance_base_addr_i + p * InstanceWindowSize;
+  assign port_non_interl_base = port_interl_base + InstanceWindowSize / 2;
+  assign MappingRules[2*p] = '{idx       : dyn_mem_pkg::INTERLEAVE,
+                               start_addr: port_interl_base,
+                               end_addr  : port_interl_base + InstanceWindowSize/2};
+  assign MappingRules[2*p+1] = '{idx       : dyn_mem_pkg::NONE_INTER,
+                                 start_addr: port_non_interl_base,
+                                 end_addr  : port_non_interl_base + InstanceWindowSize/2};
+end
 
 dyn_mem_top #(
   .NUM_PORT            ( NumPort         ),

@@ -30,13 +30,15 @@ In file order, `tb_<top>.sv` contains:
 
 *   **Clock agent** — generates the main clock and up to 64 additional generated clocks, all with pre-resolved periods. Runtime knob: `+fast_boot` only.
 *   **Reset agent** — the standard power-on sequence: POR asserted for a fixed delay, then `pwr_on_rst_ni` and `rst_ni` released together. The testbench's boot sequence starts by waiting on this release.
-*   **UART RX agent** — samples the SoC's TX line at the pre-computed bit period and prints every received character under the `[UART]:` tag. It is also the **end-of-test detector**: when the received character is `0x04` (EOT), it prints `[TB] EOT received. Simulation finished.` and calls `$finish`. The firmware, not the testbench, decides when the test is over.
+*   **UART RX agent** — samples the SoC's TX line at the pre-computed bit period and prints every received character under the `[UART]:` tag. It is also the **end-of-test detector**: when the received character is `0x03` (ETX - deliberately not ASCII EOT 0x04, which the uart debug-boot protocol uses as its own end-of-transmission byte; sharing it would turn agent bugs into false passes), it prints `[TB] EOT received. Simulation finished.` and calls `$finish`. The firmware, not the testbench, decides when the test is over.
 *   **JTAG driver stack** — a procedural replica of riscv-dbg's `jtag_test` driver, task by task, but without class-based timing constructs (which is what lets the same VIP compile under Verilator). Public tasks: `jtag_init()` (TAP reset, IDCODE check, debug module activation) and the System Bus Access family `sba_write32(addr, data)`, `sba_read32(addr, data)`, `sba_write32_verify(addr, data)`, plus the streamed `sba_load` that carries the whole firmware image under `preload_mode: jtag` — memory-mapped accesses through the debug module, i.e. the same path an external debugger would use on silicon.
 *   **Serial-link agent** (`gen_slink_agent`, elaborated only when the host declares `HasSlinkPreload`) — an off-chip twin of the host's own `serial_link` instance, driven by an `axi_test` driver class on its AXI side and terminated by an `axi_sim_mem` on the outbound side. Public tasks: `slink_write32(addr, data)` (the control channel: gated-domain bring-up and boot handoff under `preload_mode: slink`) and the streamed `slink_load` (the image, 1 KiB bursts). The classes live in the top unit, where Verilator accepts them; the one construct it cannot execute, `axi_rand_slave`'s constrained randomization, is exactly why the terminator is a module.
 
+*   **UART boot agent** (`gen_uart_boot`, elaborated under `boot_mode: uart`) — the procedural counterpart of the bootrom's serial debug server protocol: a TX driver bit-bangs the SoC's RX line at the ROM-baked 115200 (a period the generator derives with the same integer-divisor formula the ROM uses), and the replies come back through a *scoop* hook in the RX monitor — while the agent scoops, protocol bytes bypass both the console printing and the end-of-test detector (whose byte is ETX 0x03, deliberately disjoint from the protocol's own 0x04 end-of-transmission). Public tasks: `uart_boot_challenge()`, the streamed `uart_load`, `uart_write32` (the control channel) and `uart_boot_exec(entry)`.
+
 ## 4. Boot Sequences by `boot_mode`
 
-### 4.1 `jtag` and `slink` (the architected paths)
+### 4.1 `jtag`, `slink` and `uart` (the architected paths)
 
 The timeline, entirely through pins and registers, with nothing forced:
 
@@ -46,6 +48,8 @@ The timeline, entirely through pins and registers, with nothing forced:
 4.  **A clocked reset window** (~1 us), then reset release for the same domains. Two phases because gated domains with flip-flops using asynchronous reset sampled synchronously (FFAR) need clock edges while reset is asserted before the release is safe.
 5.  **Architected image load** (`preload_mode: jtag` or `slink`, section 5): one streamed load per preload region — `sba_load` over the debug module, or `slink_load` over the serial-link twin — after the bring-up (the image may live in a gated tile) and before the handoff (the host must find it on wake-up). Under `slink` the bring-up and handoff writes ride the serial link too.
 6.  **Boot handoff via SBA**: the entry pointer and `argc` are written first, and the boot-mode/go register **last** — the host's preboot loop polls that register, so write ordering replaces any force-and-release dance. The entry-pointer write uses `sba_write32_verify` (its readback is race-free because the boot flow never writes that register); the scratch registers the bootrom clears on use are deliberately not read back.
+
+Under `boot_mode: uart` the same timeline holds with two substitutions and one deletion: step 2 becomes the debug-server **ACK challenge** (after a settle wait of 60 baud periods — an early byte would be lost to a receiver the bootrom has not configured yet), every write of steps 3-5 rides `uart_write32`/`uart_load`, and step 6 disappears entirely — the server's **EXEC command jumps the host straight to the entry**, no scratch registers involved. The whole exchange runs at the ROM-baked 115200; the RX monitor returns to the console period right after the EXEC acknowledge.
 
 ### 4.2 `force` (the legacy path, kept under regression)
 

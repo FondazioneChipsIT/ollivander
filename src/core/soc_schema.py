@@ -867,11 +867,13 @@ def validate_cross_references(config: OllivanderConfig):
     # testbench agent can make (an 'if (idcode != expected)' with X compares to X, which is not
     # true). This check turns hours of waveform archaeology into one generation-time message.
     boot_mode = (config.testbench or {}).get('boot_mode', 'force')
-    if boot_mode not in ('force', 'jtag', 'slink'):
+    if boot_mode not in ('force', 'jtag', 'slink', 'uart'):
         errors.append(f"[testbench] boot_mode '{boot_mode}' is not implemented: choose 'force'"
                       f" (hierarchical forces, the default), 'jtag' (the debug-module boot,"
-                      f" with slink available as the image/control transport) or 'slink'"
-                      f" (the self-sufficient serial-link boot - no TAP is ever touched).")
+                      f" with slink available as the image/control transport), 'slink'"
+                      f" (the self-sufficient serial-link boot - no TAP is ever touched) or"
+                      f" 'uart' (the bootrom's own serial debug server - no debugger, no"
+                      f" link partner, the poorest agent silicon can count on).")
     if boot_mode == 'jtag':
         if 'jtag' not in (config.host.export_interfaces or []):
             errors.append(f"[testbench] boot_mode 'jtag' requires the host ('{config.host.name}')"
@@ -892,20 +894,38 @@ def validate_cross_references(config: OllivanderConfig):
                           f" debug module initialized the image has exactly one road, and mixing"
                           f" the hierarchical readmemh into the slink-only boot is not a covered"
                           f" configuration.")
+    # The UART debug boot (wave five): the bootrom's serial debug server does
+    # bring-up writes, image upload and the EXEC jump on one line - the image
+    # therefore has exactly one road here too. The ROM pins the protocol at
+    # 115200, so this is the SLOW road: pair it with a small project (the
+    # crux_mini fast vehicle exists for exactly this).
+    if boot_mode == 'uart':
+        if 'uart' not in (config.host.export_interfaces or []):
+            errors.append(f"[testbench] boot_mode 'uart' requires the host ('{config.host.name}')"
+                          f" to list 'uart' in export_interfaces: without it the serial pins"
+                          f" never reach the top level and the agent drives dead wires.")
+        if (config.testbench or {}).get('preload_mode', 'readmemh') != 'uart':
+            errors.append(f"[testbench] boot_mode 'uart' requires preload_mode 'uart': the"
+                          f" debug server is the only transport this boot initializes.")
 
     # The system-bus load travels the debug module, which only the JTAG bring-up sequence
     # initializes: under force boot no TAP driver is even instantiated, so a 'jtag' preload
     # would hang on the first DMI access with nothing on the other end. A configuration
     # error, not a runtime surprise.
     preload_mode = (config.testbench or {}).get('preload_mode', 'readmemh')
-    if preload_mode not in ('readmemh', 'jtag', 'slink'):
+    if preload_mode not in ('readmemh', 'jtag', 'slink', 'uart'):
         errors.append(f"[testbench] preload_mode '{preload_mode}' is not implemented: choose"
                       f" 'readmemh' (hierarchical $readmemh, the default), 'jtag' (streamed"
-                      f" system-bus load through the debug module) or 'slink' (AXI-speed load"
-                      f" through the serial link).")
+                      f" system-bus load through the debug module), 'slink' (AXI-speed load"
+                      f" through the serial link) or 'uart' (the bootrom debug server's"
+                      f" block writes, boot_mode 'uart' only).")
     elif preload_mode == 'jtag' and boot_mode != 'jtag':
         errors.append(f"[testbench] preload_mode 'jtag' requires boot_mode 'jtag': the system-bus"
                       f" load travels the debug module, which only the JTAG bring-up initializes.")
+    elif preload_mode == 'uart' and boot_mode != 'uart':
+        errors.append(f"[testbench] preload_mode 'uart' requires boot_mode 'uart': only that"
+                      f" boot sequence challenges the bootrom's debug server the upload"
+                      f" travels through.")
     elif preload_mode == 'slink' and boot_mode not in ('jtag', 'slink'):
         # Both architected boots arm the passive preboot loop the slink handoff
         # relies on. Under boot 'jtag' the TAP liveness check still runs and only

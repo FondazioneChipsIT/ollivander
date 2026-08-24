@@ -206,6 +206,8 @@ ${stubs_str}
                 continue  # driven continuously by vip_ollivander_soc's ports
             if slink_agent and p_name in ('slink_i', 'slink_rcv_clk_i'):
                 continue  # driven continuously by the VIP's serial-link twin
+            if boot_mode == "uart" and p_name == 'uart_rx_i':
+                continue  # driven continuously by the VIP's uart-boot agent
             if p_name == 'uart_rx_i':
                 reset_initials.append("    uart_rx_i = 1'b1; // UART RX idle-high")
             else:
@@ -531,10 +533,20 @@ if not uart_base:
     .LockDelayNs      (1000.0),
 % if uart_base and uart_tx_port:
     .HasUart          (1'b1),
-    .UartBitPeriodNs  (16.0 * ${uart_divisor} * (1_000_000_000.0 / ${uart_freq}.0))
+    .UartBitPeriodNs  (16.0 * ${uart_divisor} * (1_000_000_000.0 / ${uart_freq}.0))${"," if boot_mode == "uart" else ""}
 % else:
     .HasUart          (1'b0),
-    .UartBitPeriodNs  (8680.0)
+    .UartBitPeriodNs  (8680.0)${"," if boot_mode == "uart" else ""}
+% endif
+% if boot_mode == "uart":
+<%
+    # The bootrom's debug server runs at the ROM-baked 115200 through the same
+    # integer-divisor formula the firmware uses: the effective period is
+    # 16 * floor(freq / (16 * 115200)) / freq, NOT the nominal 8680.6 ns.
+    uart_boot_divisor = max(1, int(uart_freq) // (16 * 115200))
+%>\
+    .HasUartBoot         (1'b1),
+    .UartBootBitPeriodNs (16.0 * ${uart_boot_divisor} * (1_000_000_000.0 / ${uart_freq}.0))
 % endif
 % if slink_agent:
 <%
@@ -642,6 +654,11 @@ if not uart_base:
     .uart_tx_i        (${uart_tx_port}),
 % else:
     .uart_tx_i        (1'b1),
+% endif
+% if boot_mode == "uart":
+    .uart_rx_o        (uart_rx_i),
+% else:
+    .uart_rx_o        (),
 % endif
 % if boot_mode == "jtag":
     .jtag_tck_o       (jtag_tck_i),
@@ -829,9 +846,12 @@ if not uart_base:
   # Discovered the hard way: super_crux's whole bring-up "succeeded" over SBA,
   # every domain stayed gated, and the first slink burst into the gated L2
   # stalled with no error at any burst length (2026-08-22).
-  ctrl_write = ("i_vip.gen_slink_agent.slink_write32" if preload_mode == "slink"
-                else "i_vip.sba_write32")
-  ctrl_channel = "the serial link" if preload_mode == "slink" else "JTAG"
+  if boot_mode == "uart":
+      ctrl_write, ctrl_channel = "i_vip.gen_uart_boot.uart_write32", "the UART debug server"
+  elif preload_mode == "slink":
+      ctrl_write, ctrl_channel = "i_vip.gen_slink_agent.slink_write32", "the serial link"
+  else:
+      ctrl_write, ctrl_channel = "i_vip.sba_write32", "JTAG"
   if config.gated_at_power_on:
       for dom in managed_domains:
           rn = dom.name.replace("_clk", "").upper()
@@ -853,16 +873,24 @@ if not uart_base:
   bringup_rst_str = "\n".join(bringup_rst_lines)
   bringup_str = bringup_clk_str + bringup_rst_str
 %>
-% if boot_mode in ("jtag", "slink"):
+% if boot_mode in ("jtag", "slink", "uart"):
   // ==========================================================================
   // Architected bring-up and boot (wip 2.1): the force-free path. Under boot
   // 'jtag' the TAP comes alive first (liveness: IDCODE, dmactive, SBA ready);
   // under boot 'slink' JTAG is never touched - the serial link carries
-  // everything, cheshire's and gwaihir's own PRELMODE=1 shape.
+  // everything, cheshire's and gwaihir's own PRELMODE=1 shape; under boot
+  // 'uart' the bootrom's own serial debug server carries everything - the
+  // poorest agent silicon can count on, a road NEITHER reference regresses.
   // ==========================================================================
   #1200;
 % if boot_mode == "jtag":
   i_vip.jtag_init();
+% elif boot_mode == "uart":
+  // The server answers only once the bootrom reaches its preboot loop and has
+  // programmed the UART: wait upstream's settle time (60 baud periods), then
+  // challenge - an early byte would be lost to an unconfigured receiver.
+  #(60 * 16 * ${uart_boot_divisor} * (1_000_000_000.0 / ${uart_freq}.0));
+  i_vip.gen_uart_boot.uart_boot_challenge();
 % endif
 % if jtag_clk_str or jtag_rst_str:
   $display("[TB] Bringing up gated domains via ${ctrl_channel} (clocks first)...");
@@ -873,7 +901,7 @@ ${jtag_clk_str}
 ${jtag_rst_str}
   $display("[TB] Gated domains reset released after a clocked reset window.");
 % endif
-% if preload_mode in ("jtag", "slink"):
+% if preload_mode in ("jtag", "slink", "uart"):
   // ==========================================================================
   // Architected image load (wip 2.1): the same flat hex the readmemh path
   // would split per bank, streamed instead through an architected channel -
@@ -934,6 +962,8 @@ ${jtag_rst_str}
       $display("[TB] ELF section: %0d bytes (%0d words) at 0x%h...", elf_sec_len, elf_words.size(), elf_sec_addr);
 % if preload_mode == "slink":
       i_vip.gen_slink_agent.slink_load(64'(elf_sec_addr), elf_words, elf_words.size());
+% elif preload_mode == "uart":
+      i_vip.gen_uart_boot.uart_load(64'(elf_sec_addr), elf_words, elf_words.size());
 % else:
       i_vip.sba_load(64'(elf_sec_addr), elf_words, elf_words.size(), ${sba_verify_lit});
 % endif
@@ -980,6 +1010,10 @@ ${jtag_rst_str}
     $display("[TB] slink load: %0d bytes (%0d words) from ${mem['file']} to 0x${f"{sba_base:08x}"}...",
              sba_img.num(), sba_words.size());
     i_vip.gen_slink_agent.slink_load(64'h${f"{sba_base:x}"}, sba_words, sba_words.size());
+% elif preload_mode == "uart":
+    $display("[TB] uart load: %0d bytes (%0d words) from ${mem['file']} to 0x${f"{sba_base:08x}"}...",
+             sba_img.num(), sba_words.size());
+    i_vip.gen_uart_boot.uart_load(64'h${f"{sba_base:x}"}, sba_words, sba_words.size());
 % else:
     $display("[TB] SBA load: %0d bytes (%0d words) from ${mem['file']} to 0x${f"{sba_base:08x}"}...",
              sba_img.num(), sba_words.size());
@@ -995,7 +1029,12 @@ ${jtag_rst_str}
   # header; otherwise it is the generator's map-derived literal, as before.
   entry_expr = "tb_elf_entry[31:0]" if has_elf_mems else f"32'h{entry_point:08x}"
 %>\
-% if preload_mode == "slink":
+% if boot_mode == "uart":
+  // Boot handoff ON THE UART ROAD: there is no scratch-register dance here -
+  // the debug server's EXEC command jumps the host straight to the entry.
+  i_vip.gen_uart_boot.uart_boot_exec(${"tb_elf_entry" if has_elf_mems else f"64'h{entry_point:x}"});
+  $display("[TB] uart boot handoff complete (EXEC).");
+% elif preload_mode == "slink":
   // Host boot handoff OVER THE SERIAL LINK (cheshire's PRELMODE pattern):
   // same ordering contract as the SBA variant below - entry and argc first,
   // the boot-mode register LAST as the 'go'. The handoff rides the image's

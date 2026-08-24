@@ -73,6 +73,14 @@ module vip_ollivander_soc #(
   // nominal baud by percents at high speed - enough to mis-sample a frame).
   parameter bit HasUart = 1'b0,
   parameter real UartBitPeriodNs = 8680.0,
+  // UART debug-boot agent (wave five): the external agent the bootrom's own
+  // serial debug server expects - the poorest agent silicon can count on, no
+  // debugger and no link partner. The protocol runs at the baudrate BAKED
+  // INTO THE ROM (115200 via the integer divisor), which is NOT the console
+  // baudrate above: the generator computes this period with the same integer
+  // -divisor formula the bootrom's uart_init applies.
+  parameter bit HasUartBoot = 1'b0,
+  parameter real UartBootBitPeriodNs = 8680.0,
   // --------------------------------------------------------------------------
   // Serial-link agent (wip 2.1, wave two): the off-chip TWIN of the DUT's
   // serial link. The AXI geometry arrives from the host's Slink* contract via
@@ -97,6 +105,8 @@ module vip_ollivander_soc #(
   output logic       clk_gen_lock_o,
   // The SoC's UART TX line, observed by the RX agent.
   input  logic       uart_tx_i,
+  // Driven by the uart-boot agent (idle-high otherwise): the DUT's RX line.
+  output logic       uart_rx_o,
   // JTAG side, wired by the testbench straight onto the SoC top's pins.
   output logic jtag_tck_o,
   output logic jtag_trst_no,
@@ -181,6 +191,21 @@ module vip_ollivander_soc #(
   // UART RX agent. The transcript strings are the regression suite's pass
   // criterion and MUST stay byte-identical to the inline monitor's.
   // --------------------------------------------------------------------------
+  // Boot-scoop handshake with the uart-boot agent (cheshire's uart_boot_scoop
+  // pattern): while uart_scoop_ena is high, the NEXT received byte belongs to
+  // the boot protocol - it is handed to the agent and bypasses BOTH the
+  // console printing and the end-of-test detector. The scoop is still what
+  // keeps protocol replies out of the console; the historical sharper edge -
+  // the protocol's end-of-transmission byte colliding with the end-of-test
+  // byte - is gone since the test verdict moved to ETX (0x03), see the
+  // detector's rationale below.
+  logic       uart_scoop_ena  = 1'b0;
+  logic [7:0] uart_scoop_byte;
+  // The period the monitor samples at, switchable at runtime: the boot
+  // protocol runs at the ROM-baked baudrate, the console at the (usually
+  // faster) divisor the firmware programs; the agent flips this around EXEC.
+  real uart_rx_period = UartBitPeriodNs;
+
   if (HasUart) begin : gen_uart_rx
     logic [7:0] rx_char;
     string rx_string;
@@ -195,16 +220,25 @@ module vip_ollivander_soc #(
       @(negedge uart_tx_i);
 
       // 2. Wait 1.5 bit periods to align sampling at the center of the first data bit
-      #(UartBitPeriodNs * 1.5);
+      #(uart_rx_period * 1.5);
 
       // 3. Sample 8 data bits at 1.0 bit period intervals
       for (int i = 0; i < 8; i++) begin
         rx_char[i] = uart_tx_i;
-        #(UartBitPeriodNs);
+        #(uart_rx_period);
       end
 
-      // 4. Print the character or accumulate the line of text
-      if (rx_char == 8'h04) begin // EOT (End of Transmission)
+      // 4. Scooped protocol byte, or console character
+      if (uart_scoop_ena) begin
+        uart_scoop_byte = rx_char;
+        uart_scoop_ena  = 1'b0;
+      end else if (rx_char == 8'h03) begin // ETX: the END-OF-TEST byte
+        // ETX (0x03) on purpose, NOT ASCII EOT (0x04): 0x04 is also the uart
+        // debug protocol's end-of-transmission byte, and sharing one magic
+        // byte between protocol framing and the test verdict turns any agent
+        // or firmware bug into a FALSE PASS - the protocol's read-path data
+        // and the bootrom's unsolicited Eoc report can both carry 0x04
+        // legitimately. Decoupled 2026-08-23, wave five.
         $display("[TB] EOT received. Simulation finished.");
         $finish;
       end else if (rx_char == 8'h0A) begin // Newline (\n)
@@ -217,6 +251,110 @@ module vip_ollivander_soc #(
         rx_char_num = rx_char_num + 1;
       end
     end
+  end
+
+  // --------------------------------------------------------------------------
+  // UART debug-boot agent (wave five): a procedural replica of the protocol
+  // cheshire's bootrom serves INSIDE its passive preboot loop (uart_debug.c;
+  // the VIP counterpart is vip_cheshire_soc's uart_debug_* family). Wire
+  // format 8N1, bytes LSB-first; multi-byte fields little-endian. The agent
+  // drives uart_rx_o and reads answers through the scoop hook above.
+  // --------------------------------------------------------------------------
+  initial uart_rx_o = 1'b1; // idle-high from time zero, boot agent or not
+
+  if (HasUartBoot) begin : gen_uart_boot
+    // Protocol bytes, from the bootrom's own enum (sw/lib/hal/uart_debug.c).
+    localparam logic [7:0] UartDebugCmdRead  = 8'h11;
+    localparam logic [7:0] UartDebugCmdWrite = 8'h12;
+    localparam logic [7:0] UartDebugCmdExec  = 8'h13;
+    localparam logic [7:0] UartDebugAck      = 8'h06;
+    localparam logic [7:0] UartDebugEot      = 8'h04;
+    // Burst size of the block writes, upstream's own practice.
+    localparam int unsigned UartBurstBytes   = 256;
+
+    task automatic uart_send_byte(input logic [7:0] b);
+      uart_rx_o = 1'b0;                                  // start bit
+      for (int i = 0; i < 8; i++)
+        #(UartBootBitPeriodNs) uart_rx_o = b[i];         // data, LSB first
+      #(UartBootBitPeriodNs) uart_rx_o = 1'b1;           // stop bit
+      #(UartBootBitPeriodNs);
+    endtask
+
+    task automatic uart_scoop(output logic [7:0] b);
+      uart_scoop_ena = 1'b1;
+      @(negedge uart_scoop_ena);
+      b = uart_scoop_byte;
+    endtask
+
+    task automatic uart_scoop_expect(input string name, input logic [7:0] exp);
+      automatic logic [7:0] b;
+      uart_scoop(b);
+      if (b != exp)
+        $fatal(1, "[VIP-UART] expected %s (0x%02h), received 0x%02h", name, exp, b);
+    endtask
+
+    // One protocol write burst: command, address, length, ACK, data, EOT.
+    task automatic uart_write_burst(input logic [63:0] addr,
+                                    ref byte data [$]);
+      uart_send_byte(UartDebugCmdWrite);
+      for (int i = 0; i < 8; i++) uart_send_byte(addr[8*i +: 8]);
+      for (int i = 0; i < 8; i++) uart_send_byte(8'((data.size() >> (8*i)) & 8'hFF));
+      uart_scoop_expect("ACK", UartDebugAck);
+      foreach (data[i]) uart_send_byte(data[i]);
+      uart_scoop_expect("EOT", UartDebugEot);
+    endtask
+
+    // 32-bit control write through the same server: the control channel of
+    // the uart boot (bring-up writes into the system controller), the third
+    // sibling of sba_write32 and slink_write32.
+    task automatic uart_write32(input logic [63:0] addr, input logic [31:0] data);
+      automatic byte q [$];
+      for (int i = 0; i < 4; i++) q.push_back(byte'(data[8*i +: 8]));
+      uart_write_burst(addr, q);
+    endtask
+
+    // Streamed image load: the uart counterpart of sba_load/slink_load, the
+    // SAME (base + flat word array) contract so the generated testbench emits
+    // one packing whatever the transport.
+    task automatic uart_load(input logic [63:0] base,
+                             input logic [31:0] image[],
+                             input int unsigned num_words);
+      automatic byte q [$];
+      automatic logic [63:0] addr = base;
+      automatic int unsigned sent = 0;
+      for (int unsigned w = 0; w < num_words; w++) begin
+        for (int b = 0; b < 4; b++) q.push_back(byte'(image[w][8*b +: 8]));
+        if (q.size() == UartBurstBytes || w == num_words - 1) begin
+          uart_write_burst(addr, q);
+          sent += q.size();
+          $display("[VIP-UART] burst done (EOT received), %0d/%0d bytes", sent, 4*num_words);
+          addr = base + sent;
+          q.delete();
+        end
+      end
+      $display("[VIP-UART] load complete: %0d words at 0x%h", num_words, base);
+    endtask
+
+    // Challenge the debug server (it answers the ACK byte with an ACK) and
+    // pin the RX monitor to the PROTOCOL period for the whole boot phase.
+    task automatic uart_boot_challenge();
+      uart_rx_period = UartBootBitPeriodNs;
+      uart_send_byte(UartDebugAck);
+      uart_scoop_expect("ACK", UartDebugAck);
+      $display("[VIP-UART] debug server alive (ACK challenge answered)");
+    endtask
+
+    // EXEC: the bootrom jumps to the entry - no scratch-register handoff
+    // exists on this road. The RX monitor returns to the CONSOLE period
+    // right after the ACK: the firmware's first act is programming its own
+    // (usually faster) divisor.
+    task automatic uart_boot_exec(input logic [63:0] entry);
+      uart_send_byte(UartDebugCmdExec);
+      for (int i = 0; i < 8; i++) uart_send_byte(entry[8*i +: 8]);
+      uart_scoop_expect("ACK", UartDebugAck);
+      uart_rx_period = UartBitPeriodNs;
+      $display("[VIP-UART] EXEC acknowledged (entry 0x%h), console period restored", entry);
+    endtask
   end
 
   // --------------------------------------------------------------------------

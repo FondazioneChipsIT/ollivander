@@ -169,6 +169,17 @@ def _get_resolved_port_width(comp_name, port_name, comp_info, driven_params=None
         return None
     type_dim = p_info.get("type_dim", "")
     decl = p_info.get("decl", "")
+    # MULTI-DIMENSIONAL ports opt out of the width-slice mechanism entirely: on
+    # a declaration like [NumPort-1:0][AsyncAxiInAwWidth-1:0] the first-range
+    # match below would resolve NumPort (worse: from the HEADER DEFAULT, since
+    # the driven set carries only the Axi* geometry) and the emitted slice
+    # [NumPort-1:0] would bit-select the port count off a single element -
+    # found on crux_mini, whose single-port l2 got 2-bit actuals on 1552-bit
+    # formals. The slice exists for SINGLE-range CDC ports on parametric
+    # wrappers; a multi-range port's formal is already instance-true, and the
+    # bare array element is the correct actual.
+    if len(re.findall(r'\[[^\[\]]+:[^\[\]]+\]', type_dim or decl)) > 1:
+        return None
     m = re.search(r'\[\s*([a-zA-Z0-9_]+)\s*-\s*1\s*:\s*0\s*\]', type_dim or decl)
     if m:
         param_name = m.group(1)

@@ -232,6 +232,11 @@ package ${pkg};
 % for dom in gateable_domains:
     DomainIdx_${fmt_name(dom.name)} = ${loop.index}${"," if not loop.last else ""}
 % endfor
+% if not gateable_domains:
+    // Sentinel member: this project has no managed domains, and an enum with
+    // no members is illegal SV. NumDomains is 0, so nothing indexes with it.
+    DomainIdx_None = 0
+% endif
   } domain_idx_e;
 
   // =========================================================================
@@ -246,6 +251,11 @@ package ${pkg};
 % for mst in axi_masters:
     AxiMstIdx_${camel_case(mst)} = ${loop.index}${"," if not loop.last else ""}
 % endfor
+% if not axi_masters:
+    // Sentinel member: no component masters the crossbar in this project (an
+    // empty enum is illegal SV). NumAxiMasters is 0, so nothing indexes with it.
+    AxiMstIdx_None = 0
+% endif
   } axi_mst_idx_e;
 
   localparam int unsigned NumAxiSlavesAsync = ${len(axi_slaves_async)};
@@ -255,6 +265,10 @@ package ${pkg};
 % for slv in axi_slaves:
     AxiSlvIdx_${camel_case(slv['name'])} = ${loop.index}${"," if not loop.last else ""}
 % endfor
+% if not axi_slaves:
+    // Sentinel member, same rationale as the enums above.
+    AxiSlvIdx_None = 0
+% endif
   } axi_slv_idx_e;
 
   // AXI Memory Map Arrays (Reversed for correct SystemVerilog packed array syntax)
@@ -292,6 +306,10 @@ package ${pkg};
 % for slv in all_reg_slaves:
     RegBusSlvIdx_${camel_case(slv['name'])} = ${loop.index}${"," if not loop.last else ""}
 % endfor
+% if not all_reg_slaves:
+    // Sentinel member, same rationale as the enums above.
+    RegBusSlvIdx_None = 0
+% endif
   } regbus_slv_idx_e;
 
   localparam int unsigned RegExtNumRules = NumTotalRegSlaves;
