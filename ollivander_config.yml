@@ -394,7 +394,47 @@ dependencies:
     # set at every run by intersecting the declarations of the two checkouts, renames spatz's
     # side to spatz_*, and does nothing when snitch_cluster is not part of the SoC, so a
     # project without it compiles spatz exactly as fetched. See the script header.
+    # The IP pins the riscv-opcodes revision its bootrom flow generates encoding.h
+    # from, and that commit is NO LONGER REACHABLE in pulp-platform/riscv-opcodes
+    # (present in no branch: rewritten away upstream), so the IP's own flow cannot
+    # run as shipped. Re-pinned here to a live revision - explicitly, because an
+    # unpinned clone would make every clean tree fetch a different generator.
+    # Upstream candidate: refresh riscv-opcodes.version.
+    patches:
+      - file: "{bender_work}/spatz/sw/toolchain/riscv-opcodes.version"
+        search: "4bb9eebfc2cb97bd4d27a43880c8fe684cee242e"
+        replace: "3d7bf21386190ab5e6e3d0ddedbe09a967dc2f9f"
+    # ORDER IS LOAD-BEARING, and getting it wrong fails silently:
+    #   1. the cluster configuration is generated from THIS project's resolved
+    #      values (see scripts/gen_spatz_cfg.py for what is read and why). It also
+    #      ARBITRATES the rest: a project that instantiates no spatz cluster gets
+    #      no configuration file, and steps 2-4 below skip themselves. That case
+    #      is real and shipped - super_noc compiles spatz only INSIDE a nested
+    #      macro, whose cluster its own SoC description never declares and its
+    #      testbench never boots, so there is nothing to configure and the IP's
+    #      checked-in bootrom stays as passive content;
+    #   2. the IP's own opcodes flow generates encoding.h, which its bootrom
+    #      sources include (idempotent: the clone and the header are file targets);
+    #   3. clustergen builds the cluster wrapper and the BOOTROM from it - this
+    #      REWRITES src/generated/bootrom.sv, which is why it must come before any
+    #      patch script: a repair applied earlier would be erased here;
+    #   4. the remaining source repairs (manifest cleanup, the spatz_cc tracer,
+    #      the snitch-family name disambiguation) apply last, always.
+    # The guards are 'if/fi' rather than '&&': a skipped step must exit 0, while a
+    # step that RUNS must still be able to fail the generation.
+    # 'python' bare is what the opcodes generator calls, so the venv's bin goes on
+    # PATH for that step only.
+    # Both opcodes steps carry their own test guard rather than relying on make's
+    # timestamps, for two independent reasons: the IP's 'encoding.h' rule declares
+    # NO prerequisite on the clone (only its 'update_opcodes' aggregate does, so
+    # asking for the header alone on a fresh tree fails), and the patch above
+    # rewrites the .version file on every run, which would leave it newer than an
+    # existing clone directory and send 'git clone' at a path that already exists.
     pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/gen_spatz_cfg.py {bender_work}"
+      - "if [ -f {bender_work}/spatz/hw/system/spatz_cluster/cfg/spatz_cluster.ollivander.hjson ]; then test -d {bender_work}/spatz/sw/toolchain/riscv-opcodes || $(MAKE) -C {bender_work}/spatz sw/toolchain/riscv-opcodes; fi"
+      - "if [ -f {bender_work}/spatz/hw/system/spatz_cluster/cfg/spatz_cluster.ollivander.hjson ]; then test -s {bender_work}/spatz/sw/toolchain/riscv-opcodes/encoding.h || PATH=$(dirname $(PYTHON)):$PATH $(MAKE) -C {bender_work}/spatz sw/toolchain/riscv-opcodes/encoding.h PYTHON=$(PYTHON); fi"
+      - "if [ -f {bender_work}/spatz/hw/system/spatz_cluster/cfg/spatz_cluster.ollivander.hjson ]; then $(MAKE) -C {bender_work}/spatz/hw/system/spatz_cluster SPATZ_CLUSTER_CFG=spatz_cluster.ollivander.hjson GCC_INSTALL_DIR=/opt/riscv/spatz-gcc-7.1.1 PYTHON=$(PYTHON) generate bootrom; fi"
       - "$(PYTHON) {ollivander_dir}/scripts/patch_spatz.py {bender_work}"
       - "$(PYTHON) {ollivander_dir}/scripts/patch_spatz_snitch.py {bender_work}"
     # The cluster bootrom repairs (PC-relative entry sequence, sub-line slicing for
