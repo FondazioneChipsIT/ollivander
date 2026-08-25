@@ -1209,7 +1209,16 @@ class RTLGenerator:
                 return comp, addr, size
 
             boot_mem_name = self.soc_config.software_stack.get("boot_memory", "")
-            _, b_addr, b_size = _slave_window(boot_mem_name, "payload region (via 'boot_memory')")
+            if boot_mem_name == self.soc_config.host.name:
+                # The host as boot memory means its INTERNAL scratchpad, whose window
+                # is contract knowledge - not the host's first axi_slave, which is the
+                # whole internal-subsystem region. Same resolution as the linker's.
+                _hf = comp_info.get(self.soc_config.host.name, {}).get("fixed_params", {})
+                _, _hb, _ = _slave_window(boot_mem_name, "host window")
+                b_addr = _hb + int(str(_hf.get("BootSpmOffset", "0")).strip('"\''), 0)
+                b_size = int(str(_hf.get("BootSpmSize", "0")).strip('"\''), 0)
+            else:
+                _, b_addr, b_size = _slave_window(boot_mem_name, "payload region (via 'boot_memory')")
 
             payload_mem_name = self.soc_config.software_stack.get(
                 "test_app", {}).get("payload_memory")

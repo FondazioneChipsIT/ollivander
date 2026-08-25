@@ -860,6 +860,30 @@ def validate_cross_references(config: OllivanderConfig):
             errors.append(f"[software_stack] boot_memory '{boot_memory}' is not a component of this SoC."
                           f"{_suggest(boot_memory, comp_names)}")
 
+    # NAMING THE HOST as the boot memory means "the host's own internal scratchpad":
+    # the always-on memory its contract locates (BootSpmOffset/Size), so the boot
+    # depends on nothing external being powered and mapped. It composes with the
+    # ARCHITECTED preloads only, and not for lack of effort: on cheshire that
+    # scratchpad IS the last-level cache with its ways switched to SPM duty, so a
+    # hierarchical $readmemh would have to reproduce axi_llc's own way/set mapping -
+    # a third-party IP's internals restated inside our generator. The architected
+    # loaders write by ADDRESS and the LLC dispatches, so they need to know nothing
+    # of it. The reference reached the same conclusion: gwaihir's backdoor preload
+    # routes per section, and everything landing outside its flat L2 tiles - the
+    # scratchpad included - still travels the debug module.
+    if boot_memory and boot_memory == config.host.name:
+        _pm = (config.testbench or {}).get('preload_mode', 'readmemh')
+        if _pm not in ('jtag', 'slink', 'uart'):
+            errors.append(f"[software_stack] boot_memory '{boot_memory}' is the host, which means"
+                          f" its internal scratchpad, and preload_mode '{_pm}' cannot reach it:"
+                          f" that memory is the last-level cache in scratchpad mode, with no"
+                          f" declarable path to its arrays. Use an architected preload"
+                          f" ('jtag', 'slink' or 'uart'), which loads it by address.")
+        # The contract's presence is NOT checked here: this pass sees the description,
+        # not the parsed isle headers. It is checked where fixed_params exist, in the
+        # boot-memory executability guard (arch_optimizer), which needs the same values
+        # anyway and can therefore fail with the actual window in the message.
+
     # A JTAG boot needs the host's TAP to be reachable from the top-level pins, and the only
     # thing that routes it there is the host exporting the 'jtag' interface. Without the export
     # the tile layer ties the isle's jtag inputs to '0, and the failure is then perfectly

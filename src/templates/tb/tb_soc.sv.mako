@@ -75,7 +75,11 @@ module tb_${top_level_module_name}();
           clean_name = clean_name.split('.')[0]
       if clean_name.startswith("i_"):
           clean_name = clean_name[2:]
-      for comp in config.components:
+      # The HOST is a legitimate target too: a project may name it as the preload
+      # instance to mean its internal scratchpad. The NoC branch above already
+      # searches [host] + components through placement, so leaving it out here was
+      # an internal inconsistency.
+      for comp in [config.host] + (config.components or []):
           if comp.name == clean_name:
               return comp
       return None
@@ -1037,11 +1041,69 @@ ${jtag_rst_str}
   // the testbench. Runs after the gated bring-up (the image may live in a
   // gated tile) and before the handoff (the host must find it on wake-up).
   // ==========================================================================
+<%
+    # A target that only ANSWERS once the host's firmware has built it: the
+    # internal scratchpad is the last-level cache with its ways switched to
+    # scratchpad duty, and the switch is the bootrom's own work. Loading before
+    # that write earns a SLVERR on the first burst, so the agent waits for the
+    # fact the host contract names (BootSpmReadyOffs/Mask) instead of guessing a
+    # delay - the same discipline as waiting for reset release or for the debug
+    # server's ACK. Emitted once, ahead of every region.
+    _spm_ready = None
+    if any(find_component(m['instance'], config) is not None
+           and find_component(m['instance'], config).name == config.host.name
+           for m in preload_mems):
+        _ready_offs = str(host_fixed.get("BootSpmReadyOffs", "")).strip('"\'')
+        _ready_mask = str(host_fixed.get("BootSpmReadyMask", "")).strip('"\'')
+        if not _ready_offs or not _ready_mask:
+            raise ValueError(
+                "the host is a preload target (its internal scratchpad), but "
+                f"'{config.host.type}' declares no BootSpmReadyOffs/BootSpmReadyMask: "
+                "without them the testbench cannot tell when that memory answers, "
+                "and loading it too early fails with a bus error")
+        _hslv = (config.host.interfaces or {}).get("axi_slave", [])
+        if isinstance(_hslv, dict):
+            _hslv = [_hslv]
+        _hb = _hslv[0].get("base_addr", 0) if _hslv else 0
+        _hb = int(_hb, 0) if isinstance(_hb, str) else int(_hb)
+        _spm_ready = (_hb + int(_ready_offs, 0), int(_ready_mask, 0))
+        _reader = {"jtag": "i_vip.sba_read32",
+                   "slink": "i_vip.gen_slink_agent.slink_read32",
+                   "uart": "i_vip.gen_uart_boot.uart_read32"}[preload_mode]
+%>\
+% if _spm_ready:
+  // Wait for the host's internal scratchpad to exist (see the python note above).
+  begin
+    automatic logic [31:0] spm_cfg;
+    automatic int unsigned tries = 0;
+    do begin
+      ${_reader}(64'h${f"{_spm_ready[0]:x}"}, spm_cfg);
+      if ((spm_cfg & 32'h${f"{_spm_ready[1]:x}"}) != 0) break;
+      if (++tries > 10000)
+        $fatal(1, "[TB] the host never configured its internal scratchpad (%s reads 0x%h)",
+               "0x${f"{_spm_ready[0]:x}"}", spm_cfg);
+    end while (1);
+    $display("[TB] host scratchpad ready after %0d poll(s), loading the image...", tries + 1);
+  end
+% endif
   % for mem in preload_mems:
 <%
     sba_comp = find_component(mem['instance'], config)
     sba_base = None
-    if sba_comp:
+    if sba_comp is not None and getattr(sba_comp, "name", None) == config.host.name:
+        # The HOST as preload target means its INTERNAL scratchpad: the window is
+        # contract knowledge (BootSpmOffset), never the host's first axi_slave,
+        # which is the whole internal-subsystem window. The architected loaders
+        # write by address, so the LLC-backed scratchpad needs no dotted path -
+        # and the host tile keeps its Verilator hierarchical-block status.
+        _hf = comp_info.get(config.host.name, {}).get("fixed_params", {})
+        _hslv = (config.host.interfaces or {}).get("axi_slave", [])
+        if isinstance(_hslv, dict):
+            _hslv = [_hslv]
+        _hb = _hslv[0].get("base_addr", 0) if _hslv else 0
+        _hb = int(_hb, 0) if isinstance(_hb, str) else int(_hb)
+        sba_base = _hb + int(str(_hf.get("BootSpmOffset", "0")).strip('"\''))
+    elif sba_comp:
         for slv in (getattr(sba_comp, "interfaces", {}) or {}).get("axi_slave", []):
             sba_base = slv.get("base_addr")
             if sba_base is not None:

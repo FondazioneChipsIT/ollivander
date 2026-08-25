@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: SHL-0.51
 
 import re
+import sys
 
 def optimize_clock_tree(soc_config):
     """
@@ -241,3 +242,133 @@ def warn_boot_memory_gated(soc_config, original_isle_types=None):
         print("       region. The generated testbench performs this bring-up automatically; real")
         print("       silicon needs an equivalent. Set power_on_state: 'enabled', or move the boot")
         print("       image to an always-on memory, to remove the dependency.")
+
+
+def _first_axi_slave_window(comp):
+    """(base, size) of a component's first AXI slave window, or (None, None)."""
+    slaves = (getattr(comp, "interfaces", {}) or {}).get("axi_slave", [])
+    if isinstance(slaves, dict):
+        slaves = [slaves]
+    if not slaves:
+        return None, None
+    base = slaves[0].get("base_addr", 0)
+    size = slaves[0].get("size", slaves[0].get("size_per_instance", 0))
+    base = int(base, 0) if isinstance(base, str) else int(base)
+    size = int(size, 0) if isinstance(size, str) else int(size)
+    return base, size
+
+
+def check_boot_memory_executable(soc_config, comp_info):
+    """
+    Refuse a configuration whose boot image is linked for a memory the host cannot
+    FETCH from.
+
+    The relation that makes a boot work is spread over three declarations that never
+    mention each other: which memory holds the image (`software_stack.boot_memory`),
+    where that memory is (its `axi_slave` base), and whether the host may execute
+    there (the host's CIE window, its LLC-out window, or its own internal
+    scratchpad). Get it wrong and there is no error anywhere: the host simply never
+    fetches, and the run dies before its first instruction.
+
+    The executable set checked here is the one a cheshire-class host publishes to its
+    core - internal scratchpad, CIE window, LLC-out window - reconstructed from the
+    values THIS project declares. When the host declares none of them the check
+    cannot run, and says so rather than passing silently; a host outside this family
+    is not checked at all, which is why the guard keys on the parameters' presence
+    and never on the host's type.
+    """
+    boot_mem_name = (soc_config.software_stack or {}).get("boot_memory")
+    if not boot_mem_name:
+        return
+
+    host = soc_config.host
+    host_fixed = (comp_info or {}).get(host.name, {}).get("fixed_params", {})
+
+    def contract_int(key, default=None):
+        raw = str(host_fixed.get(key, "")).strip('"\'')
+        if not raw:
+            return default
+        try:
+            return int(raw, 0)
+        except ValueError:
+            return default
+
+    host_base, _ = _first_axi_slave_window(host)
+    spm_off = contract_int("BootSpmOffset")
+    spm_size = contract_int("BootSpmSize")
+
+    # The host's own scratchpad: executable by construction (it is what its bootrom
+    # runs from), so naming the host is always valid - provided the contract that
+    # locates that memory exists at all. This is the check the schema pass defers
+    # here, where the parsed header is available.
+    if boot_mem_name == host.name:
+        if spm_off is None or spm_size is None or host_base is None:
+            print(f"[ERROR] boot_memory '{boot_mem_name}' names the host, meaning its internal")
+            print(f"        scratchpad, but '{host.type}' declares no BootSpmOffset/BootSpmSize")
+            print(f"        contract: there is no window to link the firmware for.")
+            sys.exit(1)
+        # That scratchpad is the last-level cache with its ways in SPM mode, so a
+        # project that omits the LLC omits the memory too - and cheshire's own
+        # documentation says an external substitute becomes mandatory in that case.
+        # Left unchecked, the firmware would be linked for an address nothing serves.
+        _bypass = (host.parameters or {}).get("LlcNotBypass")
+        if _bypass is not None and not (int(_bypass, 0) if isinstance(_bypass, str) else int(_bypass)):
+            print(f"[ERROR] boot_memory '{boot_mem_name}' names the host's internal scratchpad,")
+            print(f"        but this project sets LlcNotBypass=0: that scratchpad IS the")
+            print(f"        last-level cache in SPM mode, and without the LLC it does not exist.")
+            print(f"        Name an external memory as boot_memory, or keep the LLC.")
+            sys.exit(1)
+        print(f"  -> Boot memory: the host's internal scratchpad at "
+              f"{host_base + spm_off:#x} ({spm_size // 1024} KiB), always-on")
+        return
+
+    boot_comp = next((c for c in (soc_config.components or []) if c.name == boot_mem_name), None)
+    if boot_comp is None:
+        return  # unknown name: the cross-reference pass already reported it
+    base, size = _first_axi_slave_window(boot_comp)
+    if base is None:
+        return  # no AXI window to reason about (regbus-only memory)
+
+    # The windows this project declares. CIE geometry is the host's own: anchored
+    # under 0x8000_0000 when OnTop, at 0x2000_0000 otherwise (cheshire's
+    # gen_cva6_cfg). LLC-out is declared outright.
+    params = host.parameters or {}
+
+    def param_int(key):
+        val = params.get(key)
+        if val is None:
+            return None
+        if isinstance(val, bool):
+            return int(val)
+        return int(val, 0) if isinstance(val, str) else int(val)
+
+    windows = []
+    if host_base is not None and spm_off is not None and spm_size:
+        windows.append(("the host's internal scratchpad",
+                        host_base + spm_off, host_base + spm_off + spm_size))
+    cie_len = param_int("Cva6ExtCieLength")
+    if cie_len:
+        cie_base = (0x8000_0000 - cie_len) if param_int("Cva6ExtCieOnTop") else 0x2000_0000
+        windows.append(("the CIE window", cie_base, cie_base + cie_len))
+    llc_start, llc_end = param_int("LlcOutRegionStart"), param_int("LlcOutRegionEnd")
+    if llc_start is not None and llc_end is not None and llc_end > llc_start:
+        windows.append(("the LLC-out window", llc_start, llc_end))
+
+    if not windows:
+        print(f"[WARN] Cannot verify that boot memory '{boot_mem_name}' is executable for the")
+        print(f"       host: '{host.type}' declares neither a CIE window (Cva6ExtCieLength) nor")
+        print(f"       an LLC-out window. If the host cannot fetch there, the run will die")
+        print(f"       before its first instruction with no diagnostic.")
+        return
+
+    if any(base >= w_lo and base + size <= w_hi for _, w_lo, w_hi in windows):
+        return
+
+    print(f"[ERROR] Boot memory '{boot_mem_name}' spans [{base:#x}, {base + size:#x}), which no")
+    print(f"        region the host can execute from covers. Declared executable windows:")
+    for name, w_lo, w_hi in windows:
+        print(f"          - {name}: [{w_lo:#x}, {w_hi:#x})")
+    print(f"        The host would never fetch its first instruction, and nothing would say so")
+    print(f"        at run time. Move the boot memory inside one of these windows, or size the")
+    print(f"        host's CIE window (Cva6ExtCieOnTop/Cva6ExtCieLength) to cover it.")
+    sys.exit(1)

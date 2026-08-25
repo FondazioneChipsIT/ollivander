@@ -294,9 +294,15 @@ testbench:
   # loadable segment larger than the memory it targets could never land
   # anyway. noc_isle is the fleet's representative of the EXPLICIT knob
   # (crux, the other ELF project, deliberately regresses the 4 MiB default).
-  elf_max_section_bytes: 0x100000
+  elf_max_section_bytes: 0x10000
   preload_memories:
-    - instance: "i_tile_0_0.i_isle" # Hierarchical RTL path to the first L2 tile
+    # The HOST, meaning its internal scratchpad: the always-on memory cheshire
+    # keeps for exactly this purpose, so nothing external has to be powered and
+    # mapped before the first fetch. The architected loaders write it BY ADDRESS
+    # (the window comes from the host's BootSpm* contract), so no hierarchical
+    # path enters the design and the host tile stays a Verilator hierarchical
+    # block - which a $readmemh into an L2 tile costs us.
+    - instance: "i_manager"
       # The image travels as the ELF itself ({test_app} resolves to the
       # configured app): noc_isle is the fleet's slink+elf representative in
       # the format-by-transport coverage matrix (crux carries jtag+elf; hex
@@ -310,14 +316,22 @@ testbench:
 # Defines the toolchain and target memory for automated bare-metal C compilation.
 software_stack:
   toolchain: "riscv64-unknown-elf-"
-  boot_memory: "l2_shared_memory"    # Ollivander will use this to auto-generate the Linker Script
+  # The host's own internal scratchpad (see the preload note above): this project
+  # is the fleet's witness that a mesh SoC can boot without depending on the
+  # testbench to bring up a gated tile first. super_noc keeps that other path
+  # covered, so the deliberate boot-memory distribution stays intact.
+  boot_memory: "manager"
   test_app:
     # The offload app is a strict superset of hello_world: same greeting first,
     # then payload offload onto every component declaring an Offload* contract
     # (here: the 16 snitch cluster_subtile instances, launched in parallel).
-    # No 'payload_memory' here: the boot memory IS the L2, which both networks
-    # reach, so the default carve (second quarter of its instance-0 window)
-    # is fetchable by the clusters as-is.
+    # 'payload_memory' is MANDATORY here, and the reason is the same one that makes
+    # the internal scratchpad a good boot memory: it lives inside the host, on the
+    # narrow network, while the snitch instruction cache refills through the
+    # cluster's WIDE master. The default carve would put the payload where the
+    # clusters cannot fetch it, so it is named explicitly - the L2, which both
+    # networks reach.
+    payload_memory: "l2_shared_memory"
     name: "offload"
     auto_generate_c: true            # Instructs Ollivander to create a basic main.c
     # Simulation-fast UART (divisor 3, ~2.08 Mbaud effective): at 115200 the UART

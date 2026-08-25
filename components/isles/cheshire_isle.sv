@@ -92,6 +92,20 @@ module cheshire_isle
   localparam bit HasAutonomousBoot = 1,
   localparam longint unsigned BootSpmOffset = 64'h1000_0000,
   localparam longint unsigned BootSpmSize   = 64'h0001_0000,
+  // THE SCRATCHPAD DOES NOT EXIST AT RESET, and this pair says how to know when
+  // it does. That memory is the last-level cache with its ways switched to
+  // scratchpad duty, and the switch is SOFTWARE: cheshire_bootrom.S waits for the
+  // cache's BIST to finish, writes all-ones to the LLC's CFG_SPM_LOW/HIGH and
+  // commits (see its `_wait_llc_bist` block). Before that write no address rule
+  // covers the region and axi_llc's burst cutter answers SLVERR on every access -
+  // an external agent that loads the scratchpad the instant reset releases gets
+  // exactly that. So an agent must WAIT for an observable fact rather than a
+  // delay: read the register named here and proceed once the mask is set, which
+  // observes the bootrom's own write (its commit follows three instructions
+  // later, long before any burst can land). Offset from the host's window base:
+  // LLC_BASE_ADDR 0x300_1000 (cheshire_addrmap_pkg) + CFG_SPM_LOW at 0x0.
+  localparam longint unsigned BootSpmReadyOffs = 64'h0300_1000,
+  localparam int unsigned     BootSpmReadyMask = 32'hFFFF_FFFF,
   // The external memory DEVICES the bootrom can boot from are host-owned
   // knowledge too: the behavioral models ship with the host's own dependency
   // (cheshire's Bender graph carries them under its simulation target), and

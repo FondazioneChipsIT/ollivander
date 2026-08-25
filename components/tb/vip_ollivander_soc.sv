@@ -313,6 +313,24 @@ module vip_ollivander_soc #(
       uart_write_burst(addr, q);
     endtask
 
+    // 32-bit control read: the third sibling of sba_read32 and slink_read32, and
+    // the reason it exists is the same - waiting for a fact the design publishes
+    // in a register (the host's scratchpad only answers once its bootrom has
+    // turned the cache's ways into scratchpad). The server's read command mirrors
+    // its write: command, address, length, then the bytes and the closing EOT.
+    task automatic uart_read32(input logic [63:0] addr, output logic [31:0] data);
+      automatic logic [7:0] b;
+      uart_send_byte(UartDebugCmdRead);
+      for (int i = 0; i < 8; i++) uart_send_byte(addr[8*i +: 8]);
+      for (int i = 0; i < 8; i++) uart_send_byte(8'((4 >> (8*i)) & 8'hFF));
+      data = '0;
+      for (int i = 0; i < 4; i++) begin
+        uart_scoop(b);
+        data[8*i +: 8] = b;
+      end
+      uart_scoop_expect("EOT", UartDebugEot);
+    endtask
+
     // Streamed image load: the uart counterpart of sba_load/slink_load, the
     // SAME (base + flat word array) contract so the generated testbench emits
     // one packing whatever the transport.
@@ -944,6 +962,31 @@ module vip_ollivander_soc #(
         strb = slink_strb_t'(8'h0F);
       end
       slink_write_beats(beat_addr, beats, strb);
+    endtask
+
+    // Single 32-bit read, the mirror of slink_write32 and the serial-link
+    // counterpart of sba_read32. It exists for one reason: an agent sometimes has
+    // to WAIT for a fact the design publishes in a register - the host's
+    // scratchpad, for instance, does not answer until its bootrom has switched the
+    // cache's ways to scratchpad duty - and on the self-sufficient slink road no
+    // other transport is available to ask.
+    task automatic slink_read32(input logic [63:0] addr,
+                                output logic [31:0] data);
+      automatic slink_drv_t::ax_beat_t ax = new();
+      automatic slink_drv_t::r_beat_t  r;
+      if (addr[1:0] != 2'b00)
+        $fatal(1, "[VIP-SLINK] read32 at 0x%h is not 4-byte aligned", addr);
+      // Same edge-alignment discipline as the write path, same reason.
+      @(posedge clk_o);
+      ax.ax_addr  = {addr[SlinkAxiAddrWidth-1:3], 3'b000};
+      ax.ax_len   = 0;
+      ax.ax_size  = $clog2(SlinkAxiDataWidth / 8);
+      ax.ax_burst = axi_pkg::BURST_INCR;
+      slink_drv.send_ar(ax);
+      slink_drv.recv_r(r);
+      if (r.r_resp != axi_pkg::RESP_OKAY)
+        $fatal(1, "[VIP-SLINK] read at 0x%h answered %0d", addr, r.r_resp);
+      data = addr[2] ? r.r_data[63:32] : r.r_data[31:0];
     endtask
 
     // Streamed image load, the serial-link counterpart of sba_load: the SAME

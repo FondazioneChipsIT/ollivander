@@ -478,6 +478,7 @@ Defines the parameters for automated bare-metal C firmware generation and compil
 |               |        | the boot`.text`, `.data`, and `.bss` sections will be placed. Ollivander will       |
 |               |        | automatically fetch its `base_addr` and `size`. The name must resolve to a declared  |
 |               |        | component: a value that names nothing stops generation, suggesting the closest one.  |
+|               |        | Naming the **host** selects its own internal scratchpad instead — see below.         |
 | `test_app`    | Object | Configuration for the automatically generated test application.                     |
 
 **Test App Object**:
@@ -486,6 +487,14 @@ Defines the parameters for automated bare-metal C firmware generation and compil
 *   `baudrate`: Integer, optional (default `115200`). The UART rate the generated firmware programs. The generator converts it into the 16550 divisor and times the testbench's UART monitor on that **same divisor**, so the two sides cannot disagree — the divisor is an integer, and at high rates the true line rate differs from the nominal value by a few percent. Raising it is the single largest lever on simulation wall-clock time, because at 115200 a character costs ~87 µs of simulated time and the UART dominates a hello-world run: at `2000000` (divisor 3) the shipped examples close about **11× sooner**, which under Verilator turns an hour-long run into minutes. The examples ship with this value; lower it back to `115200` (or omit the key) when the firmware must drive a physical terminal.
 *   `offload_targets`: List of component names, optional and meaningful only with `name: "offload"`. Restricts the offload test to a subset of the offload-capable components; by default every capable component is tested. A name that is not offload-capable stops generation with the reason — never a silent skip.
 *   `payload_memory`: Component name, optional and meaningful only with `name: "offload"`. Hosts the shared payload region at the base of that component's (instance-0) window instead of carving it out of the boot memory — required when the boot memory is not fetchable by every target (see section 5.1).
+
+**Booting from the host's internal scratchpad.** Setting `boot_memory` to the **host's own name** links the firmware for the scratchpad the host keeps inside itself, located by its contract (`BootSpmOffset`/`BootSpmSize`, standardization section 5.4) rather than by any window of the SoC map. The point is that this memory is **always on**: nothing external has to be powered, ungated and mapped before the first fetch, so a SoC can boot without depending on the testbench to bring a gated tile up — which is why `noc_isle` uses it, while `super_noc` keeps the boot-image-in-a-gated-L2 path under regression.
+
+Three things follow from what that memory actually is — on a cheshire-class host, the last-level cache with its ways switched to scratchpad duty:
+
+*   **It requires an architected `preload_mode`** (`jtag`, `slink` or `uart`). Those write by address and the cache dispatches; a `readmemh` would need a hierarchical path into the cache's way arrays, addressed through the IP's own way/set mapping, and is refused at generation time rather than half-supported.
+*   **It does not exist at reset.** The host's bootrom creates it — it waits for the cache's built-in self test, then switches every way to scratchpad. The generated testbench therefore *waits for that fact* before loading, polling the register the host contract names (`BootSpmReadyOffs`/`Mask`) over the same transport the preload uses, and printing `host scratchpad ready after N poll(s)`. An agent that loaded immediately after reset would get a bus error, which is exactly what the first implementation did.
+*   **It is small** (64 KiB on cheshire, and its size is contract knowledge). With the `offload` app it also forces `payload_memory` to be declared: the scratchpad sits inside the host, and on a NoC the clusters refill their instruction caches through a different network, so the payload must live in a memory they can reach.
 
 **Example:**
 ```yaml

@@ -80,19 +80,23 @@ flowchart LR
 
 ### Example Projects (`soc_cfg_examples/`)
 
-Every example runs the hello-world firmware end-to-end in simulation and doubles as the regression suite of the generator itself.
+Every example runs its firmware end-to-end in simulation — hello world on the small ones, the `offload` application (a strict superset: same greeting, then payloads dispatched onto every accelerator) wherever there are accelerators to drive — and the set doubles as the regression suite of the generator itself. Each project is deliberately the **only witness** of something, which is why none of them is redundant.
 
 | Directory | Configuration | Topology | What it demonstrates |
 | :--- | :--- | :--- | :--- |
+| [`crossbar_mini`](soc_cfg_examples/crossbar_mini/) | `crux_mini.yml` | Crossbar | The minimum that boots: one host, one memory, no padframe. The UART debug boot |
+| [`crossbar_micro`](soc_cfg_examples/crossbar_micro/) | `crux_micro.yml` | Crossbar | The same without a debugger: **autonomous boot** from an SPI flash, no preload |
 | [`crossbar`](soc_cfg_examples/crossbar/) | `crux.yml` | Crossbar | Complete standalone SoC: clock tree, padframe, APB subsystem, heterogeneous isles |
 | [`crossbar_isle`](soc_cfg_examples/crossbar_isle/) | `crux_isle.yml` | Crossbar | The same SoC exported as an **isle macro** with a unified AXI boundary |
 | [`noc`](soc_cfg_examples/noc/) | `mesh.yml` | NoC | 2D mesh with multicast, booting on its own from an always-on scratchpad |
-| [`noc_isle`](soc_cfg_examples/noc_isle/) | `mesh_isle.yml` | NoC | Mesh exported as an **isle macro**: both networks joined into one AXI port |
+| [`noc_isle`](soc_cfg_examples/noc_isle/) | `mesh_isle.yml` | NoC | Mesh exported as an **isle macro**; boots from the **host's internal scratchpad** |
 | [`noc_subtile`](soc_cfg_examples/noc_subtile/) | `mesh_subtile.yml` | NoC | Mesh exported as a **subtile macro**: native dual narrow/wide NoC boundary |
 | [`super_crossbar`](soc_cfg_examples/super_crossbar/) | `super_crux.py` (Python) | Crossbar | Parent SoC nesting the **Mesh** macro — a NoC inside a crossbar |
 | [`super_noc`](soc_cfg_examples/super_noc/) | `super_mesh.py` (Python) | NoC | Parent SoC nesting the **Crux** isle macro and a mesh subtile — a crossbar inside a NoC |
 
 The two `super_*` projects deliberately cross the topologies, so each of them resolves, compiles and simulates the external IPs of **both** families in a single Bender dependency graph.
+
+The set also spreads the **boot roads** so that every one of them has a witness: `force` (`crossbar_isle`, `noc_subtile`), the debug-module boot (`crossbar`, `noc`), the same composed with a serial-link image transport (`noc_isle`, `super_crossbar`), the self-sufficient serial-link boot that never touches the TAP (`super_noc`), the bootrom's own UART debug server (`crossbar_mini`), and the autonomous fetch from an external flash, where nothing drives the chip at all (`crossbar_micro`). Where the boot **image** lives is spread on purpose too — an always-on scratchpad, a gated L2 tile brought up by the testbench, the host's own internal scratchpad — because each of those exercises a different power-up dependency.
 
 ---
 
@@ -156,7 +160,7 @@ To close the gap between hardware generation and bare-metal validation, Ollivand
 1. Generate a **Linker Script** (`linker.ld`) perfectly synchronized with your SoC's physical memory map, eliminating manual offset errors.
 2. Create a starter **`main.c` firmware skeleton** that automatically includes the generated hardware CSR headers.
 3. Compile the application into `.elf` and `.hex` binaries using the specified RISC-V toolchain.
-4. Configure the auto-generated SystemVerilog testbench (`_tb.sv`) to seamlessly preload your `.hex` binary into the correct physical SRAM instances using `$readmemh` before the host processor exits reset.
+4. Configure the auto-generated SystemVerilog testbench (`tb_<name>.sv`) to bring the SoC up and get that binary — `.hex` or the `.elf` itself — into memory before the host runs, by whichever road the project asks for: a hierarchical `$readmemh` into the physical SRAM instances (fast, simulation-only), or an **architected** transport that writes by address exactly as silicon would — the debug module's system bus, an off-chip serial-link twin, or the bootrom's own UART debug server. A project may also let the chip fetch its own image from an external flash or EEPROM, in which case the testbench only preloads that device and waits.
 
 ---
 

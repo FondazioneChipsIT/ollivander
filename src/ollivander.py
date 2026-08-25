@@ -27,7 +27,7 @@ from mako.lookup import TemplateLookup
 from core.soc_schema import OllivanderConfig, validate_soc_components, validate_cross_references, validate_untyped_blocks, Component
 from core.stub_generator import generate_stubs
 from core.env_manager import setup_environment, load_env_yaml
-from core.arch_optimizer import optimize_clock_tree, autoconfigure_host, warn_boot_memory_gated
+from core.arch_optimizer import optimize_clock_tree, autoconfigure_host, warn_boot_memory_gated, check_boot_memory_executable
 from core.tool_runners import run_floogen, run_peakrdl, run_verible, run_pre_build_steps, run_padrick
 from core.reporter import print_generation_report
 from core.rtl_generator import RTLGenerator
@@ -362,6 +362,11 @@ def main():
     # =========================================================================
     # This phase prepares all the data needed for the final Mako rendering pass.
     comp_info, wiring_matrix, global_defines = generator.extract_wiring_metadata()
+    # The boot image must be linked for a memory the host can FETCH from, and the
+    # three declarations that decide it never mention each other (see
+    # check_boot_memory_executable). Runs here because it needs the parsed host
+    # contract from comp_info, and before rendering so a bad map never reaches RTL.
+    check_boot_memory_executable(soc_config, comp_info)
     generator.render_top_level(comp_info, wiring_matrix, global_defines)
             
     # =========================================================================

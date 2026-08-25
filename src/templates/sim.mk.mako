@@ -355,7 +355,11 @@ def find_component(comp_name, config):
         clean_name = clean_name.split('.')[0]
     if clean_name.startswith("i_"):
         clean_name = clean_name[2:]
-    for comp in config.components:
+    # The HOST is a legitimate target too: a project may name it as the preload
+    # instance to mean its internal scratchpad. The NoC branch above already
+    # searches [host] + components through placement, so leaving it out here was
+    # an internal inconsistency.
+    for comp in [config.host] + (config.components or []):
         if comp.name == clean_name:
             return comp
     return None

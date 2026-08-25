@@ -38,6 +38,24 @@ for comp in all_comps:
             if isinstance(s_size, str): s_size = int(s_size, 0)
             size = s_size
         break
+
+# Same two cases as the linker script: the autonomous boots load into the host's
+# internal scratchpad, and naming the HOST as boot_memory means that scratchpad
+# too. Its window is contract knowledge, not the host's first axi_slave - which is
+# the whole internal-subsystem window, and would put the stack pointer half a
+# gigabyte past anything that exists.
+_boot_mode = (config.get("testbench", {}) or {}).get("boot_mode", "force")
+if _boot_mode in ("spi_flash", "i2c_eeprom") or boot_mem_name == config.host.name:
+    _hf = comp_info.get(config.host.name, {}).get("fixed_params", {})
+    _spm_off = int(str(_hf.get("BootSpmOffset", "0")).strip('"\''))
+    _spm_size = int(str(_hf.get("BootSpmSize", "0")).strip('"\''))
+    _hslv = (config.host.interfaces or {}).get("axi_slave", [])
+    if isinstance(_hslv, dict):
+        _hslv = [_hslv]
+    _hb = _hslv[0].get("base_addr", 0) if _hslv else 0
+    _hb = int(_hb, 0) if isinstance(_hb, str) else int(_hb)
+    base_addr = _hb + _spm_off
+    size = _spm_size
 stack_pointer = hex(base_addr + size)
 
 # 2. Try to find a UART peripheral for printing

@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """
-Generate the spatz cluster's own hjson configuration from THIS project's
-resolved values, so the IP's meta-generation flow (clustergen) can build the
-cluster bootrom for the address map the SoC actually has.
+Build the spatz cluster's bootrom for the address map THIS project actually has,
+by driving the IP's own meta-generation flow from a configuration generated here.
+
+Invoked once from the dependency registry:
+
+    pre_build_cmds:
+      - "$(PYTHON) {ollivander_dir}/scripts/prep_spatz_bootrom.py {bender_work}"
+
+The whole sequence lives here rather than as shell in the registry because every
+step is CONDITIONAL on a fact this script alone establishes - whether the SoC has
+a spatz cluster at all, of its own or inside a nested macro. Expressed in YAML,
+that condition became the same `if [ -f ... ]` guard repeated on every line, and
+the host-prerequisite diagnostics did not fit at all.
 
 WHY THIS EXISTS
 ---------------
@@ -70,11 +80,15 @@ than one spatz cluster rather than letting the second instance mis-boot silently
 """
 
 import csv
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 import hjson
+
+from host_tools import require as require_host_tool
 
 ISLE_TYPE = "spatz_cluster_isle"
 STOCK_CFG = "hw/system/spatz_cluster/cfg/spatz_cluster.default.dram.hjson"
@@ -207,6 +221,50 @@ def write_cfg(stock, bender_work, cl_updates, dram, num_cores, tcdm_bytes, label
           f"tcdm {tcdm_bytes // 1024} KiB, "
           f"global mem [{dram[0]:#x}, {dram[0] + dram[1]:#x})")
     print(f"  -> written to {out}")
+    build_bootrom(bender_work, out)
+
+
+def run(cmd, cwd, extra_env=None):
+    """One step of the IP's flow, with its failure attributed to this script."""
+    env = dict(os.environ, **(extra_env or {}))
+    print(f"    $ {' '.join(str(c) for c in cmd)}")
+    if subprocess.run(cmd, cwd=cwd, env=env).returncode != 0:
+        die(f"'{' '.join(str(c) for c in cmd)}' failed in {cwd}")
+
+
+def build_bootrom(bender_work, cfg_path):
+    """Run the IP's own generation flow over the configuration just written.
+
+    Reached only when a configuration exists, which is the whole reason this lives
+    in a script: every step below is conditional on the SoC having a spatz cluster,
+    and in YAML that condition was the same file test repeated on each line.
+    """
+    root = (bender_work / "spatz").resolve()
+    cluster = root / "hw" / "system" / "spatz_cluster"
+    opcodes = root / "sw" / "toolchain" / "riscv-opcodes"
+    make = os.environ.get("MAKE", "make")
+    py = sys.executable
+    # 1. encoding.h, which the bootrom sources include, is GENERATED from a repo the
+    #    IP clones itself. Both steps are guarded by their own artifact rather than
+    #    by make's timestamps: the IP's rule for the header declares no dependency
+    #    on the clone (so asking for it alone on a fresh tree fails), and the
+    #    registry's re-pin rewrites the .version file on every run, which would
+    #    leave it newer than an existing clone and send `git clone` at a live path.
+    if not opcodes.is_dir():
+        run([make, "-C", str(root), "sw/toolchain/riscv-opcodes"], cwd=root)
+    header = opcodes / "encoding.h"
+    if not (header.is_file() and header.stat().st_size):
+        # Its generator invokes bare `python`, absent on this host class: the venv's
+        # bin goes on PATH for this step only.
+        run([make, "-C", str(root), "sw/toolchain/riscv-opcodes/encoding.h", f"PYTHON={py}"],
+            cwd=root, extra_env={"PATH": f"{Path(py).parent}:{os.environ.get('PATH', '')}"})
+    # 2. clustergen renders the wrapper and the BOOTDATA, then riscv32-gcc and
+    #    generate_bootrom.py turn them into src/generated/bootrom.sv - the file the
+    #    manifest already carries. This REWRITES that file, so it must precede any
+    #    patch script: a repair applied earlier would be erased here.
+    run([make, "-C", str(cluster), f"SPATZ_CLUSTER_CFG={cfg_path.name}",
+         f"GCC_INSTALL_DIR={require_host_tool('spatz-gcc')}", f"PYTHON={py}",
+         "generate", "bootrom"], cwd=cluster)
 
 
 def generate_for_nested(bender_work, stock):

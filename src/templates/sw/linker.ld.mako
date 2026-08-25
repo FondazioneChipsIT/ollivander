@@ -27,12 +27,18 @@ for comp in all_comps:
             size = hex(b_size) if isinstance(b_size, int) else str(b_size)
         break
 
-# AUTONOMOUS BOOT: the bootrom's GPT flow loads the firmware into
-# the host's INTERNAL scratchpad and jumps there, so the image must be linked
-# for that memory - located by the host's contract (BootSpmOffset/Size, the
-# JtagScratchOffset convention), not by any component of the parent map.
+# THE HOST'S INTERNAL SCRATCHPAD as the link target, in two cases that reach the
+# same place for different reasons: the AUTONOMOUS boots, where the bootrom's GPT
+# flow loads the image into that scratchpad and jumps there, and a project that
+# names the HOST ITSELF as its boot memory, which means "link for the host's own
+# scratchpad" - the memory cheshire keeps always-on, so the boot no longer depends
+# on anything external being powered and mapped. Either way the window comes from
+# the host's contract (BootSpmOffset/Size, the JtagScratchOffset convention) and
+# NOT from the host's first axi_slave, which is its whole address window: linking
+# for that would place the image at the base of the internal subsystem and the
+# stack past the end of a 512 MB region backed by nothing.
 boot_mode = (config.get("testbench", {}) or {}).get("boot_mode", "force")
-if boot_mode in ("spi_flash", "i2c_eeprom"):
+if boot_mode in ("spi_flash", "i2c_eeprom") or boot_mem_name == config.host.name:
     host_fixed = comp_info.get(config.host.name, {}).get("fixed_params", {})
     spm_off  = int(str(host_fixed.get("BootSpmOffset", "0")).strip('"\''))
     spm_size = int(str(host_fixed.get("BootSpmSize", "0")).strip('"\''))
