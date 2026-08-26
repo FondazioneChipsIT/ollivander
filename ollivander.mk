@@ -166,6 +166,17 @@ generate:
 # ==============================================================================
 # UTILITIES
 # ==============================================================================
+# Re-run phase 11 over the tree as it stands, without regenerating it: 'design'
+# elaborates the real IPs, 'stubs' the fast-check list (so it checks stub
+# fidelity). The generation runs this by itself; this target is for working
+# through a list of findings without paying for a full regeneration each time.
+.PHONY: check-rtl
+check-rtl:
+	@printf "\n[MAKE] Re-elaborating the generated RTL...\n"
+	@$(PYTHON) $(OLLIVANDER) -c $(SOC_YAML) -a $(ENV_YAML) -o $(OUT_DIR) --check-rtl $(CHECK_RTL_MODE)
+
+CHECK_RTL_MODE ?= design
+
 .PHONY: clean
 clean:
 	@printf "\n[MAKE] Cleaning generated files...\n"

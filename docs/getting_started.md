@@ -292,12 +292,14 @@ make generate
 ```
 Ollivander will create the `generated/` directory containing your complete SoC RTL, the `Bender.yml` manifest in your project root, and a ready-to-use SystemVerilog testbench!
 
+The run ends by **elaborating what it has just written**: the whole design goes through the **slang** front-end, and an error in the generated output or in your own components stops the generation instead of handing you RTL that only looks right. It costs a few seconds and needs nothing you do not already have. If your components carry a construct your simulator accepts and a strict front-end refuses, set `generated_rtl_check: warn` in your `*_env.yml` to see the diagnostics without being blocked — see `env_configuration_guide.md` chapter 6.
+
 ### 7.2 Iterative Development (fast-check)
 For rapid structural validation during iterative development, you can use the fast-check command: 
 ```bash
 make fast-check
 ```
-This command stubs all the external modules, avoiding their complete compilation.
+This command stubs all the external modules, avoiding their complete compilation. It then repeats the self-elaboration above over the stubbed file list, which is what verifies that a stub faithfully represents the IP it stands in for. The stubs are kept per simulator (`generated/.stubs/<tool>/`), so running the two backends in turn does not leave either of them describing the other's design.
 
 #### Simulator Backend Selection
 Ollivander supports two different backend engines for compiling and validating your fast-check:

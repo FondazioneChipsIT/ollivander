@@ -62,9 +62,9 @@ ${license()}\
 // explicit TODO, because none of them is exercised by its own test suite.
 //   - apb_adv_timer: the 64 external trigger inputs (ext_sig_i) are tied to '0,
 //     so external event capture is unusable.
-//   - aon_timer: alert_rx_i, lc_escalate_en_i and sleep_mode_i are tied to '0
-//     and alert_tx_o is left open, so the OpenTitan alert and sleep interfaces
-//     are inert.
+//   - aon_timer: alert_rx_i and sleep_mode_i are tied to '0, lc_escalate_en_i
+//     to lc_ctrl_pkg::Off, and alert_tx_o is left open, so the OpenTitan alert
+//     and sleep interfaces are inert.
 //   - can_top_apb: the 64-bit timestamp input is tied to all-ones instead of a
 //     running timebase, so time-triggered transmission always reads as expired
 //     and every received frame carries the same stamp.
@@ -701,7 +701,11 @@ module ${p_name}_${c_type}
     .tl_o                      ( tl_wdt_rsp      ),
     .alert_rx_i                ( '0              ),
     .alert_tx_o                ( /* unused */    ),
-    .lc_escalate_en_i          ( '0              ),
+    ## NOT '0: lc_tx_t is redundantly encoded (lc_ctrl_pkg: On = 4'b0101,
+    ## Off = 4'b1010), so all-zeros is neither, and the port relies on the
+    ## receiver reading an invalid value as "not On" - safe by luck rather than
+    ## by construction, and rejected outright by a strict front-end.
+    .lc_escalate_en_i          ( lc_ctrl_pkg::Off ),
     .intr_wkup_timer_expired_o ( ${p['name']}_intr_wkup_timer_expired_o ),
     .intr_wdog_timer_bark_o    ( ${p['name']}_intr_wdog_timer_bark_o    ),
     .nmi_wdog_timer_bark_o     ( ${p['name']}_nmi_wdog_timer_bark_o     ),

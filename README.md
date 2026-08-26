@@ -155,6 +155,9 @@ To ensure a clean, professional, and highly readable output, Ollivander invokes 
 ### Phase 10: IP-XACT Component Export
 Ollivander generates a standard-compliant IEEE 1685-2014 IP-XACT XML component description for the digital top-level (excluding the padframe) under `<outdir>/hw/ipxact/<project_name>.xml`. It automatically performs schema validation via `pyEDAA.IPXACT` to ensure full compatibility with commercial and open-source EDA tools.
 
+### Phase 11: Self-Elaboration of the Generated RTL
+Ollivander re-reads what it has just written: the whole design is elaborated with **slang** (through `pyslang`, already a dependency), and any error inside the generated output or the component directories stops the generation. The dependencies are materialised by this point, so the real IPs elaborate and our wrappers are checked against their true signatures - no stubs involved. It catches the class no other flow can see, because `vlog` does not check port existence across a module boundary and no simulation ever elaborates the chip wrapper. Costs two to four seconds; governed by `generated_rtl_check` (`strict` by default, `warn`, `off`) in the environment configuration. The `fast-check` flow runs the same check a second time over its stubbed file list, which is what verifies that a stub faithfully represents the IP it replaces.
+
 ### Beyond Generation: Software Bridging & Testbench Preloading
 To close the gap between hardware generation and bare-metal validation, Ollivander can fully automate the software build and simulation setup. If defined in your YAML, it will:
 1. Generate a **Linker Script** (`linker.ld`) perfectly synchronized with your SoC's physical memory map, eliminating manual offset errors.

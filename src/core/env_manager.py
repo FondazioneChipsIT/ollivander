@@ -63,6 +63,7 @@ class OllivanderEnv:
         # arguments alone.
         self.env_config_path = None
         self.fast_check_tool = "questa"
+        self.generated_rtl_check = "strict"   # strict | warn | off, see setup_environment
         self.ecc_schemes_dir = None
 
 def setup_environment(args, base_dir: Path) -> OllivanderEnv:
@@ -266,5 +267,21 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
             env.fast_check_tool = env_cfg["fast_check_tool"]
         else:
             env.fast_check_tool = "questa"
+
+    # Policy for the self-elaboration of the generated RTL (phase 11):
+    #   strict - errors in what we own stop the generation (the default: a check
+    #            that does not stop is a check whose green means nothing)
+    #   warn   - report and carry on. The escape hatch for a project whose own
+    #            components carry a construct its simulator accepts and a strict
+    #            front-end does not: we impose our tooling's severity on our own
+    #            output, not on someone else's legacy code
+    #   off    - skip the phase entirely
+    env.generated_rtl_check = str(
+        append_env_cfg.get("generated_rtl_check",
+                           env_cfg.get("generated_rtl_check", "strict"))).strip().lower()
+    if env.generated_rtl_check not in ("strict", "warn", "off"):
+        print(f"\n[ERROR] generated_rtl_check = '{env.generated_rtl_check}' is not a policy. "
+              f"Use 'strict', 'warn' or 'off'.")
+        sys.exit(1)
 
     return env

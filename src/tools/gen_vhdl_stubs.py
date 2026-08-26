@@ -12,6 +12,22 @@ where <vhdl_list_file> holds one .vhd/.vhdl path per line (the .vhd lines of
 `bender script flist`) and <output_dir> receives one <entity>.sv stub per
 mappable entity.
 
+Not to be confused with core/stub_generator.py, which also emits blackbox
+stubs and does a wholly different job. That one reads SYSTEMVERILOG with pyslang
+to make FAST-CHECK cheap - the external IPs are not compiled at all - and carries
+the machinery that goes with it: which files are fast-compile targets, transitive
+dependency resolution, typedef namespacing, struct-parameter flattening,
+hier-block exclusions, and the fast flists themselves. This one reads VHDL with a
+parser of its own because Verilator cannot read VHDL at all, and it writes into
+<OUT_DIR>/vhdl_stubs rather than <OUT_DIR>/.stubs/<tool>. The two also differ in
+what a stub means: these tie their outputs low so that real traffic through a
+stubbed block fails loudly, whereas the fast-check stubs preserve the signature
+and leave outputs open, being elaborated structurally and never run.
+
+The only thing genuinely shared is the last handful of lines - print a module
+header, its parameters, its ports, endmodule - which is not worth coupling two
+files with different lifecycles for.
+
 Rationale: the tool behind the license-free flow has no VHDL front-end, and
 bender's verilator script silently drops VHDL sources, so any VHDL entity
 instantiated from SystemVerilog surfaces as MODMISSING. QuestaSim keeps

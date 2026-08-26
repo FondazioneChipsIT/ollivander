@@ -614,7 +614,7 @@ prep-sim-verilator: update-hw
 	@# keep simulating the true mixed-language sources.
 	@$(BENDER) script flist $(VERILATOR_TARGETS) | grep -iE '\.vhdl?$$' > $(OUT_DIR)/vhdl_sources.f || true
 	@if [ -s $(OUT_DIR)/vhdl_sources.f ]; then \
-		$(PYTHON) $(OLLIVANDER_ROOT)/scripts/gen_vhdl_stubs.py $(OUT_DIR)/vhdl_sources.f $(OUT_DIR)/vhdl_stubs && \
+		$(PYTHON) $(OLLIVANDER_ROOT)/src/tools/gen_vhdl_stubs.py $(OUT_DIR)/vhdl_sources.f $(OUT_DIR)/vhdl_stubs && \
 		ls $(OUT_DIR)/vhdl_stubs/*.sv 2>/dev/null >> $(OUT_DIR)/sim/verilator/compile_verilator_src.f || true; \
 	fi
 

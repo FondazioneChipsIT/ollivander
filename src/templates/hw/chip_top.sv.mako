@@ -17,7 +17,10 @@ module ${config.project.module_prefix}_chip (
 );
 
     import ${config.project.soc_pkg_name}::*;
-    import pkg_${project_name}_padframe::*;
+    ## config.padframe.name, not '<project>_padframe': the two coincide across the
+    ## example fleet but the name is the project's to choose, and the generator
+    ## already looks the package up by it.
+    import pkg_${config.padframe.name}::*;
 
 <%
     has_dynamic_pads = any(not pad.get('is_static', False) for dom in pad_domains for pad in dom['pad_list'])
@@ -114,7 +117,16 @@ module ${config.project.module_prefix}_chip (
     // ---------------------------------------------------------------------
     // Padframe Instantiation
     // ---------------------------------------------------------------------
-    ${project_name}_padframe i_padframe (
+    ## The padframe declares its register-interface types as PARAMETERS defaulting
+    ## to 'logic' (Padrick's convention), and instantiating it without them left
+    ## the whole chain - padframe, muxer, config_reg_top - elaborating as 'logic',
+    ## so every member access inside it was an access on a scalar. QuestaSim
+    ## converted the struct implicitly and said nothing; nothing else looked,
+    ## because no flow elaborates this wrapper.
+    ${config.padframe.name} #(
+        .req_t  (${config.project.soc_pkg_name}::soc_reg_req_t),
+        .resp_t (${config.project.soc_pkg_name}::soc_reg_rsp_t)
+    ) i_padframe (
         .clk_i (${sys_clk}),
         .rst_ni(${sys_rst_n}),
 % if has_static_pads:

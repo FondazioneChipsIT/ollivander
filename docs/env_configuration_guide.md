@@ -306,3 +306,66 @@ fast_check_tool: "verilator"  # Options: "questa" (default) or "verilator"
    ```bash
    make fast-check FAST_CHECK_TOOL=verilator
    ```
+
+---
+
+## 6. Self-Elaboration of the Generated RTL (`generated_rtl_check`)
+
+Ollivander parses the external IPs with `pyslang` to learn their signatures, and since the ninth wave it also re-reads **what it writes**. Phase 11, the last of the generation run, elaborates the design with the **slang** front-end and refuses errors found inside the generated output or the component directories.
+
+```yaml
+# my_project_env.yml
+generated_rtl_check: "strict"   # "strict" (default) | "warn" | "off"
+```
+
+| value | behaviour |
+| --- | --- |
+| `strict` | errors in what Ollivander generated **stop the generation**. The default: a check that does not stop is a check whose green result means nothing. |
+| `warn` | the same errors are reported and the generation continues. |
+| `off` | the phase is skipped entirely. |
+
+### 6.1 What it reports, and what it does not
+
+The reported set is **derived, not fixed**: it is the output directory plus every entry of `paths.components`, including the directories a project adds in its own environment YAML. Vendor sources are *parsed* — their packages are needed to elaborate anything at all — but never *reported*, or the check would drown in third-party diagnostics that are not yours to fix.
+
+That inclusion of your own components is deliberate. They are, in any project, the least reviewed SystemVerilog in the tree: nobody upstream reviewed them, they have no other consumer, and no example exercises them. A fixed pair of paths would have under-covered exactly the code that most needs a second reader.
+
+`warn` exists for that same reason seen from the other side. Ollivander is entitled to impose its front-end's severity on **its own** output; imposing it on a component you wrote, which your simulator accepts, would be presumptuous. Set `warn`, read the diagnostics, and decide for yourself.
+
+### 6.2 It is an elaboration check, not a lint
+
+Worth being explicit, because the two are easy to conflate and the expectation matters. This check answers *is this legal, self-consistent SystemVerilog?* — does every instantiated module exist, do its ports exist and match, do types resolve, do parameters elaborate, is a member access valid on the type it is applied to. A lint answers a different question: *is this legal code unwise?* — latches, incomplete cases, width truncation, undriven signals.
+
+Three consequences follow:
+
+*   **The severity is not a matter of taste.** An elaboration error means the RTL is not valid to a conforming front-end, so someone downstream will hit it; that is why `strict` is a defensible default. A lint finding is an opinion, and a lint gate needs a warning set argued rule by rule before it can block anything.
+*   **It will never report a latch, or a truncated width.** Those elaborate perfectly. Expecting lint findings here and receiving none would read as a broken check rather than as a check doing its job.
+*   **It is a third front-end, not a third opinion.** The value comes from front-end diversity: QuestaSim and Verilator are lenient in different places, `slang` is strict. Same class of tool, different tolerance — which is exactly how it finds what two simulators pass over.
+
+The boundary is not metaphysical: `slang` has a warning set of its own, and this check deliberately reports **errors only**. Turning its warnings on would move it towards linting, and that would be a decision requiring the curated set above, not a drift.
+
+### 6.3 Why a third front-end, when fast-check already elaborates
+
+Because `fast-check` and the simulators cannot see one whole class of defect:
+
+* `vlog` does not check port existence across a module boundary, so a wrapper connecting ports its submodule never declared compiles clean;
+* nothing in any flow elaborates the **chip wrapper** — the generated testbench instantiates the SoC, not the chip — so that file is compiled and never checked.
+
+Those two together let a wrapper carrying fourteen connections to non-existent padframe ports pass every gate the project had. Phase 11 is the flow that would have caught it, and it costs two to four seconds per project.
+
+### 6.4 The two passes
+
+| pass | file list | what only it can see |
+| --- | --- | --- |
+| phase 11, end of generation | the whole design; dependencies are already fetched, so the **real** IPs elaborate | self-consistency of the generated RTL, and our wrappers against the IPs' true signatures |
+| `fast-check`, after stub generation | the fast-check list, with stubs standing in for the IPs | whether a **stub faithfully represents** the IP it replaces |
+
+Both obey `generated_rtl_check`. The stub pass is the cheaper of the two and exists for the narrower reason: a malformed stub makes the fast-check green mean less than it appears to.
+
+### 6.5 Running it by hand
+
+From a project directory, `make check-rtl` re-runs the check over the tree as it stands, without regenerating it — useful while working through a list of findings — and `make check-rtl CHECK_RTL_MODE=stubs` selects the stubbed variant. Both are the generator's own `--check-rtl` flag, and both read only: the report-only path returns before anything touches the output directory. The full-design mode needs `bender` on `PATH`, since the file list comes from `bender script flist-plus`.
+
+### 6.6 It degrades loudly
+
+There is no path in which a missing check looks like a passing one. If `pyslang` is absent, if Bender cannot produce a file list, or if the checker fails its own self-test — an input known to be invalid that it must reject before its clean verdicts are believed — the phase says so and leaves the generation alone.

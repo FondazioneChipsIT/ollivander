@@ -29,10 +29,92 @@ from core.stub_generator import generate_stubs
 from core.env_manager import setup_environment, load_env_yaml
 from core.arch_optimizer import optimize_clock_tree, autoconfigure_host, warn_boot_memory_gated, check_boot_memory_executable
 from core.tool_runners import run_floogen, run_peakrdl, run_verible, run_pre_build_steps, run_padrick
+from core import rtl_checker
 from core.reporter import print_generation_report
 from core.rtl_generator import RTLGenerator
 from core.ipxact_generator import generate_ipxact
 from core.noc_placement_checker import run_noc_placement_check
+
+def run_generated_rtl_check(env, outdir_path, use_stubs=False):
+    """Phase 11: elaborate the generated RTL and report only what we own.
+
+    Policy from the environment (`generated_rtl_check`): 'strict' stops the
+    generation, 'warn' reports and carries on, 'off' skips. Strict is the default
+    because a check that does not stop is a check whose green result means
+    nothing; 'warn' exists for a project whose OWN components carry a construct
+    its simulator accepts and a strict front-end refuses - we are entitled to
+    impose our tooling's severity on our output, not on someone else's code.
+
+    Degrades loudly, never silently: a missing pyslang, a Bender that cannot
+    produce a file list, or a checker that fails its own self-test all report why
+    and leave the generation alone rather than passing quietly.
+    """
+    policy = getattr(env, "generated_rtl_check", "strict")
+    if policy == "off":
+        return
+
+    print("=" * 70)
+    print(f"[*] {'Self-Elaborating the stubbed design' if use_stubs else 'Starting Phase 11: Self-Elaborating the Generated RTL'}...\n")
+
+    if not rtl_checker.HAS_PYSLANG:
+        print("  [WARNING] pyslang is not available: skipping. It ships in "
+              "requirements.txt - run 'make setup' to restore the venv.")
+        print("=" * 70)
+        return
+    if not rtl_checker.self_test():
+        print("  [WARNING] The checker did not flag a known-invalid input, so a clean "
+              "result from it would mean nothing. Skipping rather than reassuring.")
+        print("=" * 70)
+        return
+
+    if use_stubs:
+        tcl = outdir_path / "sim" / "questa" / "compile_vsim_fast.tcl"
+        if not tcl.is_file():
+            print(f"  [WARNING] {tcl.name} was not written: skipping.")
+            print("=" * 70)
+            return
+        files, incdirs, defines = rtl_checker.flist_from_tcl(tcl)
+    else:
+        targets = rtl_checker.targets_from_sim_mk(outdir_path / "sim" / "sim.mk")
+        files, incdirs, defines = rtl_checker.bender_flist(env.bender_dir, targets)
+    if not files:
+        print("  [WARNING] Could not obtain a file list: skipping. The check needs "
+              "one, and building it by hand would only guess.")
+        print("=" * 70)
+        return
+
+    # In the stubbed pass the generated testbench is out of scope: it preloads the
+    # IPs' memories through dotted paths, which cannot cross a blackbox, so every
+    # such reference is unresolvable against stubs and none of them is a defect.
+    # The same bench IS checked at generation, against the real IPs.
+    excluded = [outdir_path / "tb"] if use_stubs else []
+    ok, findings = rtl_checker.check(
+        files, incdirs, defines,
+        rtl_checker.reported_roots(outdir_path, env.component_paths), excluded)
+    if not ok:
+        print("  [WARNING] The elaboration could not run: skipping.")
+        print("=" * 70)
+        return
+
+    if not findings:
+        what = "in the stubs or what we generate" if use_stubs else "in what we generate"
+        print(f"  [SUCCESS] {len(files)} files elaborated, no errors {what}.")
+        print("=" * 70)
+        return
+
+    label = "ERROR" if policy == "strict" else "WARNING"
+    print(f"  [{label}] {len(findings)} error(s) in RTL we generate:")
+    for path, line, message in findings:
+        print(f"    {path}:{line}")
+        print(f"      {message}")
+    if policy == "strict":
+        print("\n  These are errors in what Ollivander just wrote. Set "
+              "'generated_rtl_check: warn' in the environment YAML to report them "
+              "without stopping.")
+        print("=" * 70)
+        sys.exit(1)
+    print("=" * 70)
+
 
 def main():
     # =========================================================================
@@ -76,6 +158,15 @@ def main():
         help="Generate faithful RTL stubs for fast-check and exit."
     )
     parser.add_argument(
+        "--check-rtl",
+        choices=["design", "stubs"],
+        default=None,
+        help="Re-run phase 11 over an ALREADY generated tree and exit, without "
+             "regenerating anything: 'design' elaborates the whole design (the real "
+             "IPs), 'stubs' elaborates the fast-check list and so checks stub "
+             "fidelity. Useful while working through a list of findings."
+    )
+    parser.add_argument(
         "--test-app",
         type=str,
         default=None,
@@ -114,7 +205,14 @@ def main():
     env = setup_environment(args, base_dir)
     env.config_file_path = config_path.resolve()
     env.outdir_path.mkdir(parents=True, exist_ok=True)
-    
+
+    # Report-only entry point, and it has to come BEFORE the cleanup below: it
+    # re-elaborates the tree as it stands, so wiping that tree first would leave
+    # it with nothing to read - and destroy the very output the user asked about.
+    if args.check_rtl:
+        run_generated_rtl_check(env, env.outdir_path, use_stubs=(args.check_rtl == "stubs"))
+        sys.exit(0)
+
     # Clean output directory to avoid stale generated files from previous runs
     if not args.generate_stubs:
         import shutil
@@ -218,6 +316,13 @@ def main():
         print("\n[*] Starting Fast-Check Stub Generation...")
         generate_stubs(env.outdir_path, soc_config, env.registry_dependencies, base_dir, env.fast_check_tool)
         print("  [SUCCESS] Faithful stubs and fast-compile scripts generated.")
+        # The same check as phase 11, over the list that has just been written -
+        # so it sees the STUBS. That is all this second pass adds: whether a stub
+        # faithfully represents the IP it replaces. The boundary against the real
+        # IPs is already covered at generation, where bender_work is populated and
+        # the true modules elaborate. Cheap (a tenth of the design), and it is how
+        # the malformed tc_pad stub was caught.
+        run_generated_rtl_check(env, env.outdir_path, use_stubs=True)
         sys.exit(0)
 
     registry_dependencies = env.registry_dependencies
@@ -668,6 +773,20 @@ def main():
     # Generates a standard IEEE 1685 IP-XACT component XML description for
     # the digital top-level of the SoC.
     generate_ipxact(soc_config, env, generator, comp_info)
+
+    # =========================================================================
+    # 17. PHASE 11: SELF-ELABORATION OF THE GENERATED RTL
+    # =========================================================================
+    # Ollivander parses the external IPs with pyslang and, until now, never
+    # re-read what it writes. This closes that loop, and it runs LAST so it
+    # validates the bytes actually shipped, formatting included.
+    #
+    # It black-boxes nothing it does not have to: the dependencies are already
+    # materialized (bender checkout ran in phase 4), so the whole design
+    # elaborates. What it cannot see are the stubs, which do not exist yet -
+    # that half belongs to fast-check, the only place our wrappers are checked
+    # against exact IP signatures.
+    run_generated_rtl_check(env, outdir_path)
 
     print(f"\n[SUCCESS] Generation complete! Files saved to '{outdir_path.resolve()}'")
 

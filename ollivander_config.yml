@@ -7,6 +7,19 @@
 # - "verilator": Performs structural lint check using Verilator.
 fast_check_tool: "questa"
 
+# Policy for phase 11, the self-elaboration of the generated RTL (slang, through
+# the pyslang already in requirements.txt). Errors are reported only for files
+# under the output directory and under 'paths.components' below - vendor sources
+# are parsed, because their packages are needed to elaborate anything, but never
+# reported.
+# - "strict": errors in what we generate stop the generation (default). A check
+#             that does not stop is a check whose green result means nothing.
+# - "warn":   report and carry on. For a project whose OWN components carry a
+#             construct its simulator accepts and a strict front-end refuses:
+#             our tooling's severity applies to our output, not to your code.
+# - "off":    skip the phase.
+generated_rtl_check: "strict"
+
 paths:
   outdir: "generated"
   # Subdirectories created inside the 'outdir'
