@@ -169,7 +169,36 @@ dependencies:
         replace: "prim_flop_macros.sv"
 ```
 
-### 3.5 Taking over the whole dependencies set (`inherit_default_dependencies`)
+### 3.5 Overriding one entry: the project's declaration replaces the catalogue's, whole
+
+A dependency declared in a project's `*_env.yml` **replaces the catalogue's entry entirely**, in every part. It is not a per-key merge: what the project writes is what Bender and the pre-build steps see, and everything the catalogue said about that dependency — sources, patches, pre-build commands, targets — is gone unless the project restates it.
+
+```yaml
+dependencies:
+  spatz:
+    rev: "a-newer-revision"      # the catalogue's patches and pre-build commands
+                                 # are NOT inherited
+```
+
+One rule, sayable in a sentence, and it buys three things a merge cannot express:
+
+*   **Order** — the project's `pre_build_cmds` list *is* the sequence. Nothing is appended after it.
+*   **Substitution** — a repair replaced by the project's own variant, rather than both running.
+*   **Exclusion** — dropping a fleet repair that is wrong for the revision being pinned, by simply not restating it. This is the case that matters most in practice: a patch written against the catalogue's revision is suspect by construction against a newer one.
+
+The cost is explicit: to change a revision **and** keep the repairs, copy the repairs into the project's entry too. That is deliberate — changing a revision is exactly the moment to re-read the patches rather than inherit them by default.
+
+The replacement is **announced**, once per overridden entry, so a project that only meant to bump a revision cannot lose the repairs silently:
+
+```
+[INFO] project overrides dependency 'spatz': the catalogue's 1 patch and 3 pre-build
+       commands are NOT inherited. Restate them in the project's dependency entry to
+       keep them.
+```
+
+A copied patch does age: it keeps applying against sources the catalogue has since moved past. The stale-patch warning is the detector, and it works because every patch is applied to a freshly restored file — so a repair that has stopped matching says so instead of passing quietly.
+
+### 3.6 Taking over the whole dependencies set (`inherit_default_dependencies`)
 
 A project that wants a fully self-contained, auditable dependency description can decline the entire `dependencies` set shipped with Ollivander:
 
@@ -255,7 +284,7 @@ The flag defaults to `true`, and governs only what the base configuration contri
 
 Be aware of what is given up. The forcings shipped with Ollivander are what makes its example topologies resolvable at all: most of them exist because external IPs contradict *each other*, in ways no choice of revisions can repair. Declining them means taking that whole conflict set upon yourself, so the flag suits a project bringing its own IP catalogue rather than one starting from the examples.
 
-The `dependencies` registry has its own version of this flag, `inherit_default_dependencies` (section 3.5), but the two exist for different reasons, and the asymmetry this section opened with explains why. A forcing applies to the whole graph unconditionally, so declining it changes what Bender *resolves*; a registry entry only reaches Bender when a pragma requires it, so an unused one is already inert and declining it changes nothing about resolution — what that flag buys is *control*, the guarantee that a required package cannot silently source from a catalogue the project never wrote.
+The `dependencies` registry has its own version of this flag, `inherit_default_dependencies` (section 3.6), but the two exist for different reasons, and the asymmetry this section opened with explains why. A forcing applies to the whole graph unconditionally, so declining it changes what Bender *resolves*; a registry entry only reaches Bender when a pragma requires it, so an unused one is already inert and declining it changes nothing about resolution — what that flag buys is *control*, the guarantee that a required package cannot silently source from a catalogue the project never wrote.
 
 ---
 

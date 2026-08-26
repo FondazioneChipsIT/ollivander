@@ -127,12 +127,33 @@ def setup_environment(args, base_dir: Path) -> OllivanderEnv:
               f"dependencies of {env_config_path.name}; only the project's own remain.")
         base_deps = {}
     env.registry_dependencies = base_deps
+    # A dependency declared by the project REPLACES the catalogue's entry, whole.
+    # Not a per-key merge: one rule, sayable in a sentence, and it buys three
+    # things a merge cannot express - ORDER (the project's pre_build_cmds list IS
+    # the sequence), SUBSTITUTION (a repair swapped for the project's own variant)
+    # and EXCLUSION (dropping a fleet repair that is wrong for a bumped revision,
+    # by simply not restating it). The cost is explicit: to change a revision and
+    # keep the repairs, the project copies the repairs too - which is the right
+    # question to be asked at that moment, since a patch written against other
+    # sources is suspect by construction.
+    #
+    # The replacement is ANNOUNCED. Silently dropping the catalogue's patches for
+    # a project that only meant to bump a revision would trade a merge bug for a
+    # worse one.
     if append_env_cfg:
-        for dep_name, dep_info in append_env_cfg.get('dependencies', {}).items():
-            if dep_name in env.registry_dependencies:
-                env.registry_dependencies[dep_name].update(dep_info)
-            else:
-                env.registry_dependencies[dep_name] = dep_info or {}
+        for dep_name, dep_info in (append_env_cfg.get('dependencies') or {}).items():
+            previous = env.registry_dependencies.get(dep_name)
+            if previous:
+                dropped = []
+                for key, label in (('patches', 'patch'), ('pre_build_cmds', 'pre-build command')):
+                    count = len(previous.get(key) or [])
+                    if count and key not in (dep_info or {}):
+                        dropped.append(f"{count} {label}{'s' if count > 1 else ''}")
+                if dropped:
+                    print(f"  [INFO] project overrides dependency '{dep_name}': the catalogue's "
+                          f"{' and '.join(dropped)} are NOT inherited. Restate them in the "
+                          f"project's dependency entry to keep them.")
+            env.registry_dependencies[dep_name] = dep_info or {}
 
     # 4. Determine the final output directory path with the following precedence:
     #    1. Command Line (`-o`)

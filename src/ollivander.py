@@ -604,19 +604,14 @@ def main():
         sys.exit(1)
     print("  [SUCCESS] External IPs successfully fetched and resolved.")
         
-    # Merge custom patches and pre-build commands from Environment YAMLs
-    for p in [args.env_config, args.append_env]:
-        if p and Path(p).is_file():
-            env_data = load_env_yaml(p)
-            for dep_name, dep_info in (env_data.get('dependencies') or {}).items():
-                if not dep_info:
-                    continue
-                if dep_name not in env.registry_dependencies:
-                    env.registry_dependencies[dep_name] = {}
-                if 'patches' in dep_info:
-                    env.registry_dependencies[dep_name].setdefault('patches', []).extend(dep_info['patches'])
-                if 'pre_build_cmds' in dep_info:
-                    env.registry_dependencies[dep_name].setdefault('pre_build_cmds', []).extend(dep_info['pre_build_cmds'])
+    # The environment YAMLs were already merged, once, when the environment was
+    # built (env_manager.build_environment). A second merge used to happen here
+    # with .extend() on 'patches' and 'pre_build_cmds' - over lists the first pass
+    # had ALREADY filled with the project's own entries, so a project declaring
+    # either had them appended to themselves: patches applied twice, the second
+    # application finding its search string already replaced and reported as a
+    # stale patch, and pre-build commands run twice. Latent only because no
+    # example project declares dependencies per project.
 
     # Execute Pre-Build commands and patches on fetched IPs
     run_pre_build_steps(env)
