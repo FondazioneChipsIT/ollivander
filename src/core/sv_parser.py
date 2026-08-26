@@ -22,6 +22,77 @@ try:
 except ImportError:
     HAS_PYSLANG = False
 
+def _token_text(node: Any) -> str:
+    """Source text of a token or syntax node, without its leading trivia.
+
+    pyslang's str() reproduces the original text including whatever preceded the
+    node - indentation and comments - so a port declared under a '// Landing
+    Pads' banner would report that banner as part of its direction.
+    """
+    if node is None:
+        return ""
+    value = getattr(node, "valueText", None)
+    if value is not None:              # a single token
+        return str(value).strip()
+    return re.sub(r"\s+", " ", re.sub(r"//[^\n]*", " ", str(node))).strip()
+
+
+def get_module_ports(filepath: Path, module_name: str) -> Optional[Dict[str, Dict[str, str]]]:
+    """Read the ANSI port list of one module from a file: {name: {dir, type}}.
+
+    SYNTAX ONLY, deliberately: no Compilation is built, so no packages, include
+    paths or defines are needed. That matters because the caller is the chip
+    wrapper generator, which runs before anything has been elaborated and only
+    needs to know which ports exist, with what direction and width.
+
+    Why this exists at all: the chip wrapper used to PREDICT the padframe's
+    interface from the pad list, assuming every pad yields one port named
+    '<pad>_pad'. Padrick emits one port per pad signal DECLARED BY THE PAD TYPE
+    instead, so the assumption broke twice over - a config pad became four
+    differently-named ports, and a pad type declaring no pad signals (corner
+    cells, supplies) became none at all - and the wrapper connected fourteen
+    ports that did not exist. Nothing caught it: `vlog` does not check port
+    existence across a module boundary, and no flow elaborates the chip wrapper.
+    Reading the generated file replaces the model of Padrick's behaviour with
+    Padrick's actual output, which is also what makes this robust to a real PDK
+    whose pad types we have never seen.
+
+    Returns None when the file cannot be parsed or the module is not in it, so
+    the caller can stop rather than fall back to guessing.
+    """
+    if not HAS_PYSLANG or not filepath or not Path(filepath).is_file():
+        return None
+    try:
+        tree = pyslang.syntax.SyntaxTree.fromFile(str(filepath))
+    except Exception:
+        return None
+
+    ports: Dict[str, Dict[str, str]] = {}
+    for member in getattr(tree.root, "members", []):
+        if "ModuleDeclaration" not in str(member.kind):
+            continue
+        header = member.header
+        if str(header.name.valueText) != module_name:
+            continue
+        port_list = header.ports
+        if port_list is None:
+            return {}
+        for port in getattr(port_list, "ports", []):
+            if "ImplicitAnsiPort" not in str(port.kind):
+                continue  # commas and non-ANSI forms
+            p_hdr = port.header
+            # str() on a token or node includes its leading trivia, comments and
+            # all, so read the tokens' values instead of the raw source text.
+            direction = _token_text(getattr(p_hdr, "direction", None))
+            data_type = _token_text(getattr(p_hdr, "dataType", None))
+            ports[str(port.declarator.name.valueText)] = {
+                "dir": direction,
+                "type": data_type,
+            }
+        return ports
+    return None
+
+
 def _clean_param_val(val: Any) -> str:
     """
     Converts a parameter value from the YAML configuration or the SystemVerilog

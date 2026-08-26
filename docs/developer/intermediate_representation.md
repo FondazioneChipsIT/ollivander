@@ -126,3 +126,23 @@ Because the wiring correctness, parameter values, and port existence have been v
 *   Writing the parameter mappings block.
 *   Instantiating the modules and writing their port connection maps.
 *   Writing direct assignment statements.
+
+---
+
+## 5. The Comment Guard: Prose That a Tool Would Read as a Directive
+
+Every SystemVerilog file Ollivander writes goes through `write_if_changed`, and every hand-written component it links in place goes through the staging step; both call `assert_no_fake_tool_pragmas` (`core/utils.py`). The rule it enforces is narrow and absolute:
+
+> A comment may **begin** with `verilator`, `synopsys`, `synthesis` or `pragma` only when the next word is a directive that tool actually recognises. Otherwise it is prose, and it is refused at generation time.
+
+The reason is that these words are not decoration to the tools that read them. A comment written as
+
+```systemverilog
+// Verilator accepts it anyway; a strict front-end does not.
+```
+
+is read by Verilator as a metacomment, and the build stops with *"Unknown verilator comment"* pointing at the sentence rather than at the mistake — three phases after the file was written, in a log nobody is reading at that moment. This has cost the project repeated debugging sessions, always for the same reason and always found the same slow way.
+
+Writing the same sentence with the word anywhere but first is enough (`// The Verilator flow accepts it anyway`), which is why the guard checks only the opening word.
+
+The directive lists live in `COMMENT_DIRECTIVE_WORDS` and are deliberately a whitelist: a genuine directive that is missing from them trips the guard immediately, which is a one-line fix, whereas trying to infer which unknown words are directives would let prose through. When a new Verilator directive comes into use, add it there.

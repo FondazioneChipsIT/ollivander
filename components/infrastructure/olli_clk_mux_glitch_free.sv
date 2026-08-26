@@ -42,7 +42,7 @@ module olli_clk_mux_glitch_free #(
     assign clk_o = clks_i[0];
   end
 `else
-  // Synthesis: instantiate foundry-specific standard cell here
+  // For synthesis, instantiate foundry-specific standard cell here
   // (e.g., tsmc_clk_mux2)
 `endif
 

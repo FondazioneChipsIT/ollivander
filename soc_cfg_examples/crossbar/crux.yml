@@ -148,6 +148,18 @@ padframe:
   name: "crux_padframe"
   base_addr: 0x200A0000       # Memory mapped base address for pinmux CSRs
   sync_domain: false          # Generates an async RegBus CDC adapter for the exported ports
+  # Core ports this package deliberately does NOT bring out to a pin. Without an
+  # entry here generation refuses to emit the wrapper, because a core input left
+  # out of the instantiation is a floating input.
+  #
+  # clk_rst_bypass_i is a board-level fast-boot strap, and this package does not
+  # carry one: the same control is reachable through the DFT test_mode_i pin,
+  # which feeds the very same OR inside the SoC. super_crux takes the opposite
+  # decision and declares a real PAD_CLK_RST_BYPASS pad, so the fleet witnesses
+  # both a pad and a declared tie-off.
+  unpadded_ports:
+    clk_rst_bypass_i: 0
+
   # --- Alternative 1: CSV Padlist (Default) ---
   pad_csv: "crux_pads.csv"
   domains:

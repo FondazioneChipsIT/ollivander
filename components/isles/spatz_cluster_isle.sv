@@ -199,70 +199,80 @@ module spatz_cluster_isle
     default: 0
   };
 
-  localparam fpnew_pkg::fpu_implementation_t FPUImplementation [NumCores] = '{
-    default: '{
-        PipeRegs: // FMA Block
-                  '{
-                    '{  2, // FP32
-                        4, // FP64
-                        1, // FP16
-                        0, // FP8
-                        1, // FP16alt
-                        0  // FP8alt
-                      },
-                    '{1, 1, 1, 1, 1, 1},   // DIVSQRT
-                    '{1,
-                      1,
-                      1,
-                      1,
-                      1,
-                      1},   // NONCOMP
-                    '{2,
-                      2,
-                      2,
-                      2,
-                      2,
-                      2},   // CONV
-                    '{4,
-                      4,
-                      4,
-                      4,
-                      4,
-                      4}    // DOTP
-                    },
-        UnitTypes: '{'{fpnew_pkg::MERGED,
-                       fpnew_pkg::MERGED,
-                       fpnew_pkg::MERGED,
-                       fpnew_pkg::MERGED,
-                       fpnew_pkg::MERGED,
-                       fpnew_pkg::MERGED},  // FMA
-                    '{fpnew_pkg::DISABLED,
-                        fpnew_pkg::DISABLED,
-                        fpnew_pkg::DISABLED,
-                        fpnew_pkg::DISABLED,
-                        fpnew_pkg::DISABLED,
-                        fpnew_pkg::DISABLED}, // DIVSQRT
-                    '{fpnew_pkg::PARALLEL,
-                        fpnew_pkg::PARALLEL,
-                        fpnew_pkg::PARALLEL,
-                        fpnew_pkg::PARALLEL,
-                        fpnew_pkg::PARALLEL,
-                        fpnew_pkg::PARALLEL}, // NONCOMP
-                    '{fpnew_pkg::MERGED,
-                        fpnew_pkg::MERGED,
-                        fpnew_pkg::MERGED,
-                        fpnew_pkg::MERGED,
-                        fpnew_pkg::MERGED,
-                        fpnew_pkg::MERGED},   // CONV
-                    '{fpnew_pkg::MERGED,
-                        fpnew_pkg::MERGED,
-                        fpnew_pkg::MERGED,
-                        fpnew_pkg::MERGED,
-                        fpnew_pkg::MERGED,
-                        fpnew_pkg::MERGED}},  // DOTP
-        PipeConfig: fpnew_pkg::BEFORE
-    }
+  // The struct is bound to a NAMED localparam and the array then says
+  // '{default: FpuImplDefault}. Writing the assignment pattern inline under
+  // 'default:' is what has to be avoided: an assignment pattern takes its type
+  // from the assignment context, and a default key provides none, so the member
+  // names resolve as ordinary identifiers and do not exist. Both simulators we
+  // run accept it anyway; a strict front-end rejects the whole module, which is
+  // how the cluster fell out of every structural check. Note this also
+  // keeps the array independent of NumCores - enumerating the cores, the way the
+  // upstream wrapper does, would put that coupling back.
+  localparam fpnew_pkg::fpu_implementation_t FpuImplDefault = '{
+    PipeRegs: // FMA Block
+              '{
+                '{  2, // FP32
+                    4, // FP64
+                    1, // FP16
+                    0, // FP8
+                    1, // FP16alt
+                    0  // FP8alt
+                  },
+                '{1, 1, 1, 1, 1, 1},   // DIVSQRT
+                '{1,
+                  1,
+                  1,
+                  1,
+                  1,
+                  1},   // NONCOMP
+                '{2,
+                  2,
+                  2,
+                  2,
+                  2,
+                  2},   // CONV
+                '{4,
+                  4,
+                  4,
+                  4,
+                  4,
+                  4}    // DOTP
+                },
+    UnitTypes: '{'{fpnew_pkg::MERGED,
+                   fpnew_pkg::MERGED,
+                   fpnew_pkg::MERGED,
+                   fpnew_pkg::MERGED,
+                   fpnew_pkg::MERGED,
+                   fpnew_pkg::MERGED},  // FMA
+                '{fpnew_pkg::DISABLED,
+                    fpnew_pkg::DISABLED,
+                    fpnew_pkg::DISABLED,
+                    fpnew_pkg::DISABLED,
+                    fpnew_pkg::DISABLED,
+                    fpnew_pkg::DISABLED}, // DIVSQRT
+                '{fpnew_pkg::PARALLEL,
+                    fpnew_pkg::PARALLEL,
+                    fpnew_pkg::PARALLEL,
+                    fpnew_pkg::PARALLEL,
+                    fpnew_pkg::PARALLEL,
+                    fpnew_pkg::PARALLEL}, // NONCOMP
+                '{fpnew_pkg::MERGED,
+                    fpnew_pkg::MERGED,
+                    fpnew_pkg::MERGED,
+                    fpnew_pkg::MERGED,
+                    fpnew_pkg::MERGED,
+                    fpnew_pkg::MERGED},   // CONV
+                '{fpnew_pkg::MERGED,
+                    fpnew_pkg::MERGED,
+                    fpnew_pkg::MERGED,
+                    fpnew_pkg::MERGED,
+                    fpnew_pkg::MERGED,
+                    fpnew_pkg::MERGED}},  // DOTP
+    PipeConfig: fpnew_pkg::BEFORE
   };
+
+  localparam fpnew_pkg::fpu_implementation_t FPUImplementation [NumCores] =
+      '{default: FpuImplDefault};
 
   sync #(
     .STAGES        ( SyncStages ),

@@ -81,6 +81,44 @@ padframe:
 
 ---
 
+## 2.1 Core Ports Without a Pad (`unpadded_ports`)
+
+Generation **refuses** to emit a chip wrapper for a SoC that has a core port with no pad, because a port left out of the wrapper's instantiation is not "unused" — it is *floating*, and an undriven input that selects a clock or reset bypass is not something to discover in silicon.
+
+There are therefore exactly two ways to resolve such a port, and the generator names both:
+
+1.  **Give it a pad** — add the entry to the pad list, in whichever of the three formats the project uses.
+2.  **Declare that it deliberately has none**, and say what the wrapper must drive on it:
+
+```yaml
+padframe:
+  name: "crux_padframe"
+  pad_csv: "crux_pads.csv"
+  unpadded_ports:
+    clk_rst_bypass_i: 0        # input: driven 0 in the chip wrapper
+    some_status_o: open        # output: explicitly left open
+```
+
+This lives in the `padframe:` section, and not in the pad list, for three reasons: the choice is a **packaging** decision (this die, this package, this pinout); it must be per-project, since two projects may share a SoC description and differ on which pins they bring out; and the cross-validation that consumes it already reads this section. The pad list is the wrong file twice over — it is the inventory of *physical pads*, and it is Padrick's input, which cannot represent a padless SoC-side signal at all.
+
+Rules, all of them checked:
+
+*   **Explicit port names only, no patterns.** The point is to record an intention the generator cannot infer; a pattern would silently absorb ports added later, which is the failure this exists to prevent.
+*   **`0` or `1`** (or a sized literal such as `4'b0000`) for an input; **`open`** for an output. The value is rejected on the wrong direction — an unconnected input is precisely what is being outlawed.
+*   The declaration is **visible in the RTL**: the wrapper emits `.clk_rst_bypass_i (0) /* unpadded by declaration */`, so a reader sees an intention rather than an omission.
+
+When a port has neither a pad nor a declaration, generation stops and writes an advice sheet next to the other generated configuration, `<project>_missing_pads.<csv|py|yml>` — in the project's **own** pad-list format — carrying both remedies, port by port: the pad entries to paste into the pad list, and a commented `unpadded_ports` block with the value pre-filled per direction.
+
+Across the example fleet both choices are witnessed: `crux` declares `clk_rst_bypass_i: 0`, since that package carries no fast-boot strap and the same control is reachable through the DFT `test_mode_i` pin, while `super_crux` declares a real `PAD_CLK_RST_BYPASS` pad for the very same core port.
+
+### How the wrapper's pad side is built
+
+Worth knowing, because it explains what the generator will and will not accept: the chip wrapper's connections to the padframe are **read from the padframe module Padrick has just generated**, never predicted from the pad list. Padrick emits one port per pad signal *declared by the pad type*, so a signal pad (`PAD_INPUT_*`, `PAD_OUTPUT_*`, `PAD_BIDIR_*`) yields one port named `..._pad`, the `CONFIG_TC_PAD_DEF` pseudo-entry yields four (the ring's internal power-sense bus, left explicitly open by the wrapper because nothing above the padframe drives it), and a purely physical type (`PAD_CORNER`, the supply pads) yields none at all — those cells are instantiated inside the padframe and reach the die edge through the physical flow, so they keep their chip pin and get no padframe connection.
+
+The pinout follows the same table: a pad-list entry becomes a chip pin when its type instantiates a cell. That is what keeps `CONFIG_TC_PAD_DEF` out of the pinout — it instantiates nothing, only declaring a wire and the `io_pad_internals` macro, so it is not a pin.
+
+---
+
 ## 3. Option 1: CSV-Based Padframe (`pad_csv`)
 
 The CSV format allows you to list all pads for all domains in a single spreadsheet. 

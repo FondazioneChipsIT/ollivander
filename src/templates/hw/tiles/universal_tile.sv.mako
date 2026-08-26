@@ -150,7 +150,48 @@
   
   valid_user_params = {k: v for k, v in (comp.parameters or {}).items() if k in isle_params}
   all_params = {**isle_params, **valid_user_params}
-          
+
+  # ============================================================================
+  # 2b. THE JOINED AXI CONFIGURATION, AS EXPRESSIONS
+  # ============================================================================
+  # The joined configuration is also declared as a localparam in the module BODY
+  # (section 2b below) for the typedefs, but a parameter port list cannot see the
+  # body: SystemVerilog elaborates it first, so 'AxiCfgJoin.AddrWidth' as a
+  # parameter default is a use-before-declaration. Questa and Verilator tolerated
+  # it; a strict front-end does not. Both places are therefore fed from the same
+  # dictionary of PACKAGE-level expressions, which the parameter list can see, and
+  # the body localparam is assembled from the very same strings so the two cannot
+  # drift apart.
+  join_cfg_data_width = None
+  if noc_mode == "joined_narrow":
+      join_cfg_data_width = f"{noc_pkg}::AxiCfgN.DataWidth"
+  elif noc_mode == "joined_wide":
+      join_cfg_data_width = f"{noc_pkg}::AxiCfgW.DataWidth"
+  elif 'AxiDataWidth' in valid_user_params:
+      join_cfg_data_width = valid_user_params['AxiDataWidth']
+  elif 'SramDataWidth' in valid_user_params:
+      join_cfg_data_width = valid_user_params['SramDataWidth']
+  if join_cfg_data_width is None:
+      if is_host and original_type == 'cheshire_isle':
+          join_cfg_data_width = f"{noc_pkg}::AxiCfgN.DataWidth"
+      elif config.topology.type == "noc":
+          join_cfg_data_width = f"{noc_pkg}::AxiCfgW.DataWidth"
+      else:
+          join_cfg_data_width = f"{noc_pkg}::AxiCfgN.DataWidth"
+
+  _join_max_out_id = f"floo_pkg::max({noc_pkg}::AxiCfgN.OutIdWidth, {noc_pkg}::AxiCfgW.OutIdWidth)"
+  join_cfg = {
+      'AddrWidth':  f"{noc_pkg}::AxiCfgN.AddrWidth",
+      'DataWidth':  join_cfg_data_width,
+      'UserWidth':  f"floo_pkg::max({noc_pkg}::AxiCfgN.UserWidth, {noc_pkg}::AxiCfgW.UserWidth)",
+      'InIdWidth':  _join_max_out_id,
+      'OutIdWidth': f"{_join_max_out_id} + 1",
+  }
+
+  def cfg_field(prefix, field):
+      """'<cfg>.<field>' for a parameter default, join expanded to package terms."""
+      return join_cfg[field] if prefix == "AxiCfgJoin" else f"{prefix}.{field}"
+
   # ============================================================================
   # 3. AXI TYPE OVERRIDES
   # ============================================================================
@@ -203,12 +244,12 @@
       if 'sync_axi_in_rsp_t' in all_params: isle_type_overrides['sync_axi_in_rsp_t'] = rsp_slv_type
       
       # Auto-inject physical NoC parameters for Slave ports
-      if 'AxiInIdWidth' in all_params: all_params['AxiInIdWidth'] = f"{cfg_slv_pfx}.OutIdWidth"
-      if 'AxiIdWidth' in all_params: all_params['AxiIdWidth'] = f"{cfg_slv_pfx}.OutIdWidth"
-      if 'AxiUserWidth' in all_params: all_params['AxiUserWidth'] = f"{cfg_slv_pfx}.UserWidth"
+      if 'AxiInIdWidth' in all_params: all_params['AxiInIdWidth'] = cfg_field(cfg_slv_pfx, 'OutIdWidth')
+      if 'AxiIdWidth' in all_params: all_params['AxiIdWidth'] = cfg_field(cfg_slv_pfx, 'OutIdWidth')
+      if 'AxiUserWidth' in all_params: all_params['AxiUserWidth'] = cfg_field(cfg_slv_pfx, 'UserWidth')
       if not has_master or use_join:
-          if 'AxiDataWidth' in all_params: all_params['AxiDataWidth'] = f"{cfg_slv_pfx}.DataWidth"
-          if 'AxiAddrWidth' in all_params: all_params['AxiAddrWidth'] = f"{cfg_slv_pfx}.AddrWidth"
+          if 'AxiDataWidth' in all_params: all_params['AxiDataWidth'] = cfg_field(cfg_slv_pfx, 'DataWidth')
+          if 'AxiAddrWidth' in all_params: all_params['AxiAddrWidth'] = cfg_field(cfg_slv_pfx, 'AddrWidth')
           
   # A subtile macro exports one AXI pair per network, both typed with the input
   # type of the network (see the boundary comment in noc_soc_top.sv.mako). Hand it
@@ -825,30 +866,17 @@ module ${p_name}_${c_type}
   // unified AXI interface for the IP.
 % if use_join:
   <%
-    c_data_width = None
-    if noc_mode == "joined_narrow":
-        c_data_width = f"{noc_pkg}::AxiCfgN.DataWidth"
-    elif noc_mode == "joined_wide":
-        c_data_width = f"{noc_pkg}::AxiCfgW.DataWidth"
-    elif 'AxiDataWidth' in valid_user_params:
-        c_data_width = valid_user_params['AxiDataWidth']
-    elif 'SramDataWidth' in valid_user_params:
-        c_data_width = valid_user_params['SramDataWidth']
-    if c_data_width is None:
-        if is_host and original_type == 'cheshire_isle':
-            c_data_width = f"{noc_pkg}::AxiCfgN.DataWidth"
-        elif config.topology.type == "noc":
-            c_data_width = f"{noc_pkg}::AxiCfgW.DataWidth"
-        else:
-            c_data_width = f"{noc_pkg}::AxiCfgN.DataWidth"
+    ## Same expressions the parameter port list was fed (section 2b above), so
+    ## the two views of the joined configuration cannot drift apart.
+    c_data_width = join_cfg['DataWidth']
   %>
   % if c_data_width is not None:
   localparam floo_pkg::axi_cfg_t AxiCfgJoin = '{
-    AddrWidth:  ${noc_pkg}::AxiCfgN.AddrWidth,
+    AddrWidth:  ${join_cfg['AddrWidth']},
     DataWidth:  ${c_data_width},
-    UserWidth:  floo_pkg::max(${noc_pkg}::AxiCfgN.UserWidth, ${noc_pkg}::AxiCfgW.UserWidth),
-    InIdWidth:  floo_pkg::max(${noc_pkg}::AxiCfgN.OutIdWidth, ${noc_pkg}::AxiCfgW.OutIdWidth),
-    OutIdWidth: floo_pkg::max(${noc_pkg}::AxiCfgN.OutIdWidth, ${noc_pkg}::AxiCfgW.OutIdWidth) + 1
+    UserWidth:  ${join_cfg['UserWidth']},
+    InIdWidth:  ${join_cfg['InIdWidth']},
+    OutIdWidth: ${join_cfg['OutIdWidth']}
   };
   % else:
   localparam floo_pkg::axi_cfg_t AxiCfgJoin = floo_pkg::axi_join_cfg(${noc_pkg}::AxiCfgN, ${noc_pkg}::AxiCfgW);

@@ -32,7 +32,7 @@ module olli_sync #(
     .serial_o ( serial_o )
   );
 `else
-  // Synthesis: instantiate foundry-specific standard cell here
+  // For synthesis, instantiate foundry-specific standard cell here
 `endif
 
 endmodule

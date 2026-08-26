@@ -11,9 +11,9 @@ from mako.template import Template
 
 import core.interfaces
 from core.interfaces import get_interface_ports
-from core.sv_parser import get_isle_info
+from core.sv_parser import get_isle_info, get_module_ports
 from core.wiring import build_connection_matrix
-from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_import_sv_packages, write_if_changed, strip_comments, simplify_port_ranges, get_ollivander_version, get_ollivander_git_hash
+from core.utils import fmt_dom, fmt_reg, fmt_rst, camel_case, is_external, auto_import_sv_packages, write_if_changed, strip_comments, simplify_port_ranges, get_ollivander_version, get_ollivander_git_hash, assert_no_fake_tool_pragmas
 from core.sv_ir import SVArchitectureIR, PortConnection
 from core.rtl_helpers import get_base_name, extract_dims, get_suffixes, norm_type, sv_dependency_sort, PORT_PATTERN
 from core.rtl_ir_builder import build_crossbar_ir, build_noc_ir, get_type_param_fill
@@ -1491,6 +1491,10 @@ class RTLGenerator:
             if src_path:
                 print(f"  -> Linking dependency {src_path.name} from {src_path.parent}")
                 content = src_path.read_text(encoding='utf-8')
+                # These are referenced in place rather than copied, so they never
+                # pass through write_if_changed: the comment guard has to run here
+                # or hand-written components stay uncovered by it.
+                assert_no_fake_tool_pragmas(src_path, content)
                 # Recursively find more required files inside the staged dependency.
                 for new_req in self.req_pattern.findall(content):
                     if new_req not in staged_local_files and new_req not in pending_files:
@@ -2095,6 +2099,253 @@ class RTLGenerator:
             "// boundary is what would reintroduce the risk.",
         ]) + "\n")
 
+    def _get_pad_type_table(self, tech):
+        """{pad_type: {'pad_signals': [...], 'has_cell': bool}} for one technology.
+
+        Two facts per pad type, both declarative and both needed by the chip
+        wrapper:
+
+        - 'pad_signals': the signals of kind 'pad', i.e. the ones Padrick brings
+          out to the padframe's boundary. A signal pad declares exactly one,
+          named 'pad'; the tc_pad config pseudo-entry declares four; the purely
+          physical types (corner cells, supplies) declare none.
+        - 'has_cell': whether the type's template instantiates anything, which is
+          what separates a real pad from a pseudo-entry. CONFIG_TC_PAD_DEF is the
+          latter: its template only declares a wire and defines the
+          'io_pad_internals' macro, so it is not a pin and must not become one.
+
+        Note there is a second reader of this same file in generate_port_groups,
+        which needs only the output-enable signal's name; it was left alone on
+        purpose rather than folded in here, because it keys off the FIRST type
+        declaring 'output_en' and that ordering is easy to break silently.
+        """
+        search_dirs = self.env.component_paths + [self.env.base_dir / "components"]
+        tech_file = None
+        for d in search_dirs:
+            for candidate in (d / "padframes" / tech / f"{tech}.yml",
+                              d / "padframes" / "tech" / f"{tech}.yml"):
+                if candidate.is_file():
+                    tech_file = candidate
+                    break
+            if tech_file:
+                break
+        if not tech_file:
+            return {}
+
+        table = {}
+        for p_type in (yaml.safe_load(tech_file.read_text(encoding='utf-8')) or []):
+            if not isinstance(p_type, dict) or "name" not in p_type:
+                continue
+            signals = [s["name"] for s in (p_type.get("pad_signals") or [])
+                       if isinstance(s, dict) and s.get("kind") == "pad" and "name" in s]
+            table[p_type["name"]] = {
+                "pad_signals": signals,
+                "has_cell": "${instance_name}" in (p_type.get("template") or ""),
+            }
+        return table
+
+    def _resolve_padframe_pad_ports(self, pad_domains):
+        """Pair the padframe's ACTUAL pad-side ports with the pads they belong to.
+
+        The padframe decides the set of ports, the pad list decides what they are
+        called outside the chip. Reading the generated module instead of
+        predicting it is the whole point: the previous code assumed every pad
+        yields one port named '<pad>_pad', which is true only for the signal pad
+        types, and so connected fourteen ports that did not exist on crux -
+        undetected, because vlog does not check port existence across a module
+        boundary and no flow elaborates the chip wrapper.
+
+        Returns (connections, chip_pins, errors):
+          connections - one entry per real pad-side port, in declaration order,
+                        with the wire to attach or None to leave it explicitly
+                        open (ring-internal nets such as the tc_pad config bus);
+          chip_pins   - the wrapper's own inout pins: every pad whose type
+                        instantiates a cell, pseudo-entries excluded;
+          errors      - inconsistencies that must stop generation.
+        """
+        errors = []
+        hw_dir = self.env.outdir_path / self.env.hw_sub
+        pf_name = self.soc_config.padframe.name
+        pf_file = next((hw_dir / "padframe").rglob(f"{pf_name}.sv"), None)
+
+        ports = get_module_ports(pf_file, pf_name) if pf_file else None
+        if ports is None:
+            errors.append(
+                f"Could not read the generated padframe's port list "
+                f"({pf_name}.sv under {hw_dir / 'padframe'}). The chip wrapper is "
+                f"derived from it, so generation cannot continue by guessing.")
+            return [], [], errors
+
+        # Pad type facts, per domain (domains may use different technologies).
+        type_tables = {dom.name: self._get_pad_type_table(dom.tech)
+                       for dom in (self.soc_config.padframe.domains or [])}
+
+        # Pad name -> its type, per domain, plus the wrapper's own pin list.
+        pad_type_of = {}
+        chip_pins = []
+        for dom in pad_domains:
+            table = type_tables.get(dom["name"], {})
+            for pad in dom["pad_list"]:
+                pad_type_of[(dom["name"], pad["name"])] = pad.get("pad_type")
+                info = table.get(pad.get("pad_type"))
+                if info is None:
+                    errors.append(
+                        f"Pad '{pad['name']}' declares type '{pad.get('pad_type')}', "
+                        f"which the technology '{dom.get('tech', '?')}' does not define.")
+                elif info["has_cell"]:
+                    chip_pins.append(pad["name"])
+
+        # Every pad-side port of the padframe, mapped back to its pad.
+        connections = []
+        for port_name, port_info in ports.items():
+            matched_dom = matched_pad = None
+            for dom in pad_domains:
+                prefix = f"pad_{dom['name']}_"
+                if not port_name.startswith(prefix):
+                    continue
+                rest = port_name[len(prefix):]
+                # Longest match wins: pad names and signal names both contain
+                # underscores ('config_tc_pad' + 'internal_signals_0'), so the
+                # split is only decidable against the known pad names.
+                for pad in dom["pad_list"]:
+                    if (rest == pad["name"] or rest.startswith(pad["name"] + "_")) and \
+                       (matched_pad is None or len(pad["name"]) > len(matched_pad)):
+                        matched_dom, matched_pad = dom["name"], pad["name"]
+            if matched_pad is None:
+                if port_name.startswith("pad_"):
+                    errors.append(
+                        f"Padframe port '{port_name}' matches no pad in the pad list. "
+                        f"Connecting nothing to it would leave it floating.")
+                continue  # clk_i, rst_ni, the struct ports and the config bus
+
+            signal = port_name[len(f"pad_{matched_dom}_{matched_pad}"):].lstrip("_")
+            info = type_tables.get(matched_dom, {}).get(pad_type_of[(matched_dom, matched_pad)], {})
+            connections.append({
+                "port": port_name,
+                # A pad that instantiates a cell is a pin, and keeps its pad-list
+                # name so the chip's pinout does not churn. Anything else is
+                # ring-internal and is left explicitly open.
+                "wire": (matched_pad if signal in ("pad", "") else f"{matched_pad}_{signal}")
+                        if info.get("has_cell") else None,
+                "dir": port_info["dir"],
+            })
+
+        # The mirror check: a pad that declares pad-side signals must have them.
+        connected = {c["port"] for c in connections}
+        for dom in pad_domains:
+            table = type_tables.get(dom["name"], {})
+            for pad in dom["pad_list"]:
+                for sig in table.get(pad.get("pad_type"), {}).get("pad_signals", []):
+                    expected = f"pad_{dom['name']}_{pad['name']}_{sig}"
+                    if expected not in connected:
+                        errors.append(
+                            f"Pad '{pad['name']}' declares pad signal '{sig}', but the "
+                            f"padframe has no port '{expected}'.")
+        return connections, chip_pins, errors
+
+    def _write_missing_pads_advice(self, missing_pads, pad_domains):
+        """Write the two-remedy advice sheet for core ports that have no pad.
+
+        Two things the previous version of this got wrong. It emitted native
+        Padrick YAML whatever format the project declared - so a project on
+        'pad_csv' was invited to paste YAML into a CSV - and it offered only one
+        way out, which with a fatal phase 8 would push a user into inventing a pad
+        for a signal that must not leave the die. So: part A in the project's OWN
+        format, comment-free so the block pastes as is, and part B the tie-off
+        alternative, always YAML because that is where it goes, always commented
+        so it is inert, with the value pre-filled per direction.
+
+        Part B stays LAST on purpose: the CSV reader is a plain csv.DictReader
+        with no comment handling, so a '#' line pasted into a real pad list
+        becomes a data row.
+        """
+        pf = self.soc_config.padframe
+        first_dom = pad_domains[0]["name"] if pad_domains else "domain_0"
+        tech = (pf.domains[0].tech if pf.domains else "behavioral")
+        table = self._get_pad_type_table(tech)
+
+        def pick_type(direction):
+            """A type name the technology actually declares, not an invented one."""
+            wanted = {"input": "PAD_INPUT", "output": "PAD_OUTPUT"}.get(direction, "PAD_BIDIR")
+            if wanted in table:
+                return wanted
+            for name in sorted(table):
+                if name.startswith(wanted) and table[name]["has_cell"]:
+                    return name
+            return wanted
+
+        fmt = "csv" if pf.pad_csv else ("py" if pf.pad_py else "yml")
+        cfg_dir = self.env.outdir_path / self.env.cfg_sub
+        out = cfg_dir / f"{self.soc_config.project.name}_missing_pads.{fmt}"
+        target = pf.pad_csv or pf.pad_py or "the domain's pad_list"
+        cmt = "#"
+
+        lines = [
+            f"{cmt} " + "=" * 76,
+            f"{cmt} {self.soc_config.project.name}: {len(missing_pads)} core port(s) have no pad.",
+            f"{cmt} Generation stopped. Resolve EACH port below in one of two ways:",
+            f"{cmt}",
+            f"{cmt}   (A) give it a pad       -> paste the block below into {target}",
+            f"{cmt}   (B) declare it unpadded -> paste the commented block at the end into",
+            f"{cmt}                              the 'padframe:' section of the SoC config",
+            f"{cmt}",
+            f"{cmt} (A) is right for a pin that must exist on the package. (B) is right for a",
+            f"{cmt} port that is deliberately internal, and records the constant the chip",
+            f"{cmt} wrapper will drive on it.",
+            f"{cmt} " + "=" * 76,
+            "",
+            f"{cmt} --- (A) PAD ENTRIES " + "-" * 57,
+        ]
+
+        if fmt == "csv":
+            # Match the project's own column order, so the rows paste as they are.
+            csv_path = self.env.config_file_path.parent / pf.pad_csv
+            header = csv_path.read_text(encoding="utf-8").splitlines()[0] if csv_path.is_file() else \
+                "Domain,Pad Name,Type,Multiple,Is Static,Default Port,Description,pad2chip,chip2pad"
+            cols = [c.strip() for c in header.split(",")]
+            lines.append(header)
+            for ps, ss, ct, p_dir in missing_pads:
+                conn_col = {"input": "pad2chip", "output": "chip2pad"}.get(p_dir, "pad_inout")
+                values = {"domain": first_dom, "pad name": ps, "type": pick_type(p_dir),
+                          "multiple": "1", "is static": "true",
+                          "description": f"pad for core port {ss}", conn_col: ps}
+                lines.append(",".join(values.get(c.lower(), "") for c in cols))
+        elif fmt == "py":
+            for ps, ss, ct, p_dir in missing_pads:
+                conn_col = {"input": "pad2chip", "output": "chip2pad"}.get(p_dir, "pad_inout")
+                lines.append(
+                    f'    {{"name": "{ps}", "pad_type": "{pick_type(p_dir)}", "multiple": 1, '
+                    f'"is_static": True, "description": "pad for core port {ss}", '
+                    f'"connections": {{"{conn_col}": "{ps}"}}}},')
+        else:
+            for ps, ss, ct, p_dir in missing_pads:
+                conn_col = {"input": "pad2chip", "output": "chip2pad"}.get(p_dir, "pad_inout")
+                lines += [f"- name: {ps}",
+                          f'  description: "pad for core port {ss}"',
+                          f"  pad_type: {pick_type(p_dir)}",
+                          f"  is_static: true",
+                          f"  connections:",
+                          f"    {conn_col}: {ps}",
+                          ""]
+
+        lines += [
+            "",
+            f"{cmt} --- (B) TIE-OFF ALTERNATIVE " + "-" * 49,
+            f"{cmt} Paste into the SoC config, inside 'padframe:'. Values are pre-filled per",
+            f"{cmt} direction: 0 for an input, 'open' for an output. Change 0 to 1 if the",
+            f"{cmt} inactive level of that pin is high.",
+            f"{cmt}",
+            f"{cmt} padframe:",
+            f"{cmt}   unpadded_ports:",
+        ]
+        for ps, ss, ct, p_dir in missing_pads:
+            value = "open" if p_dir == "output" else "0"
+            lines.append(f"{cmt}     {re.sub(r'\[.*', '', ss)}: {value}"
+                         f"        {cmt} {p_dir} {ct}")
+
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return out
+
     def generate_chip_wrapper(self, comp_info, wiring_matrix, global_defines):
         """
         Phase 8: The Chip Wrapper Engine.
@@ -2369,35 +2620,45 @@ class RTLGenerator:
                 else:
                     missing_pads.append((core_sig, core_sig, p_type, p_dir))
                     
+        # A core port with no pad is resolved one of two ways: it gets a pad, or
+        # the project DECLARES that it deliberately has none and says what the
+        # wrapper must drive on it. Anything else is refused below: omitting the
+        # port from the instantiation leaves it floating, and a wrapper that looks
+        # generated but drives an undriven input is worse than no wrapper.
+        declared_unpadded = dict(self.soc_config.padframe.unpadded_ports or {})
+        tie_offs = []
+        undeclared = []
+        for entry in missing_pads:
+            core_sig = entry[1]
+            base = re.sub(r"\[.*", "", core_sig)      # strip a bit-select from vector cases
+            if base in declared_unpadded:
+                tie_offs.append({"port": base, "value": str(declared_unpadded[base]).strip()})
+            else:
+                undeclared.append(entry)
+        # De-duplicate: one vector reported per bit yields one tie-off.
+        seen = set()
+        tie_offs = [t for t in tie_offs if not (t["port"] in seen or seen.add(t["port"]))]
+        for t in tie_offs:
+            shown = "left open" if t["value"] == "open" else f"driven {t['value']}"
+            print(f"  [INFO] '{t['port']}' has no pad by declaration: {shown} in the wrapper.")
+
+        missing_pads = undeclared
         if missing_pads:
             print("\n  [ERROR] The following Core ports are missing from the Padframe:")
-            yml_lines = []
             for ps, ss, ct, p_dir in missing_pads:
                 print(f"    - {ss} ({ct})")
-                
-                if p_dir == 'input':
-                    pad_type = 'PAD_INPUT'
-                    conn_str = f"    pad2chip: {ps}"
-                elif p_dir == 'output':
-                    pad_type = 'PAD_OUTPUT'
-                    conn_str = f"    chip2pad: {ps}"
-                else:
-                    pad_type = 'PAD_ANALOG'
-                    conn_str = f"    pad_inout: {ps}"
-                    
-                yml_lines.append(f"- name: PAD_{ps.upper()}")
-                yml_lines.append(f"  description: \"Auto-generated missing pad for {ss}\"")
-                yml_lines.append(f"  pad_type: {pad_type}")
-                yml_lines.append(f"  is_static: true")
-                yml_lines.append(f"  connections:")
-                yml_lines.append(conn_str)
-                yml_lines.append("")
-                
-            cfg_dir = self.env.outdir_path / self.env.cfg_sub
-            missing_file = cfg_dir / f"{self.soc_config.project.name}_missing_pads.yml"
-            missing_file.write_text("\n".join(yml_lines))
-            print(f"  [HINT] A stub YAML has been generated at {missing_file.name}. You can copy-paste it into your pad list!\n")
-            
+
+            advice = self._write_missing_pads_advice(missing_pads, pad_domains)
+            print(f"\n  [HINT] {advice.name} lists BOTH ways out, port by port: the pad")
+            print(f"         entries to paste into your pad list, and the commented")
+            print(f"         'unpadded_ports' block to paste into the padframe section")
+            print(f"         if the port is deliberately internal.")
+            print(f"         Written to: {advice}")
+            print("\n[FATAL ERROR] A core port with no pad cannot be resolved into correct RTL:")
+            print("  omitted from the wrapper's instantiation it stays UNCONNECTED, so emitting")
+            print("  the wrapper and reporting success would hand over RTL that only looks right.")
+            sys.exit(1)
+
         if fatal_errors:
             print("\n[FATAL ERROR] Cross-Validation between Core RTL and Padframe failed!")
             for err in fatal_errors:
@@ -2406,10 +2667,28 @@ class RTLGenerator:
         elif not missing_pads:
             print("  [SUCCESS] Core and Padframe types match perfectly!")
         
+        # The pad side of the wrapper is READ from the padframe Padrick just
+        # generated, never predicted from the pad list (see
+        # _resolve_padframe_pad_ports). Phase 7 runs before this one, so the
+        # ground truth is on disk exactly when it is needed.
+        pad_conns, chip_pins, pad_errors = self._resolve_padframe_pad_ports(pad_domains)
+        if pad_errors:
+            print("\n  [ERROR] The chip wrapper and the generated padframe disagree:")
+            for err in pad_errors:
+                print(f"    - {err}")
+            print("\n  Emitting a wrapper on top of this would produce floating nets.")
+            sys.exit(1)
+        print(f"  [SUCCESS] {len(pad_conns)} padframe pad ports resolved "
+              f"({sum(1 for c in pad_conns if c['wire'] is None)} left open by design), "
+              f"{len(chip_pins)} chip pins.")
+
         template_kwargs = {
             "config": self.soc_config,
             "project_name": self.soc_config.project.name,
             "pad_domains": pad_domains,
+            "pad_conns": pad_conns,
+            "chip_pins": chip_pins,
+            "tie_offs": tie_offs,
             "core_sig_to_domain": core_sig_to_domain,
             "validated_connections": validated_connections,
             "gen_version": self.gen_version,

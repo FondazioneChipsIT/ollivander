@@ -45,7 +45,7 @@ module olli_clk_int_div #(
     .cycl_count_o   ( cycl_count_o )
   );
 `else
-  // Synthesis: instantiate foundry-specific clock divider here
+  // For synthesis, instantiate foundry-specific clock divider here
 `endif
 
 endmodule

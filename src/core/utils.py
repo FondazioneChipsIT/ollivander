@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: SHL-0.51
 
 import re
+import sys
 from pathlib import Path
 
 import yaml
@@ -109,6 +110,74 @@ def auto_import_sv_packages(code: str) -> str:
             return code[:insert_pos] + import_statements + code[insert_pos:]
     return code
 
+# Tool keywords that turn a comment into a DIRECTIVE when they are its first
+# word, mapped to the directives each tool actually recognises. Prose that starts
+# with one of these is silently reinterpreted: a comment reading
+# "// Verilator accepts it anyway, but ..." is read by Verilator as an unknown
+# metacomment and stops the build - a failure whose message ("Unknown verilator
+# comment") points at the sentence rather than at the mistake, which is why this
+# has bitten repeatedly.
+#
+# The whitelist is deliberately the failure-loud direction: a NEW legitimate
+# directive not listed here trips the guard immediately and is a one-line fix,
+# whereas guessing that unknown words are directives would let prose through.
+COMMENT_DIRECTIVE_WORDS = {
+    "verilator": {
+        "lint_off", "lint_on", "lint_save", "lint_restore", "tracing_off", "tracing_on",
+        "coverage_off", "coverage_on", "coverage_block_off", "public", "public_flat",
+        "public_flat_rd", "public_flat_rw", "public_on", "public_off", "isolate_assignments",
+        "inline_module", "no_inline_module", "no_inline_task", "hier_block", "split_var",
+        "sc_bv", "sformat", "systemc_clock", "timing_on", "timing_off", "forceable",
+        "clocker", "no_clocker", "clock_enable",
+    },
+    "synopsys": {"translate_off", "translate_on", "full_case", "parallel_case",
+                 "dc_script_begin", "dc_script_end", "async_set_reset", "template"},
+    "synthesis": {"translate_off", "translate_on", "full_case", "parallel_case"},
+    "pragma": {"translate_off", "translate_on", "protect", "reset", "coverage_off",
+               "coverage_on", "synthesis_off", "synthesis_on"},
+}
+
+_COMMENT_HEAD = re.compile(
+    r"(?://|/\*)\s*(" + "|".join(COMMENT_DIRECTIVE_WORDS) + r")\b[ \t]*([A-Za-z_0-9]*)",
+    re.IGNORECASE)
+
+
+def find_fake_tool_pragmas(content: str):
+    """Comment lines that open with a tool keyword but are prose, not a directive.
+
+    Returns [(line_number, tool, offending_text)]. Applied to every SystemVerilog
+    file Ollivander writes or links, so a sentence that happens to begin with
+    'Verilator' is refused at generation time - where the fix is obvious - rather
+    than surfacing as a pragma error from a tool three phases later.
+    """
+    hits = []
+    for number, line in enumerate(content.split("\n"), start=1):
+        match = _COMMENT_HEAD.search(line)
+        if not match:
+            continue
+        tool = match.group(1).lower()
+        following = (match.group(2) or "").lower()
+        if following in COMMENT_DIRECTIVE_WORDS[tool]:
+            continue        # a genuine directive
+        hits.append((number, tool, line.strip()))
+    return hits
+
+
+def assert_no_fake_tool_pragmas(file_path: Path, content: str):
+    """Refuse to write SystemVerilog whose comments would be read as directives."""
+    if file_path.suffix not in (".sv", ".svh", ".v", ".vh"):
+        return
+    hits = find_fake_tool_pragmas(content)
+    if not hits:
+        return
+    print(f"\n[ERROR] {file_path}: comment(s) that a tool would read as a directive:")
+    for number, tool, text in hits:
+        print(f"    line {number}: {text}")
+        print(f"      -> '{tool}' as the first word of a comment is a {tool} pragma. "
+              f"Reword so the sentence does not start with it.")
+    sys.exit(1)
+
+
 def write_if_changed(file_path: Path, content: str):
     """
     Writes content to a file only if it differs from the existing content.
@@ -116,6 +185,7 @@ def write_if_changed(file_path: Path, content: str):
     modification timestamp of unchanged files, we avoid triggering unnecessary 
     recompilations of the RTL in downstream tools.
     """
+    assert_no_fake_tool_pragmas(file_path, content)
     if file_path.is_file() and file_path.read_text(encoding="utf-8", errors="ignore") == content:
         return
     # Nested output targets (e.g. sim/sim.mk) are legitimate: create the

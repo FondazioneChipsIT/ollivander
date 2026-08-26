@@ -28,7 +28,7 @@ module olli_rstgen (
     .init_no     ( init_no )
   );
 `else
-  // Synthesis: instantiate foundry-specific standard cell here
+  // For synthesis, instantiate foundry-specific standard cell here
   // (e.g., tsmc_reset_sync)
 `endif
 

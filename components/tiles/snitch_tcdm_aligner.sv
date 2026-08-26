@@ -6,9 +6,12 @@
 
 `include "hci_helpers.svh"
 
-module snitch_tcdm_aligner
-  import reqrsp_pkg::amo_op_e;
-#(
+// No package import here on purpose: this module used to import
+// 'reqrsp_pkg::amo_op_e', a name that package does not declare (amo_op_e lives in
+// snitch_pkg) and that nothing in the body ever referenced. QuestaSim resolves an
+// explicit import lazily and so never complained; a strict front-end rejects the
+// module outright, which also took the whole thing out of structural checking.
+module snitch_tcdm_aligner #(
   parameter type         tcdm_req_t    = logic,
   parameter type         tcdm_rsp_t    = logic,
   parameter int unsigned DataWidth     = 512,

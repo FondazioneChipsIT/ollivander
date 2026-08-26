@@ -7,14 +7,12 @@ ${lh.license()}
 //
 
 module ${config.project.module_prefix}_chip (
-<%
-    all_pads = []
-    for dom in pad_domains:
-        for pad in dom['pad_list']:
-            all_pads.append(pad['name'])
-%>
-% for pad_name in all_pads:
-    inout wire logic ${pad_name}${"" if loop.last else ","}
+    // One pin per pad whose type instantiates a cell. Pseudo-entries of the pad
+    // list are excluded: the tc_pad config entry, for instance, instantiates
+    // nothing - it only declares the ring's internal signal bus - so it is not a
+    // pin and must not appear here.
+% for pin in chip_pins:
+    inout wire logic ${pin}${"" if loop.last else ","}
 % endfor
 );
 
@@ -127,10 +125,19 @@ module ${config.project.module_prefix}_chip (
         .port_signals_pad2soc(port_pad2soc),
         .port_signals_soc2pad(port_soc2pad),
 % endif
-% for dom in pad_domains:
- % for pad in dom['pad_list']:
-        .pad_${dom['name']}_${pad['name']}_pad(${pad['name']}),
- % endfor
+<%doc>
+    One connection per pad-side port the padframe ACTUALLY declares, read from
+    the file Padrick generated in the previous phase. A port whose wire is None
+    is ring-internal (the tc_pad power-sense and retention bus) and is left
+    explicitly open: nothing above the padframe drives it, and the technology's
+    own fallback for that bus is high-Z.
+</%doc>
+% for conn in pad_conns:
+ % if conn['wire']:
+        .${conn['port']}(${conn['wire']}),
+ % else:
+        .${conn['port']}(), // ring-internal: no net above the padframe
+ % endif
 % endfor
 % for conn in validated_connections:
  % if conn.get('is_inout', False):
@@ -200,6 +207,14 @@ module ${config.project.module_prefix}_chip (
         
     for conn in validated_connections:
         core_conns.append(f".{conn['sig_name']}({conn['sig_name']})")
+    ## Ports the project declared as deliberately unpadded. Written out rather
+    ## than omitted: an omitted port is indistinguishable from a forgotten one,
+    ## and reads as the very defect this mechanism exists to prevent.
+    for tie in tie_offs:
+        if tie['value'] == 'open':
+            core_conns.append(f".{tie['port']}() /* unpadded by declaration: left open */")
+        else:
+            core_conns.append(f".{tie['port']}({tie['value']}) /* unpadded by declaration */")
     if getattr(config.clock_tree, 'generators', 0) > 0:
         core_conns.append(".domain_clk_i(domain_clk_i)")
         core_conns.append(".clk_gen_lock_i(clk_gen_lock_i)")

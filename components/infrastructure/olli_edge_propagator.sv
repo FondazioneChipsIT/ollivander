@@ -32,7 +32,7 @@ module olli_edge_propagator (
     .edge_o    ( edge_o )
   );
 `else
-  // Synthesis: instantiate foundry-specific CDC macro here
+  // For synthesis, instantiate foundry-specific CDC macro here
 `endif
 
 endmodule

@@ -512,6 +512,36 @@ class PadframeConfig(StrictModel):
     pad_py: Optional[str] = None               # Path to a Python file defining the padlist dynamically
     header_file: Optional[str] = None          # Path to a text file for the RTL header (auto-generates standard license if None)
 
+    # Core ports deliberately NOT brought out to a pad, and what the chip wrapper
+    # must drive on them: '0'/'1' (or a sized SV literal) for an input, 'open' for
+    # an output. Generation refuses a core port that has neither a pad nor an
+    # entry here, because omitting it from the wrapper leaves it FLOATING - and an
+    # undriven input that selects a clock/reset bypass is not something to
+    # discover in silicon. Declaring it is therefore how a packaging decision gets
+    # recorded, which is also why this lives with the padframe (it describes this
+    # die and this pinout) and not with the component that owns the port.
+    #
+    # Explicit names only, no patterns: the point is to record an intention the
+    # generator cannot infer, and a pattern would silently absorb ports added
+    # later - exactly the failure this exists to prevent.
+    # Union, not str: YAML reads a bare 0 or 1 as an int, and making the user
+    # quote it would be a papercut with no upside.
+    unpadded_ports: Optional[Dict[str, Union[str, int]]] = None
+
+    @model_validator(mode='after')
+    def check_unpadded_ports(self) -> 'PadframeConfig':
+        for port, value in (self.unpadded_ports or {}).items():
+            v = str(value).strip()
+            if v == "open":
+                continue
+            # Accept a bare 0/1 and any sized SV literal (4'b0000, 8'hFF, ...).
+            if not re.fullmatch(r"(0|1|'[01bhdox]+[0-9a-fA-FxXzZ_]*|\d+'[bhdox][0-9a-fA-FxXzZ_]+)", v):
+                raise ValueError(
+                    f"padframe.unpadded_ports['{port}'] = '{value}' is not a value the "
+                    f"wrapper can drive. Use 0 or 1 (or a sized literal such as 4'b0000) "
+                    f"for an input, or 'open' to leave an output unconnected.")
+        return self
+
     @model_validator(mode='after')
     def check_padrick_config(self) -> 'PadframeConfig':
         if not self.padrick_cfg:

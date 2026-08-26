@@ -41,7 +41,7 @@ module olli_lossy_valid_to_stream #(
     .busy_o  ( busy_o )
   );
 `else
-  // Synthesis: instantiate custom IP or foundry macro here
+  // For synthesis, instantiate custom IP or foundry macro here
 `endif
 
 endmodule

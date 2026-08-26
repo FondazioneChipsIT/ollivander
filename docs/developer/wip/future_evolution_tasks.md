@@ -2,7 +2,7 @@
 
 This document tracks possible future architectural improvements and features for the Ollivander SoC Generator.
 
-**THE QUEUE, as it stands (user decision, 2026-08-25).** In order: (1) make a project's dependency entry REPLACE the catalogue's wholly - the interface change decided in chapter 3.7, which also removes two latent defects; (2) heterogeneous memory-tile sizes on the NoC family (3.7 too, the gap found against gwaihir); (3) bump floogen to 0.8.4, three patch versions of drift on the tool that generates the NoC's RTL. Then the older queue below resumes: CI/report (chapter 10), the multi-simulation wave, nested boot. Items (1) and (3) are small and touch interfaces, so each takes its own commit; (2) spans schema, IR, map and templates.
+**THE QUEUE, as it stands (updated 2026-08-25, after the ninth wave).** Delivered and out of this document: the dependency-entry replacement (now `env_configuration_guide.md` section 3.5) and the chip-wrapper integrity work (now `padframe_configuration_guide.md` section 2.1). Next, in order: (1) heterogeneous memory-tile sizes on the NoC family (chapter 3.7, the gap found against gwaihir); (2) bump floogen to 0.8.4, three patch versions of drift on the tool that generates the NoC's RTL; (3) triage the 25 errors the self-elaboration check still reports, so it can become a gate (chapter 12). Then the older queue below resumes: CI/report (chapter 10), the multi-simulation wave, nested boot.
 
 **Current priorities, decided 2026-08-20, reordered 2026-08-22 (user decision).** After the Verilator flow's performance work (chapter 5), simulation speed is considered adequate and is explicitly NOT where the next effort goes. Two of the items originally listed are done and no longer belong here: loading memories through JTAG shipped on 2026-08-21 (extended by the serial-link + ELF wave of 2026-08-22), and the merge of the standardization contracts into one document was already complete at the time of this refresh (`docs/hw/component_standardization.md`). The macro-export line as a whole is now LOW PRIORITY: complete coverage of the STANDARD (flat) projects comes first, because that is the flow every Ollivander user exercises, and the supers already regress the export itself as passive content. The order is therefore: (1) **firmware bring-up of gated blocks** — promote `bring_up: minimal` from exception to fleet-validated configuration, close the mesh/snitch `memory_mapped` contract, deepen the power-down/re-up cycles the offload app sketches; (2) the **UART TX / uart-boot agent** — the third silicon-realistic boot road (the bootrom's own serial protocol, no debugger and no link partner), plus bidirectional UART tests; (3) **consuming spatz through clustergen** (section 3.10); (4) **nested boot** with the offload test of nested clusters (section 3.9 - the reuse-coherence analysis of 2026-08-22 is banked there and does not rot). Everything in chapter 5 marked "not planned" is recorded so its measurements are not lost, not because it is queued.
 
@@ -756,82 +756,11 @@ Two tiers are worth evaluating, not mutually exclusive:
 *   **SpyGlass adds license coupling to a flow whose sibling exists precisely to avoid it.**
     *   *Mitigation*: keep the tiers independent — Verilator lint as the always-on CI gate, SpyGlass as an on-demand deep pass, mirroring the QuestaSim/Verilator split of the simulation flow.
 
-### 7.1 A Third Tier, Cheaper Than Both: Elaborating What We Wrote (slang/pyslang)
+### 7.1 The Self-Elaboration Check Exists; Making It a Gate Does Not
 
-Ollivander uses pyslang to *read* the external IPs' headers and never to *re-read what it writes*. Closing that loop is the cheapest tier of the three above and needs no new dependency: pyslang is already in `requirements.txt`, and the flist, include paths and defines already exist in the `compile_vsim_fast.tcl` the fast-check generates. Measured cost of elaborating a whole project this way: **0.4-0.5 s**. **The hook point is the end of the generation run** (user decision, 2026-08-25), which is possible because generation already materializes the dependencies itself: `ollivander.py:562-567` runs `bender checkout`, falling back to `bender update`, so every IP package the generated RTL imports is on disk by the time the last phase ends. The check must run after phase 9 so it validates the bytes actually shipped, formatting included.
+`scripts/check_generated_rtl.py` elaborates a project's generated RTL with pyslang and reports only what we own, in about half a second per project. It is deliberately NOT wired into any flow yet: see chapter 12 for the 25 errors that have to be triaged first, and for the hook point chosen for when it becomes a gate.
 
-What is NOT available there is the **stubs**: they are produced by a separate `--generate-stubs` invocation, which the fast-check drives. So the split follows the coverage: at generation, the self-consistency of everything we wrote (with vendor modules blackboxed via `--ignore-unknown-modules`); at fast-check, the same elaboration against exact-signature stubs, which is the only place our wrappers are checked at the IP boundary. Of the four defect classes found on 2026-08-25, three are catchable at generation and one - the defective stub emissions - is stub-only by construction.
-
-One design rule follows from dropping the stubs: vendor sources must be **parsed** but never **reported**, or the gate starts failing on third-party code we do not own - the same noise problem noted for linting above.
-
-The reported set must be **derived, not hardcoded**, because a project may bring its own components: `paths.components` is a list, declarable in `ollivander_config.yml` and *extended* by the project's `*_env.yml` (`env_manager.py:202-226`, with the project's entries taking precedence), and `env_manager.py:230` already assembles exactly the right set as `env.search_paths = [outdir] + component_paths + [base_dir]`. Report on `[env.outdir_path] + env.component_paths` and the scope follows the configuration by construction: a user-added component directory is covered the day it is declared, with no change to the checker. Leave `base_dir` out - it is the fallback root, not authored content. This matters more than it looks: components a user writes for their own project are the least-reviewed SystemVerilog in the tree, and a hardcoded pair of paths would under-cover precisely them.
-
-One edge case to name rather than guess at: a project is free to declare a component path that points inside a vendor checkout. Files there would then be reported - defensible, since declaring a directory as a component source is claiming it - but the escape has to be an explicit exclusion list, never a heuristic that tries to recognise third-party code by its path.
-
-Two hard-won rules for whoever implements it:
-
-*   **`Driver.reportCompilation()` reports nothing.** Measured: on a file that `Compilation.getAllDiagnostics()` rejects with four errors, the Driver path prints no diagnostic and returns `None`. A gate built on it is a no-op that reads as a pass. Use `getAllDiagnostics()` plus a `DiagnosticEngine`, and **give the checker a self-test** against a known-invalid input - the failure mode of a silent checker is indistinguishable from success.
-*   **Pass `--timescale=1ns/1ps`**, as `vlog` receives. Without it roughly 130 spurious *"design element does not have a time scale defined"* errors bury the real ones.
-
-The gate cannot be switched on the day it is written: today it reports **51 errors on crossbar (7 files) and 10 on noc (4 files)**. Four classes are ours and are being fixed (chip-wrapper port integrity, `AxiCfgJoin` used before its declaration in the NoC tiles, a nested assignment pattern under `default:` in `spatz_cluster_isle`, three defective stub emissions); what remains after that is **24 errors inside Padrick's own output** (`reg_req_t`/`reg_rsp_t` type parameters defaulting to `logic`, then member-accessed) plus one implicit conversion of ours, all untriaged. Wire the gate in only once those 25 are triaged - otherwise the first thing it does is block the fleet on a decision nobody has made.
-
-Two of those classes deserve their own note, because a passing simulation cannot see either: nothing in any flow elaborates the chip wrapper (see chapter 12), and `vlog` does not check port existence across a module boundary.
-
----
-
-## 12. Chip Wrapper Integrity: Two Directions of One Missing Check
-
-Phase 8 exists to cross-validate the chip wrapper against the padframe. It checks one direction and fails to stop; it does not check the other at all. Both produce RTL that reports success and is wrong, and neither is visible to any simulation - the generated testbench instantiates the **SoC** (`crux dut`), never the chip, so the wrapper is compiled by `vlog` and elaborated by nothing. That is why both defects survived: `vlog` does not check port existence across a module boundary, and no elaboration ever descends into the file.
-
-**Direction one - a core port with no pad.** Phase 8 finds it, prints `[ERROR] The following Core ports are missing from the Padframe`, emits a helpful stub, then renders the wrapper anyway and the run ends with `[SUCCESS] Generation complete!`. The generator contradicts itself in its own log. The port is simply omitted from the SoC instantiation, so in SystemVerilog it stays unconnected: on `crux` that is `clk_rst_bypass_i`, which drives the OR selecting the clock/reset bypass (`crux.sv:236`). Phase 8 must **fail** - after emitting the stub, which is the useful part. Measured blast radius: exactly one project and one port.
-
-**Resolution chosen (user decision, 2026-08-25): `crux` keeps the port unpadded and declares it, becoming the permanent fleet witness of `unpadded_ports` (12.1).** The pad is never added there. This works because the other direction is already covered: `super_crux_pads.py:61` declares a proper `PAD_CLK_RST_BYPASS` bound to `clk_rst_bypass_i`, and `crossbar_isle` has no padframe at all, so the fleet witnesses a real pad on one project and a declared tie-off on the other. It is also architecturally honest rather than a convenience: the bypass strap is a board-level fast-boot aid, and a package may legitimately omit it and reach the same control through the DFT `test_mode_i` pin, which ORs into the same signal at `crux.sv:236`. Say so in the `crux.yml` comment, so it reads as a decision and not as an omission that was papered over. It also removes the ordering constraint entirely: with the declaration in place there is no 'add the pad first, make phase 8 fatal second' dance for `crux`.
-
-**Direction two - a wrapper connection to a padframe port that does not exist.** Unchecked, and currently 14 occurrences on `crux`. The root cause is a wrong assumption in the wrapper template: *every pad in the pad list yields one padframe port named `<pad>_pad`*. Padrick emits one port per **pad signal declared by the pad type**, so the assumption breaks twice over - a `CONFIG_TC_PAD_DEF` pad becomes four ports named `..._config_tc_pad_internal_signals_0..3`, and a pad type declaring no pad signals at all (`PAD_CORNER`, the supply pads) becomes **no port**, since those are physical-only cells added by the place-and-route flow. The wrapper must derive its pad-side connections from the pad type's declared signals, not from the pad name, and connect nothing for connection-less physical pads.
-
-### 12.1 Where the User Declares a Deliberately Unpadded Port
-
-Making phase 8 fatal closes a hole but also removes an escape: a port that is legitimately internal would have no way to pass. The declaration belongs in the `padframe:` section of the SoC description, as a sibling of the pad-list selectors:
-
-```yaml
-padframe:
-  pad_csv: "crux_pads.csv"
-  # Core ports deliberately NOT brought out to a pad. Each entry states the
-  # intention the generator cannot infer.
-  unpadded_ports:
-    clk_rst_bypass_i: 0        # input: driven '0 in the chip wrapper
-    some_status_o: open        # output: explicitly left open
-```
-
-That section, and not the pad list, because the choice is a **packaging** decision (this die, this package, this pinout), it must be per-project, and phase 8 - which already reads `padframe:` and already computes the difference between core ports and padframe ports - is where it is consumed. The pad list is the wrong file twice: it is the inventory of physical pads, and it is Padrick's input, which cannot represent a padless SoC-side signal at all (every signal Padrick exposes derives from a pad instance). An entry there would be a fiction to be filtered out before Padrick sees it, maintained across three input formats.
-
-Semantics that separate a declaration from a loophole:
-
-*   **Explicit names only, no wildcards.** The point is to record an intention the tool cannot infer; a pattern would silently absorb ports added later, which is the failure mode being fixed.
-*   **`0`/`1` (or a sized literal for vectors) on inputs, `open` on outputs**, each rejected on the other direction - an unconnected input is precisely what is being outlawed. Width checked against the port declaration.
-*   **Visible in the RTL**: `.clk_rst_bypass_i ('0),  // unpadded by declaration`. A reader of the wrapper must see an intention, not an omission.
-*   **Visible where humans look**: a row in `doc/<name>_padframe.csv` marked *no pad - tied to 0*, or the declaration hides the pin from exactly the people who would notice it missing.
-
-### 12.2 The Stub File Should Offer Both Remedies, Pin by Pin
-
-The stub phase 8 already writes is a real asset, with two defects. It is emitted in **native Padrick YAML regardless of the format the project uses** - `crux` declares `pad_csv`, so the current `[HINT] You can copy-paste it into your pad list!` invites pasting YAML into a CSV - and it offers only one of the two ways out. It should become a two-part advice sheet, named for the project's own pad-list format:
-
-*   **Part A, the pad entries**, in that project's format (CSV row / Python dict entry / native YAML), comment-free so the block pastes as-is.
-*   **Part B, the tie-off alternative**, always YAML because that is where it goes, always commented so it is inert, one line per pin with the value pre-filled and the direction respected - `<port>: 0` for an input, `<port>: open` for an output - under a `padframe:`/`unpadded_ports:` header ready to paste into the SoC description.
-
-A header states which file each part belongs to and when each choice is right: a pad for a pin that must exist on the package, a tie-off for a port that is deliberately internal. Note that the CSV reader is a plain `csv.DictReader` with no comment handling, so part B must stay clearly delimited and last: a `#` line pasted into a real pad CSV becomes a data row.
-
-#### Advantages
-*   **Turns a self-contradicting log into a hard stop**, and gives the user a resolution in both directions instead of one.
-*   **Removes the only class of defect that no flow can see**, since nothing elaborates the chip wrapper today.
-
-#### Difficulties & Mitigation Strategies
-*   **A fatal phase 8 stops projects that are in that state.** Measured: one project, one port.
-    *   *Mitigation*: fix the pad list first, make it fatal second. In the reverse order the gate dies in generation.
-*   **`crux` carries three equivalent pad lists** (`crux_pad_list_1v8.yml`, `crux_pads.csv`, `crux_pads.py`) that exist to demonstrate the three input formats.
-    *   *Mitigation*: the new pad goes into all three, and their equivalence is worth verifying while there.
-
----
+Two properties of it are worth preserving in whatever wires it in, both paid for once: `Driver.reportCompilation()` reports nothing at all on a file that `getAllDiagnostics()` rejects with four errors, so the script self-tests against a known-invalid input before trusting its own clean result; and `--timescale` must be passed as `vlog` receives it, or ~130 spurious "no time scale defined" errors bury the real ones.
 
 ---
 
@@ -949,3 +878,14 @@ Ollivander already generates the simulation Makefiles; the same knowledge can em
 *   **The chips-it profile is a second thing to keep current** (module versions drift, runner tags change): one declared block in the default environment config, versioned with the generator, is the single place - and its diffs are reviewable the way astral's pinned variables are.
 *   **Tool provisioning is two different problems now**: on CHIPS-IT runners the pinned module variables ARE the provisioning (astral's pattern, safe because the infrastructure is known); the Verilator-only variant still pins nothing machine-specific and documents what it needs, since its runners are by definition not ours.
 *   **Dialect choice is settled by the internal-first premise**: GitLab CI is the deliverable; a GitHub Actions twin only if generated projects ever get public mirrors with the bridge, and not before.
+
+---
+
+## 12. What the Self-Elaboration Check Still Reports (25 errors, untriaged)
+
+This chapter used to describe the chip wrapper's two broken directions - a core port with no pad that phase 8 detected without stopping, and wrapper connections to padframe ports that did not exist. Both are fixed, and the behaviour they produced now lives in `docs/padframe_configuration_guide.md` section 2.1. What stays open is the residue the check still reports on the crossbar family, and it has to be triaged before the check can be wired in as a gate: wiring it first would block the fleet on a decision nobody has made.
+
+*   **24 errors inside Padrick's own generated output** (`*_config_reg_top.sv`, `*_padframe.sv`): `reg_req_t` and `reg_rsp_t` are type parameters defaulting to `logic`, then member-accessed. Legal to a front-end that only checks the overridden instantiation, rejected by one that also elaborates the default parameterization. Three ways out, in increasing cost: pass concrete types where Padrick leaves parameters defaulted; carry a patch on Padrick's template; or exclude Padrick's output from the reported set, which is the honest admission that we do not author it. The last is cheapest and least informative - decide it deliberately rather than by default.
+*   **1 implicit conversion without a cast** in `<project>_apb_subsystem_isle.sv`, which IS ours and has not been looked at.
+
+Until those are settled, `scripts/check_generated_rtl.py` stays a tool run by hand. The hook point, when it becomes a gate, is the **end of the generation run** - the dependencies are already materialized by then, since `ollivander.py` runs `bender checkout` itself - with the stub-related half staying at `fast-check`, the only place our wrappers are checked against exact IP signatures.

@@ -12,7 +12,9 @@
 module snitch_hwpe_subsystem
   import hci_package::*;
   import hwpe_ctrl_package::*;
-  import reqrsp_pkg::amo_op_e;
+  // 'reqrsp_pkg::amo_op_e' was imported here and never used: that package does
+  // not declare the name (snitch_pkg does), so a strict front-end rejects the
+  // module while QuestaSim, resolving explicit imports lazily, never noticed.
 #(
   parameter type         tcdm_req_t    = logic,
   parameter type         tcdm_rsp_t    = logic,

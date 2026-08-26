@@ -48,7 +48,7 @@ module olli_cdc_4phase #(
     .dst_ready_i ( dst_ready_i )
   );
 `else
-  // Synthesis: instantiate foundry-specific standard cell here
+  // For synthesis, instantiate foundry-specific standard cell here
 `endif
 
 endmodule
