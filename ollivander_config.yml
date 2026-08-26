@@ -194,7 +194,15 @@ dependencies:
     rev: "78d4b4248b3c7b02a0e61d683f658e5094ac8c44"
   floo_noc:
     git: "https://github.com/pulp-platform/FlooNoC.git"
-    version: "0.8.0"
+    # The declared FLOOR, which documents the minimum the generator needs. It does
+    # not pin: 'version' is a semver constraint in Bender, so this alone would keep
+    # floating inside 0.8.x - which is how we ended up compiling 0.8.4 RTL with a
+    # 0.8.1 generator for weeks. The pin that actually binds is in 'overrides'.
+    version: "0.8.4"
+    # Which generator this revision was validated against. Read by the check that
+    # runs before FlooGen; nothing else consumes it, and Bender.yml.mako emits only
+    # git/rev/version, so it cannot leak into the manifest.
+    validated_with: { floogen: "0.8.4" }
   hci:
     git: "https://github.com/FondazioneChipsIT/hci.git"
     rev: "3e63936991569d0b1e315d6914478937b37bb338"
@@ -474,6 +482,16 @@ dependencies:
 # Values were validated end-to-end: crossbar and NoC both generate, elaborate under QuestaSim and
 # Verilator, build and reach EOT in simulation with no project-level override at all.
 overrides:
+
+  # --- The generator and the library it instantiates must not drift apart.
+  # floo_noc is not here to settle a conflict: nobody else in the graph requires it. It is here
+  # because the 'version' constraint in the registry does NOT pin - it floats inside 0.8.x, so a
+  # future 0.8.5 would enter on its own while the floogen in requirements.txt stayed put. That is
+  # exactly how we came to compile 0.8.4 RTL with a 0.8.1 generator, unnoticed, and 0.8.3 turned
+  # out to have corrected the multicast mask width in the meantime. Bender.lock is git-ignored, so
+  # without this line two clones of one Ollivander commit can resolve different revisions.
+  # Move this revision and 'validated_with' in the registry together, or not at all.
+  floo_noc: { git: "https://github.com/pulp-platform/FlooNoC.git", rev: "14c253c996fcdc78b793fe28ac18964769b768df" }
 
   # --- One package name, several sources. Bender resolves per name and cannot choose between
   # repositories, so these can never be negotiated - only forced.

@@ -5,7 +5,7 @@ tabulate==0.10.0
 hjson==3.1.0
 mistletoe==1.5.1
 setuptools==69.5.1
-floogen==0.8.1
+floogen==0.8.4
 peakrdl==1.5.0
 peakrdl-regblock==1.3.1
 peakrdl-cheader==1.1.0

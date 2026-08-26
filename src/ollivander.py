@@ -116,6 +116,73 @@ def run_generated_rtl_check(env, outdir_path, use_stubs=False):
     print("=" * 70)
 
 
+def check_floogen_matches_rtl(env, soc_config):
+    """Warn when the resolved FlooNoC revision is not the one FlooGen was validated with.
+
+    FlooGen EMITS code that instantiates FlooNoC's modules, so the two have to
+    match; the registry records which generator a revision was validated against
+    (`validated_with`), and the resolved revision is read from Bender.lock, which
+    carries it in both regimes - a semver-resolved entry and one forced by
+    `overrides`. Version STRINGS are unusable for this: a forced revision makes the
+    lock record 'version: null', FlooNoC's own manifest declares no version, and the
+    checkout carries a synthetic 'bender-tmp-<hash>' tag.
+
+    Only for topologies where Ollivander actually runs FlooGen. NOT for every
+    project that merely links floo_noc: on a nested macro the check would compare
+    two things that are trivially equal - one venv, one catalogue - while the thing
+    that could differ, the macro's package emitted in another run, is outside its
+    reach. Coherence is a property of the generation event that emitted the package.
+
+    A warning, not an error: our own pin makes a mismatch nearly impossible, so the
+    case this exists for is a project overriding floo_noc in its own environment -
+    a legitimate choice that deserves to be informed, not refused.
+    """
+    if soc_config.topology.type != "noc":
+        return
+
+    entry = (env.registry_dependencies or {}).get("floo_noc") or {}
+    expected = ((entry.get("validated_with") or {}).get("floogen") or "").strip()
+    pinned = (entry.get("rev") or "").strip()
+
+    try:
+        from importlib.metadata import version as pkg_version
+        installed = pkg_version("floogen")
+    except Exception:
+        installed = None
+
+    lock = env.bender_dir / "Bender.lock" if env.bender_dir else None
+    resolved = None
+    if lock and lock.is_file():
+        # The lock is a flat YAML mapping; read the revision under floo_noc only.
+        in_entry = False
+        for line in lock.read_text(encoding="utf-8", errors="replace").splitlines():
+            if re.match(r"^\s{2}floo_noc:\s*$", line):
+                in_entry = True
+                continue
+            if in_entry:
+                m = re.match(r"^\s+revision:\s*([0-9a-f]{7,40})", line)
+                if m:
+                    resolved = m.group(1)
+                    break
+                if re.match(r"^\s{2}\S", line):     # next package
+                    break
+
+    # Two independent ways the pair can drift, and each names the file to fix.
+    if resolved and pinned and resolved != pinned:
+        print(f"\n  [WARNING] floo_noc resolved to {resolved[:12]}, not the {pinned[:12]} "
+              f"this catalogue records as validated (with FlooGen {expected or '?'}).")
+        print(f"            A project override can do this legitimately - but then pin a "
+              f"FlooGen that matches it, or the emitted package and the instantiated "
+              f"RTL can disagree.")
+
+    if installed and expected and installed != expected:
+        print(f"\n  [WARNING] FlooGen {installed} is installed while the catalogue records "
+              f"floo_noc {pinned[:12] or '?'} as validated with FlooGen {expected}.")
+        print(f"            Bumping one of the two without the other is how they drifted "
+              f"apart before: update 'validated_with' in ollivander_config.yml, or "
+              f"requirements.txt, so they move together.")
+
+
 def main():
     # =========================================================================
     # 1. ARGUMENT PARSING
@@ -726,6 +793,7 @@ def main():
     # =========================================================================
     # Automatically invokes FlooGen to generate the NoC configuration, router
     # instances, and the standard FlooNoC package.
+    check_floogen_matches_rtl(env, soc_config)
     run_floogen(soc_config, cfg_dir, hw_dir)
 
     # =========================================================================
