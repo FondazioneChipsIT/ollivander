@@ -210,13 +210,31 @@ components:
         noc_mode: "joined_wide"
       axi_slave:
         - name: "l2_spm_global"
-          base_addr: 0x70000000
-          size_per_instance: 0x00100000 # 1 MB per tile
+          # PER-INSTANCE WINDOWS, the fleet's witness for the list form of these two fields.
+          # The reference design's pattern: a uniform pitch, so software keeps indexing tiles as
+          # base + i * stride, with each tile mapping only part of its slot - here 1 MB inside
+          # every 2 MB - and the rest of the slot deliberately unmapped. The bases are stated
+          # rather than derived, which is what a scalar base could not express: with one base
+          # and one size the tiles would pack contiguously and there would be no holes.
+          #
+          # THE DEPTHS ARE ALL EQUAL, ON PURPOSE, and the reason is a defect rather than a
+          # preference. 'size_per_instance' stays scalar so every tile builds 1 MB, because an
+          # 'sram_isle' array instantiated at TWO distinct depths hangs the offload - isolated
+          # to that single variable and still unexplained, see the entry in
+          # docs/developer/wip/future_evolution_tasks.md. Until that is understood, a witness
+          # for per-instance WINDOWS must not also depend on per-instance depth.
+          #
+          # 'MemSize' is deliberately NOT declared below: the isle defaults it to
+          # 'InstanceWindowSize', so the tile builds exactly what it maps and the two values
+          # cannot disagree - one number in this file describes both.
+          base_addr: [0x70000000, 0x70200000, 0x70400000, 0x70600000,
+                      0x70800000, 0x70A00000, 0x70C00000, 0x70E00000]
+          size_per_instance: [0x00100000, 0x00100000, 0x00100000, 0x00100000,
+                              0x00100000, 0x00100000, 0x00100000, 0x00080000]  # MINIMAL REPRO
     parameters:
       AxiUserAtop: true # Hardware atomics enabled
       SramDataWidth: 128
       SramNumWords: 1024
-      MemSize: 0x00100000
 
   # -- NARROW SCRATCHPAD MEMORY --
   - name: "top_spm_narrow"

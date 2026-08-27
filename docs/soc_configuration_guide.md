@@ -277,13 +277,25 @@ The `host` block and the items in the `components` list share the **exact same s
 ### 3.1 Interfaces (`interfaces`)
 *   `axi_master`: Boolean (`true` / `false`).
 *   `axi_slave`: List of memory regions. Each region takes `name`, `base_addr`, `size` (or `size_per_instance`), `ports` (integer, default 1), and `sync_domain` (Boolean, default `true`). Setting `sync_domain: false` instructs Ollivander to automatically instantiate an asynchronous Clock Domain Crossing (CDC) adapter.
+    *   **`base_addr` and `size_per_instance` each accept a scalar or a list**, and a list carries exactly one value per instance, in instance order. A list is only meaningful where the component expands into several instances — a `placement.logical` box on a NoC mesh — and is refused elsewhere, because a crossbar component is always a single instance. The instance order is the generator's canonical one: placement items in declaration order, and within a box **x outer, y inner**; it is the order FlooGen's own address map uses, and it is a contract you may rely on. The four combinations describe different hardware:
+
+        | `base_addr` | `size_per_instance` | Resulting layout                                                                 |
+        | :---------- | :------------------ | :------------------------------------------------------------------------------- |
+        | scalar      | scalar              | Contiguous, stride equal to the size. The default, and what every project without lists produces. |
+        | scalar      | list                | Contiguous and **packed**: each instance starts where the previous one ended, so the stride varies and there are no holes. |
+        | list        | scalar              | Placement given explicitly, depth uniform. Holes are allowed.                     |
+        | list        | list                | Placement and depth independent — a uniform stride with alternating depths, where the shallow instances leave the rest of their slot unmapped. |
+
+        The second row is the one worth reading twice: with one base and sizes `[2 MB, 1 MB, 2 MB, …]` the third instance lands at base + 3 MB, **not** on a 2 MB stride. If you want a uniform stride with alternating depths, state the bases too (fourth row). `soc_cfg_examples/noc/mesh.yml` is the worked example.
+
+        Everything downstream follows the resolved windows rather than recomputing them: the address map, the RDL description, the generated SoC package, the firmware headers and FlooGen's configuration. Where an external format can only express a uniform stride — RDL's `name[N] @ base += stride` and FlooGen's `array:` — the array is **unrolled** into one declaration per instance. The region the host is allowed to reach spans from the lowest base to the end of the highest window, holes included: an upstream decoder cannot exclude a gap, and what happens to an address inside one is the component's own decode to answer.
 *   `regbus_slave`: List of register regions. Same format as `axi_slave`, plus an `external` boolean flag. Setting `external: true` means the IP is physically outside the generated Top-Level (e.g., in the Padframe); Ollivander will NOT instantiate it, but will export its RegBus ports to the SoC I/O.
 *   `llc_port`: List of memory regions. Point-to-point asynchronous AXI link to the Host.
 *   `noc_networks` (NoC Only): Dictionary with `master` (list of networks, e.g. `["narrow"]`), `slave` (list of networks), and `noc_mode` (`"joined"` or `"dual"`). `"joined"` automatically instantiates a FlooNoC Join adapter to merge narrow and wide traffic into a single AXI port. `"dual"` requires the component to natively expose two separate AXI ports.
     *   An AXI port and the network it rides on are **two halves of one statement**: `axi_master` says the component has a master port, `noc_networks.master` says which network that port injects into. Declaring either half without the other is refused, in both directions and for both `master` and `slave`. Nothing can be inferred here — a 64-bit master port injected on the wide network instead of the narrow one is a silently malformed connection, not a detail the generator can guess.
 
 > [!IMPORTANT]
-> The entries above are the complete set: `interfaces` accepts nothing else, and neither do the nested address ranges. An unknown entry is refused by name, with the closest accepted one suggested, and a value of the wrong shape is refused too (`'interfaces'.axi_slave[0].size should be an integer, not str`). The same holds for every block of this section, which makes this guide the authoritative list of what is accepted rather than a description of it.
+> The entries above are the complete set: `interfaces` accepts nothing else, and neither do the nested address ranges. An unknown entry is refused by name, with the closest accepted one suggested, and a value of the wrong shape is refused too (`'interfaces'.axi_slave[0].size should be an integer, not str`). The two fields that accept a list say so in their refusal — `base_addr should be an integer, or a list with one integer per instance, not str` — and a list of the wrong length is refused separately, by section 7. The same holds for every block of this section, which makes this guide the authoritative list of what is accepted rather than a description of it.
 
 ### 3.2 System Configuration (`system_config`)
 Wires the component to the central `system_controller`.
@@ -476,7 +488,8 @@ Defines the parameters for automated bare-metal C firmware generation and compil
 | `toolchain`   | String | The GCC toolchain prefix (e.g., `"riscv64-unknown-elf-"`). Compiler flags (ISA, ABI, Code Model) are defined under the `host` block. |
 | `boot_memory` | String | **Required**. The `name` of the memory component (from the `components` list) where |
 |               |        | the boot`.text`, `.data`, and `.bss` sections will be placed. Ollivander will       |
-|               |        | automatically fetch its `base_addr` and `size`. The name must resolve to a declared  |
+|               |        | automatically fetch its `base_addr` and `size` — of its **first instance**, when the |
+|               |        | component declares per-instance lists. The name must resolve to a declared          |
 |               |        | component: a value that names nothing stops generation, suggesting the closest one.  |
 |               |        | Naming the **host** selects its own internal scratchpad instead — see below.         |
 | `test_app`    | Object | Configuration for the automatically generated test application.                     |
@@ -520,7 +533,7 @@ When a target's component type sits under a `clk_rst_control` auto control group
 
 With `bring_up: minimal` (section 4.3) that ungating is no longer redundant but load-bearing: the testbench leaves everything but the boot path gated, so the firmware's `<target>_enable()` is what makes a target reachable at all. Symmetrically, the generated application calls `<target>_disable()` at the end of each phase - isolate the target and wait for the isolation status, then assert its reset and drop its clock enable, in that order, so no transaction is cut mid-flight. The pair therefore tests the full power cycle of every target, not only its wake-up.
 
-A `memory_mapped` component whose placement is a **box** (an instance array) is driven as an array: the helpers address each instance through its own window (base plus index times `size_per_instance`), the firmware configures and wakes **every** instance before polling any — a genuinely parallel launch — and the checksum is verified per instance. A single-instance target is simply the N = 1 case of the same code.
+A `memory_mapped` component whose placement is a **box** (an instance array) is driven as an array: the helpers address each instance through its own **resolved** window, the firmware configures and wakes **every** instance before polling any — a genuinely parallel launch — and the checksum is verified per instance. With scalar fields that window is base plus index times `size_per_instance`; with a list on either field it is whatever the layout in section 3.1 assigns, and the firmware reads the resolved value rather than recomputing the product. A single-instance target is simply the N = 1 case of the same code.
 
 The resolved target list is printed at generation time (`[INFO] Offload test targets ...`) and again by the firmware itself on the UART (`[OFFLOAD] Targets: ...`), so both the generation log and every simulation transcript record what was actually tested.
 
@@ -628,7 +641,7 @@ The test suite validates the **defaults**, not user-composed combinations: a con
 
 Ollivander refuses a configuration it cannot make sense of, rather than generating from the part it understood. Every check below runs before any file is written, so the report you get is the whole story and the output directory is left untouched.
 
-### 6.1 An unknown field
+### 7.1 An unknown field
 
 Fields are matched exactly. A misspelling is reported with the path that leads to it, so a typo deep inside a nested block is as easy to find as one at the top:
 
@@ -639,7 +652,7 @@ Error    : Extra inputs are not permitted
 
 This applies to every block described in this guide. It is the reason the guide is the authoritative list of what is accepted: **a field it does not mention is a field the generator refuses.** If you need one that does not exist, the generator has no code reading it, so accepting it would only postpone the surprise.
 
-### 6.2 An unknown entry, or one of the wrong shape
+### 7.2 An unknown entry, or one of the wrong shape
 
 The blocks whose contents are free-form dictionaries — `interfaces`, `system_config`, `features`, `placement`, `dedicated_clock_div`, `testbench`, `software_stack` — are checked entry by entry, at every level of nesting, and the closest accepted entry is suggested:
 
@@ -658,7 +671,7 @@ Values are checked too, against the shape each entry expects:
 
 All the mismatches found are reported together, so a configuration with several mistakes takes one run to fix rather than one run each.
 
-### 6.3 A name that refers to nothing
+### 7.3 A name that refers to nothing
 
 Some values name something else in the same file. Those references are resolved, and a name that matches no declaration stops generation — with the closest declared name when there is one, and the full list when there is not:
 
@@ -669,7 +682,7 @@ Some values name something else in the same file. Those references are resolved,
 
 These references are resolved rather than trusted because of what they become: a component's `clock_domain` is used as the name of a signal in the generated top-level, so a domain that does not exist would yield a signal nobody declares — and SystemVerilog turns an undeclared identifier into an implicit wire, leaving the peripheral with a floating clock instead of an elaboration error.
 
-### 6.4 A name that must match the hardware
+### 7.4 A name that must match the hardware
 
 `parameters` and the keys of `interrupts` are SystemVerilog names, and they are checked against the wrapper itself rather than against a list in the generator — a stricter test, and one that stays correct as an IP evolves:
 
@@ -680,7 +693,7 @@ These references are resolved rather than trusted because of what they become: a
 
 The same mechanism refuses an attempt to override a parameter the wrapper declares as a fixed `localparam`, and reports when a value violates a constraint the hardware imposes.
 
-### 6.5 An environment file that cannot be parsed
+### 7.5 An environment file that cannot be parsed
 
 Environment files (see [the environment configuration guide](env_configuration_guide.md)) are optional to exist but not optional to parse. A YAML syntax error in one of them stops the generator, naming the file and the position the parser reports:
 
@@ -691,7 +704,7 @@ while parsing a block mapping
 expected <block end>, but found '<block mapping start>'
 ```
 
-### 6.6 Two declarations that contradict each other
+### 7.6 Two declarations that contradict each other
 
 Some values are only meaningful together, and a check on each one separately cannot see the contradiction: both keys are legitimate, both are spelled correctly, and only their combination is wrong. The AXI-port-versus-network pair of section 3.1 is one case:
 
@@ -708,3 +721,22 @@ The geometry checks are the other members of this class, since each of them read
 *   the ID and user widths a nested macro publishes are checked against the network it plugs into, with the three refusals described in "Network ID width" (section 2.2) and under `user_mapping` (section 2.3).
 
 This class deserves its own attention because the checks of the previous sections cannot reach it: unknown keys, wrong shapes and dangling names are each detectable by looking at one place at a time, whereas a pair of coherent-looking declarations that disagree only shows up when the two are read together. The consequence, when it slips through, is a connection that elaborates and is wrong — a 64-bit master port injected on a 512-bit network, for instance.
+
+### 7.7 A per-instance list that does not match the instance count
+
+`base_addr` and `size_per_instance` accept a list carrying one value per instance (section 3.1), so their length is a statement about the hardware and is checked against it. The check is keyed to the **instance count**, not to the topology: a list is meaningful wherever a component expands into several instances, and keying it to `topology.type` would bake in a coupling that may change.
+
+```
+[l2_shared_memory] 'interfaces'.axi_slave[0].size_per_instance declares 6 values but the component
+expands into 8 instances; a list must carry exactly one value per instance, in instance order.
+```
+
+The single-instance case is worth its own wording, because it is the mistake someone will actually make — copying a NoC component into a crossbar project, where the same declaration is suddenly one instance:
+
+```
+[l2_shared_memory] 'interfaces'.axi_slave[0].base_addr declares 4 values but the component expands
+into 1 instance; a list applies to components that expand into several, through a
+'placement.logical' box on a NoC mesh.
+```
+
+Both are refused before anything is written, like every other check in this chapter. The values themselves are resolved once, immediately after validation, so that every later step — address map, RDL, SoC package, firmware, FlooGen — reads the same windows instead of each deriving its own.

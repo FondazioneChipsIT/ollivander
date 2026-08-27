@@ -24,7 +24,7 @@ import yaml
 from pydantic import ValidationError
 from mako.lookup import TemplateLookup
 
-from core.soc_schema import OllivanderConfig, validate_soc_components, validate_cross_references, validate_untyped_blocks, Component
+from core.soc_schema import OllivanderConfig, validate_soc_components, validate_cross_references, validate_untyped_blocks, normalize_address_ranges, Component
 from core.stub_generator import generate_stubs
 from core.env_manager import setup_environment, load_env_yaml
 from core.arch_optimizer import optimize_clock_tree, autoconfigure_host, warn_boot_memory_gated, check_boot_memory_executable
@@ -510,6 +510,10 @@ def main():
     try:
         validate_cross_references(soc_config)
         validate_untyped_blocks(soc_config)
+        # Per-instance lists become resolved windows here, before any generation step reads an
+        # address: from this point on 'base_addr' is always an integer and '_windows' holds the
+        # per-instance truth (soc_schema.normalize_address_ranges).
+        normalize_address_ranges(soc_config)
         validate_soc_components(soc_config, search_paths, exclude_dir, generator.original_isle_types)
         warn_boot_memory_gated(soc_config, generator.original_isle_types)
         if soc_config.topology.type == "noc":

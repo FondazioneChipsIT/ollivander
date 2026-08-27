@@ -783,28 +783,54 @@ class OllivanderConfig(StrictModel):
         """
         return len(self.managed_clock_domains) > 0
 
-    def control_group_width(self, group, original_isle_types: Optional[Dict[str, str]] = None) -> int:
-        """
-        Number of tiles controlled by an auto control group, i.e. the width of its
-        packed `<group>_clk_en` / `<group>_rst` registers.
+    def control_group_members(self, group, original_isle_types: Optional[Dict[str, str]] = None):
+        """The components an auto control group controls, each with its BIT OFFSET in the group.
 
-        A group targets a component *type*, and by the time the registers are
-        emitted the NoC components have already been wrapped in Tile wrappers, so
-        the original (pre-wrap) type is matched as well. This is the same matching
-        rule used by the NoC IR builder when it assigns each instance its bit index,
-        which is what guarantees the register is exactly wide enough to hold them.
+        A group targets a component *type*, and several components may share one type - the mesh
+        example declares `spm_isle` twice - so a group can span more than one of them. Members
+        come in declaration order and each one's offset is the number of instances declared
+        before it, which is what makes a bit index unique across the whole group.
+
+        The width and the offsets are derived here TOGETHER on purpose. They used to be
+        computed apart: the width summed the instances of every matching component, while the
+        bit index was the instance's position WITHIN ITS OWN component. With one component per
+        group the two agree; with two, the second component restarted from zero, so its tiles
+        aliased onto the first component's bits and the high bits drove nothing. Invisible while
+        the firmware writes the whole register at once (the offload ungates with 0xFFFFFFFF),
+        and wrong the moment anything addresses one tile - it would gate the wrong one.
+
+        By the time the registers are emitted the NoC components have been wrapped in Tile
+        wrappers, so the original pre-wrap type is matched as well.
         """
         original_isle_types = original_isle_types or {}
-        width = 0
+        members, offset = [], 0
         for comp in (self.components or []):
             orig_type = original_isle_types.get(comp.name, comp.type)
             candidates = [comp.type, orig_type,
                           orig_type.replace('_isle', '_tile').replace('_subtile', '_tile')]
             if group.target_component_type in candidates:
-                width += comp.num_instances
+                members.append((comp, offset))
+                offset += comp.num_instances
+        return members
+
+    def control_group_width(self, group, original_isle_types: Optional[Dict[str, str]] = None) -> int:
+        """
+        Number of tiles controlled by an auto control group, i.e. the width of its
+        packed `<group>_clk_en` / `<group>_rst` registers.
+        """
+        members = self.control_group_members(group, original_isle_types)
+        width = sum(comp.num_instances for comp, _ in members)
         # Never emit a zero-width field: a group that currently matches nothing still
         # needs a legal (single-bit) register.
         return max(width, 1)
+
+    def control_group_bit_offset(self, group, comp,
+                                 original_isle_types: Optional[Dict[str, str]] = None) -> int:
+        """Where a component's instances start inside its group's packed register."""
+        for member, offset in self.control_group_members(group, original_isle_types):
+            if member.name == comp.name:
+                return offset
+        return 0
 
     @property
     def gated_at_power_on(self) -> bool:
@@ -1048,7 +1074,15 @@ def validate_cross_references(config: OllivanderConfig):
 # run time - the alternative, real Pydantic models, would have to be threaded through 123
 # dictionary-style accesses of 'interfaces' alone, across Python and Mako, for no additional
 # validation. That refactor is now internal cleanup rather than a correctness matter.
-_ADDR_RANGE = {"name": str, "base_addr": int, "size": int, "size_per_instance": int,
+# Shape marker: an integer, OR a list carrying one integer per instance. A dedicated marker
+# rather than the list form '[int]' - which the shape language would already accept for both,
+# its list branch taking a lone entry written without brackets - because the message matters:
+# a scalar typed wrong must still be reported as 'base_addr', not as 'base_addr[0]'. The guide
+# quotes these refusals verbatim (soc_configuration_guide.md section 3.1).
+INT_OR_PER_INSTANCE = object()
+
+_ADDR_RANGE = {"name": str, "base_addr": INT_OR_PER_INSTANCE, "size": int,
+               "size_per_instance": INT_OR_PER_INSTANCE,
                "ports": int, "sync_domain": bool}
 _PLACEMENT_NODE = {"x": int, "y": int,
                    "box": {"x_start": int, "x_end": int, "y_start": int, "y_end": int}}
@@ -1121,6 +1155,22 @@ _ROOT_BLOCK_SPEC = {
 
 def _check_shape(spec, value, where, errors):
     """Match one value against the shape language described above, collecting every mismatch."""
+    if spec is INT_OR_PER_INSTANCE:
+        # Length against the instance count is NOT checked here: this function sees one value
+        # and its path, never the component that owns it. That check lives in
+        # validate_untyped_blocks, which does.
+        if isinstance(value, (list, tuple)):
+            if not value:
+                errors.append(f"{where} is an empty list; drop it or give one value per instance.")
+            for item in value:
+                if isinstance(item, bool) or not isinstance(item, int):
+                    errors.append(f"{where} should be a list of integers, but it holds a "
+                                  f"{type(item).__name__}.")
+                    break
+        elif isinstance(value, bool) or not isinstance(value, int):
+            errors.append(f"{where} should be an integer, or a list with one integer per "
+                          f"instance, not {type(value).__name__}.")
+        return
     if isinstance(spec, dict):
         if not isinstance(value, dict):
             errors.append(f"{where} should be a mapping, not {type(value).__name__}.")
@@ -1166,8 +1216,87 @@ def validate_untyped_blocks(config: OllivanderConfig):
         value = getattr(config, block, None)
         if isinstance(value, dict):
             _check_shape(spec, value, f"'{block}'", errors)
+    _check_per_instance_lists(config, errors)
     if errors:
         raise ValueError("\n".join(f"\n{e}" for e in errors))
+
+
+def normalize_address_ranges(config: OllivanderConfig):
+    """Resolve every per-instance list ONCE, right after validation, before anything is written.
+
+    'base_addr' and 'size_per_instance' each accept a list, but some twenty places legitimately
+    want one integer - "where does this component start", for a linker script, a firmware
+    header, a testbench preload, a crossbar decode rule. Rather than teach each of them the
+    four layouts (and get one of them wrong), the declared lists are resolved here and the entry
+    is rewritten so that:
+
+    *   '_windows' carries the resolved (base, size) of every instance, in instance order;
+    *   'base_addr' and 'size_per_instance' hold INSTANCE 0's values, as plain integers.
+
+    So a consumer that has never heard of lists keeps working and stays right, and the handful
+    that genuinely need per-instance data ask utils.resolve_instance_windows, which returns
+    '_windows' when it is there. Entries that declared no list are left untouched, byte for
+    byte, which is what makes the feature a strict addition to every existing project.
+    """
+    from core.utils import instance_count, resolve_instance_windows
+
+    for comp in [config.host] + (config.components or []):
+        count = instance_count(comp)
+        for block in ('axi_slave', 'regbus_slave', 'llc_port'):
+            entries = (comp.interfaces or {}).get(block)
+            if entries is None:
+                continue
+            for entry in (entries if isinstance(entries, list) else [entries]):
+                if not isinstance(entry, dict):
+                    continue
+                if not any(isinstance(entry.get(f), (list, tuple))
+                           for f in ('base_addr', 'size_per_instance')):
+                    continue
+                windows = resolve_instance_windows(entry, count)
+                entry['_windows'] = windows
+                entry['base_addr'], entry['size_per_instance'] = windows[0]
+
+
+def _check_per_instance_lists(config: OllivanderConfig, errors):
+    """A per-instance list must carry exactly one value per instance of its component.
+
+    Keyed to the INSTANCE COUNT and not to the topology. A list is only meaningful where a
+    component expands into several instances, which today means a placement on a NoC mesh - but
+    keying the check to 'topology.type' would bake in a coupling that may change, while the
+    instance count gives the same protection and stays correct the day a crossbar component
+    gains multiplicity.
+
+    The wording carries the reason, not just the arithmetic: the error someone will actually hit
+    is copying a NoC example into a crossbar project, where the same declaration is suddenly one
+    instance, and "expected 1, got 4" would not explain why.
+    """
+    from core.utils import instance_count
+
+    for comp in [config.host] + (config.components or []):
+        count = instance_count(comp)
+        for block in ('axi_slave', 'regbus_slave', 'llc_port'):
+            entries = (comp.interfaces or {}).get(block)
+            if entries is None:
+                continue
+            entries = entries if isinstance(entries, list) else [entries]
+            for idx, entry in enumerate(entries):
+                if not isinstance(entry, dict):
+                    continue
+                for field in ('base_addr', 'size_per_instance'):
+                    values = entry.get(field)
+                    if not isinstance(values, (list, tuple)) or len(values) == count:
+                        continue
+                    where = f"[{comp.name}] 'interfaces'.{block}[{idx}].{field}"
+                    if count == 1:
+                        errors.append(
+                            f"{where} declares {len(values)} values but the component expands "
+                            f"into 1 instance; a list applies to components that expand into "
+                            f"several, through a 'placement.logical' box on a NoC mesh.")
+                    else:
+                        errors.append(
+                            f"{where} declares {len(values)} values but the component expands "
+                            f"into {count} instances; a list must carry exactly one value per "
+                            f"instance, in instance order.")
 
 
 def validate_soc_components(config: OllivanderConfig, search_paths: List[Path] = None, exclude_dir: str = None, original_types: Dict[str, str] = None):

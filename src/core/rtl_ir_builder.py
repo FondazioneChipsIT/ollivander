@@ -15,26 +15,27 @@ topology.
 import re
 
 from core.sv_ir import PortConnection
-from core.utils import fmt_rst, is_external
+from core.utils import fmt_rst, instance_count, is_external, resolve_instance_windows
 
 
 def get_instance_window(comp, inst_idx=0):
     """
-    Calculate one instance's slave window (base address, size) for a component that
-    decodes its own window internally - the values behind the InstanceBaseAddr /
-    InstanceWindowSize identity parameters (docs/hw/component_standardization.md section 1.6).
+    One instance's slave window (base address, size) for a component that decodes its own
+    window internally - the values behind the InstanceBaseAddr / InstanceWindowSize identity
+    parameters (docs/hw/component_standardization.md section 1.6).
+
+    The window comes from resolve_instance_windows, which is the only place that knows how
+    'base_addr' and 'size_per_instance' turn into per-instance addresses: both accept a list,
+    so the layout is no longer 'base + inst_idx * size' in every configuration and deriving it
+    here would be wrong for three of the four layouts.
     """
-    base_addr = 0
-    size_val = 0
     if comp.interfaces and 'axi_slave' in comp.interfaces:
         slvs = comp.interfaces['axi_slave']
         if isinstance(slvs, list) and len(slvs) > 0:
-            b_addr = slvs[0].get('base_addr', 0)
-            b_val = int(b_addr, 16) if isinstance(b_addr, str) else b_addr
-            raw_size = slvs[0].get('size_per_instance', slvs[0].get('size', 0))
-            size_val = int(raw_size, 16) if isinstance(raw_size, str) and raw_size.startswith('0x') else int(raw_size)
-            base_addr = b_val + inst_idx * size_val
-    return f"64'h{base_addr:X}", str(size_val)
+            windows = resolve_instance_windows(slvs[0], instance_count(comp))
+            base_addr, size_val = windows[inst_idx]
+            return f"64'h{base_addr:X}", str(size_val)
+    return "64'h0", "0"
 
 
 def get_type_param_fill(p, comp, soc_config, pkg):
@@ -435,7 +436,13 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                     # PeakRDL emits a single-bit SystemRDL field as a scalar `logic`, which
                     # cannot be bit-selected, so a one-tile group is referenced without index.
                     group_width = soc_config.control_group_width(ctrl_group, original_isle_types)
-                    bit_sel = f"[{inst_idx}]" if group_width > 1 else ""
+                    # The bit index is the instance's position in the WHOLE GROUP, not in its
+                    # own component: a group targets a type, and several components may share
+                    # that type. Taking 'inst_idx' alone made a second component restart from
+                    # bit 0 and alias onto the first one's tiles.
+                    bit_base = soc_config.control_group_bit_offset(
+                        ctrl_group, c, original_isle_types)
+                    bit_sel = f"[{bit_base + inst_idx}]" if group_width > 1 else ""
                     inst.connections.append(PortConnection("tile_clk_en_i", f"sys_regs_hwif_out.{gn}_clk_en.{gn}_clk_en.value{bit_sel}"))
                     inst.connections.append(PortConnection("tile_rst_ni", f"~sys_regs_hwif_out.{gn}_rst.{gn}_rst.value{bit_sel}"))
                     inst.connections.append(PortConnection("clk_rst_bypass_i", "clk_rst_bypass_i"))
@@ -475,23 +482,38 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 # (sixteen cluster tiles, sixteen elaborations - wip 5.2.-1). The
                 # parameter path stays for the isles that build elaboration-time
                 # structures from the value, l2_isle's mapping rules being the case.
+                # THE BASE AND THE SIZE ARE INDEPENDENT HALVES OF THE CONVENTION, and used to
+                # be coupled by accident: the size was handed over only to a component that
+                # also asked for a base, so an isle wanting to know how big its window is
+                # without caring where it starts never received it. That is not a corner case -
+                # 'sram_isle' and 'spm_isle' are both exactly it, decoding on the low address
+                # bits and sizing their SRAM from the window ('MemSize = InstanceWindowSize',
+                # 'SpmTileSize = InstanceWindowSize'). With the two decoupled, declaring the
+                # parameter is enough: every opting-in component receives ITS OWN window, which
+                # is what the convention says, and a component whose instances differ in depth
+                # builds what it maps instead of mapping part of what it builds.
                 base_is_port = "instance_base_addr_i" in tile_ports
-                if base_is_port or "InstanceBaseAddr" in supported:
+                wants_base = base_is_port or "InstanceBaseAddr" in supported
+                wants_size = "InstanceWindowSize" in supported
+                if wants_base or wants_size:
                     slaves = (c.interfaces or {}).get("axi_slave", [])
                     if isinstance(slaves, dict):
                         slaves = [slaves]
                     if slaves:
-                        s_base = slaves[0].get("base_addr", 0)
-                        s_base = int(s_base, 0) if isinstance(s_base, str) else int(s_base)
-                        s_size = slaves[0].get("size_per_instance", slaves[0].get("size", 0))
-                        s_size = int(s_size, 0) if isinstance(s_size, str) else int(s_size)
-                        base_lit = f"64'h{s_base + inst_idx * s_size:X}"
-                        if base_is_port:
-                            inst.connections.append(PortConnection(
-                                "instance_base_addr_i", base_lit))
-                        else:
-                            inst.parameters["InstanceBaseAddr"] = base_lit
-                        if "InstanceWindowSize" in supported:
+                        # From the one resolver, never recomputed: with a list on either field
+                        # the layout is not 'base + inst_idx * size', and each instance's
+                        # window - INCLUDING its size, which now varies between instances of
+                        # one component - is whatever that layout assigns it.
+                        s_base, s_size = resolve_instance_windows(
+                            slaves[0], instance_count(c))[inst_idx]
+                        if wants_base:
+                            base_lit = f"64'h{s_base:X}"
+                            if base_is_port:
+                                inst.connections.append(PortConnection(
+                                    "instance_base_addr_i", base_lit))
+                            else:
+                                inst.parameters["InstanceBaseAddr"] = base_lit
+                        if wants_size:
                             inst.parameters["InstanceWindowSize"] = f"64'h{s_size:X}"
 
                 connected_ports = {conn.port_name for conn in inst.connections}

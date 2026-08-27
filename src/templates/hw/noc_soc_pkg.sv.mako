@@ -56,22 +56,10 @@
       if isinstance(val, int): return f"{val:X}"
       return str(val).replace('0x', '').replace('_', '').upper()
       
-  def instance_count(c):
-      # Number of physical instances a component's placement generates: a box
-      # yields its area, a list of boxes the sum of areas, a single coordinate 1.
-      p = getattr(c, 'placement', None) or {}
-      log = p.get('logical') if isinstance(p, dict) else None
-      if log is None: return 1
-      items = log if isinstance(log, list) else [log]
-      n = 0
-      for item in items:
-          if isinstance(item, dict) and 'box' in item:
-              b = item['box']
-              n += ((int(b.get('x_end', 0)) - int(b.get('x_start', 0)) + 1) *
-                    (int(b.get('y_end', 0)) - int(b.get('y_start', 0)) + 1))
-          else:
-              n += 1
-      return max(1, n)
+  ## Instance counting and window resolution both live in core.utils, which is what keeps this
+  ## package, the address map, the firmware and FlooGen describing the same hardware. The local
+  ## copy of the counting arithmetic that used to sit here was one of four.
+  from core.utils import component_span, instance_count
 
   axi_slaves = []
   for c in config.components:
@@ -82,14 +70,16 @@
               # DECERR slave). 'size_per_instance' covers ONE instance, so the region
               # must span the whole array - with one instance's size, every access
               # beyond instance 0 was silently swallowed inside the host, B response
-              # and all (symptom: 15 of 16 mesh clusters unreachable).
+              # and all (symptom: 15 of 16 mesh clusters unreachable). An explicit
+              # 'size' keeps its documented meaning of the WHOLE region and wins;
+              # otherwise the span is computed from the resolved per-instance windows,
+              # which is not 'per x count' once either field carries a list.
               if 'size' in slv:
-                  size = slv['size']
+                  base, size = slv['base_addr'], slv['size']
               else:
-                  per = slv.get('size_per_instance', '0x1000')
-                  per = int(per, 0) if isinstance(per, str) else int(per)
-                  size = hex(per * instance_count(c))
-              axi_slaves.append({'name': c.name, 'base': slv['base_addr'], 'size': size})
+                  span_base, span_size = component_span(slv, instance_count(c))
+                  base, size = hex(span_base), hex(span_size)
+              axi_slaves.append({'name': c.name, 'base': base, 'size': size})
 %><%namespace file="/license_header.mako" import="license"/>\
 ${license()}\
 //

@@ -73,6 +73,171 @@ def is_external(comp):
         slaves = [slaves]
     return any(slv.get('external', False) for slv in slaves)
 
+def parse_addr_value(value):
+    """One base address or size from the SoC description, as an int, honouring its notation.
+
+    The guide documents these fields as 'Int/Hex', and YAML already turns 0x60000000 into an
+    int, so a string arrives here only when the user quoted it - and then base 0 reads the
+    prefix that was written. UNIFIED DELIBERATELY: the two places that used to resolve windows
+    disagreed on a string of bare digits, one reading it as hexadecimal and the other as
+    decimal, so 'base_addr: "60000000"' denoted two different addresses within one build. No
+    project description writes one (checked across every example '*.yml' and '*.py'), which is
+    what makes unifying on the user's own notation free rather than a behavioural change.
+    """
+    if isinstance(value, str):
+        return int(value, 0)
+    return int(value)
+
+
+def instance_count(comp):
+    """How many instances a component expands into, from its own placement declaration.
+
+    Derived from the declaration rather than from the placement grid, so that the callers who
+    only need the COUNT do not have to rebuild the grid first - four places used to compute it
+    by walking that grid, each with its own copy of the arithmetic. A component with no
+    placement is one instance, which is every crossbar component and the reason a list is
+    meaningless there.
+    """
+    placement = getattr(comp, 'placement', None) or {}
+    logical = placement.get('logical')
+    if not logical:
+        return 1
+    items = logical if isinstance(logical, list) else [logical]
+    total = 0
+    for item in items:
+        if 'box' in item:
+            box = item['box']
+            total += ((box['x_end'] - box['x_start'] + 1)
+                      * (box['y_end'] - box['y_start'] + 1))
+        else:
+            total += 1
+    return max(1, total)
+
+
+def instance_coords(comp):
+    """The mesh coordinates of a component's instances, in INSTANCE-INDEX order.
+
+    The canonical enumeration of the whole generator: placement items in declaration order,
+    and within a box x outer / y inner. FlooGen's own address map agrees with it - the eight
+    L2 instances of the reference mesh land at (0,0)..(0,3) then (8,0)..(8,3), which is this
+    order and not the other one - as do the control-group bit selects that index instances.
+
+    Needed wherever an array has to be UNROLLED into individually addressed instances, since
+    an unrolled endpoint must state the coordinate that the array form derived from a range.
+    """
+    placement = getattr(comp, 'placement', None) or {}
+    logical = placement.get('logical')
+    if not logical:
+        return []
+    items = logical if isinstance(logical, list) else [logical]
+    coords = []
+    for item in items:
+        if 'box' in item:
+            box = item['box']
+            for x in range(box['x_start'], box['x_end'] + 1):
+                for y in range(box['y_start'], box['y_end'] + 1):
+                    coords.append((x, y))
+        else:
+            coords.append((item['x'], item['y']))
+    return coords
+
+
+def resolve_instance_windows(entry, num_instances):
+    """Every instance's (base, size) window for one address range, resolved in ONE place.
+
+    'base_addr' and 'size_per_instance' each accept a scalar or a list of per-instance values,
+    and all four combinations mean something a design needs:
+
+        base     size     layout
+        scalar   scalar   contiguous, stride equal to the size - the original behaviour
+        scalar   list     contiguous and PACKED: the stride varies, no holes
+        list     scalar   placement given, depth uniform: holes allowed
+        list     list     placement and depth independent - the reference design's map, whose
+                          small tiles leave the upper half of their uniform slot unmapped
+
+    Resolving here instead of at each of the fourteen consumers IS the safety argument of the
+    feature: a consumer that kept recomputing 'base + i * size' would be silently wrong for
+    every layout but the first, and silently wrong address maps are what this generator exists
+    to prevent. Consumers ask for the window of an instance; they never derive it.
+
+    A length that disagrees with the instance count raises rather than truncating. The schema
+    refuses that case first, with a message that explains why (soc_schema.py); this is the
+    backstop for the paths that bypass it, a hand-built Python description above all.
+    """
+    # Normalised entries carry their resolved windows and are returned verbatim: the
+    # normalisation pass (soc_schema.normalize_address_ranges) collapses the declared lists so
+    # that the many consumers wanting simply "the component's base" keep reading an integer,
+    # and re-deriving from that collapsed scalar here would silently reinstate the uniform
+    # layout it replaced.
+    stored = entry.get('_windows')
+    if stored:
+        return [tuple(window) for window in stored]
+
+    raw_base = entry.get('base_addr', 0)
+    raw_size = entry.get('size_per_instance', entry.get('size', 0))
+    count = max(1, int(num_instances))
+
+    def as_list(raw, field):
+        if not isinstance(raw, (list, tuple)):
+            return None
+        values = [parse_addr_value(v) for v in raw]
+        if len(values) != count:
+            raise ValueError(
+                f"'{field}' declares {len(values)} values but the component expands into "
+                f"{count} instance(s); a list must carry exactly one value per instance.")
+        return values
+
+    bases = as_list(raw_base, 'base_addr')
+    sizes = as_list(raw_size, 'size_per_instance')
+    if sizes is None:
+        sizes = [parse_addr_value(raw_size)] * count
+
+    if bases is not None:
+        return list(zip(bases, sizes))
+
+    # Scalar base: each instance starts where the previous one ended. With a scalar size that
+    # is exactly 'base + i * size'; with a list of sizes it packs them, which is the case a
+    # reader of the feature summary tends to mistake for the reference map.
+    windows, addr = [], parse_addr_value(raw_base)
+    for size in sizes:
+        windows.append((addr, size))
+        addr += size
+    return windows
+
+
+def component_span(entry, num_instances):
+    """The single (base, size) rule that covers EVERY instance of one address range.
+
+    What a decoder placed UPSTREAM of the component needs - Cheshire's external-region table
+    above all, which decides whether an address leaves the host at all. One instance's size is
+    the wrong answer there and used to be the answer given: accesses beyond instance 0 were
+    swallowed by the host's internal DECERR slave, B response and all, leaving 15 of the 16
+    mesh clusters unreachable.
+
+    THE ARRAY'S FOOTPRINT, NOT THE LAST MAPPED BYTE. When the pitch between instances is
+    uniform, the span runs to the end of the LAST INSTANCE'S SLOT even if that instance maps
+    only part of it: the rule a decoder upstream needs is "this array lives here", and the
+    holes are the component's own decode to answer. Ending the region at the last mapped byte
+    instead produced a region of 0x780000 where the array occupies 0x800000 - a size that is
+    not a power of two, describing hardware whose footprint is - and the host then stalled on
+    traffic that had nothing to do with the memory (the symptom was the UART's
+    transmitter-empty bit never setting, with the firmware spinning inside a print).
+
+    Without a uniform pitch there is no slot to round up to, and the span is simply the extent
+    of what is mapped.
+    """
+    windows = resolve_instance_windows(entry, num_instances)
+    low = min(base for base, _ in windows)
+    high = max(base + size for base, size in windows)
+
+    bases = [base for base, _ in windows]
+    strides = {bases[i + 1] - bases[i] for i in range(len(bases) - 1)}
+    if len(strides) == 1:
+        pitch = strides.pop()
+        high = max(high, max(bases) + pitch)
+    return low, high - low
+
+
 def auto_import_sv_packages(code: str) -> str:
     """
     Post-processes rendered SystemVerilog code to automatically add missing

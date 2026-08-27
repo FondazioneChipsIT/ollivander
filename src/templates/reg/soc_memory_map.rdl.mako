@@ -64,19 +64,11 @@ addrmap ${top_level_module_name}_soc_map {
         c_info = comp_info.get(c.name, {}) 
         has_rdl = bool(c_info.get('rdl_map'))
         
-        # Calcola il numero di istanze hardware basandosi sul placement NoC
-        num_inst = 1
-        if getattr(c, 'placement', None) and 'logical' in c.placement:
-            log = c.placement['logical']
-            items = log if isinstance(log, list) else [log]
-            num_inst = 0
-            for item in items:
-                if 'box' in item:
-                    b = item['box']
-                    num_inst += (b['x_end'] - b['x_start'] + 1) * (b['y_end'] - b['y_start'] + 1)
-                else:
-                    num_inst += 1
-            num_inst = max(num_inst, 1)
+        # Hardware instance count, from the component's NoC placement. Shared with the SoC
+        # package, the address map and FlooGen through core.utils, so that a component cannot
+        # be an array of four here and of eight there.
+        from core.utils import resolve_instance_windows, instance_count
+        num_inst = instance_count(c)
         
         slaves = []
         if c.interfaces:
@@ -85,46 +77,65 @@ addrmap ${top_level_module_name}_soc_map {
                     for item in c.interfaces[if_type]:
                         s_size = item.get('size') or item.get('size_per_instance') or 4
                         s_stride = item.get('size_per_instance') or s_size
-                        slaves.append((if_type, item.get('base_addr'), s_size, s_stride, item.get('name', if_type.split('_')[0])))
+                        slaves.append((if_type, item.get('base_addr'), s_size, s_stride, item.get('name', if_type.split('_')[0]), item))
         elif getattr(c, 'base_addr', None) is not None:
             # Nested components often define base_addr directly without an interfaces block
-            slaves.append(('apb_slave', c.base_addr, getattr(c, 'size', 4), getattr(c, 'size', 4), 'regs'))
+            slaves.append(('apb_slave', c.base_addr, getattr(c, 'size', 4), getattr(c, 'size', 4), 'regs', None))
             
         rdl_mapped = False
         has_children = bool(getattr(c, 'components', None))
     %>
-    % for i, (if_type, b_addr, s_size, s_stride, slv_name) in enumerate(slaves):
-        <% 
+    % for i, (if_type, b_addr, s_size, s_stride, slv_name, raw_item) in enumerate(slaves):
+        <%
             if b_addr is None: continue
             inst_name = c.name if len(slaves) == 1 else f"{c.name}_{slv_name}"
-            
+
             b_addr_val = int(b_addr, 16) if isinstance(b_addr, str) else b_addr
             offset = b_addr_val - parent_base
-            
+
             # Calculate memory entries for opaque blocks (assuming 32-bit/4-byte words)
             s_size_val = int(s_size, 16) if isinstance(s_size, str) else s_size
             s_stride_val = int(s_stride, 16) if isinstance(s_stride, str) else s_stride
             mem_entries = max(1, s_size_val // 4)
-            
+
             array_str = f"[{num_inst}]" if num_inst > 1 else ""
             stride_str = f" += {hex(s_stride_val)}" if num_inst > 1 else ""
-            
+
+            # RDL EXPRESSES AN ARRAY AS A SINGLE STRIDE - 'name[N] @ offset += stride' - so it
+            # can describe instances of equal depth at a constant pitch and nothing else. That
+            # is the same limitation FlooGen's 'array:' has, and it takes the same remedy: when
+            # a list on 'base_addr' or 'size_per_instance' breaks uniformity, the array is
+            # UNROLLED into one declaration per instance, each carrying its own offset and its
+            # own depth. 'emissions' is what the branches below emit; a single entry reproduces
+            # today's array form byte for byte, which is what every uniform project generates.
+            emissions = [(inst_name, array_str, stride_str, offset, mem_entries)]
+            if num_inst > 1 and raw_item is not None:
+                windows = resolve_instance_windows(raw_item, num_inst)
+                sizes = {size for _, size in windows}
+                strides = {windows[k + 1][0] - windows[k][0] for k in range(num_inst - 1)}
+                if len(sizes) > 1 or strides != {s_stride_val}:
+                    emissions = [(f"{inst_name}_{k}", "", "", base - parent_base,
+                                  max(1, size // 4))
+                                 for k, (base, size) in enumerate(windows)]
+
             use_rdl = False
             if has_rdl and not rdl_mapped:
-                if if_type in ['regbus_slave', 'apb_slave'] or not any(t in ['regbus_slave', 'apb_slave'] for t, _, _, _, _ in slaves):
+                if if_type in ['regbus_slave', 'apb_slave'] or not any(t in ['regbus_slave', 'apb_slave'] for t, *_ in slaves):
                     use_rdl = True
                     rdl_mapped = True
         %>
+      % for e_name, e_array, e_stride, e_offset, e_entries in emissions:
         % if use_rdl:
-    ${c_info['rdl_map']} ${inst_name}${array_str} @ ${hex(offset)}${stride_str};
+    ${c_info['rdl_map']} ${e_name}${e_array} @ ${hex(e_offset)}${e_stride};
         % elif has_children:
     addrmap {
         name = "${c.name} Subsystem";
         ${generate_map(c.components, b_addr_val)}
-    } ${inst_name}${array_str} @ ${hex(offset)}${stride_str};
+    } ${e_name}${e_array} @ ${hex(e_offset)}${e_stride};
         % else:
-    external mem { name = "Opaque Memory Region"; mementries = ${mem_entries}; memwidth = 32; } ${inst_name}${array_str} @ ${hex(offset)}${stride_str};
+    external mem { name = "Opaque Memory Region"; mementries = ${e_entries}; memwidth = 32; } ${e_name}${e_array} @ ${hex(e_offset)}${e_stride};
         % endif
+      % endfor
     % endfor
 % endfor
 </%def>

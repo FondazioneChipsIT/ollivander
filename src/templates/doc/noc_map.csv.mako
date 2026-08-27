@@ -1,15 +1,10 @@
 <%
-  # Costruzione della griglia bidimensionale per il piazzamento delle Tile
+  # Build the two-dimensional grid the tiles are placed on.
+  from core.utils import instance_count, resolve_instance_windows
+
   comps = [config.host] + config.components
   max_x, max_y = 0, 0
   grid = {}
-  
-  def parse_val(v):
-      if isinstance(v, int): return v
-      if isinstance(v, str):
-          v = v.replace('_', '')
-          return int(v, 16) if v.lower().startswith('0x') else int(v)
-      return 0
 
   for c in comps:
       p = getattr(c, 'placement', None)
@@ -45,20 +40,16 @@ ${header_row}
           c, idx = grid[(x,y)]
           lines = [c.name]
           if c.interfaces:
-              if 'regbus_slave' in c.interfaces:
-                  slvs = c.interfaces['regbus_slave']
+              # This cell's own windows, from the single resolver: with a list on 'base_addr'
+              # or 'size_per_instance' the address is not 'base + idx * size', and an address
+              # map that disagreed with the hardware would be worse than none at all.
+              for block, label in (('regbus_slave', 'Reg'), ('axi_slave', 'Mem')):
+                  if block not in c.interfaces:
+                      continue
+                  slvs = c.interfaces[block]
                   slvs = slvs if isinstance(slvs, list) else [slvs]
-                  base = parse_val(slvs[0].get('base_addr', 0))
-                  size = parse_val(slvs[0].get('size_per_instance', 0))
-                  addr = base + (idx * size)
-                  lines.append(f"Reg: 0x{addr:08X}")
-              if 'axi_slave' in c.interfaces:
-                  slvs = c.interfaces['axi_slave']
-                  slvs = slvs if isinstance(slvs, list) else [slvs]
-                  base = parse_val(slvs[0].get('base_addr', 0))
-                  size = parse_val(slvs[0].get('size_per_instance', 0))
-                  addr = base + (idx * size)
-                  lines.append(f"Mem: 0x{addr:08X}")
+                  addr, _ = resolve_instance_windows(slvs[0], instance_count(c))[idx]
+                  lines.append(f"{label}: 0x{addr:08X}")
           row_cells.append('"' + '\n'.join(lines) + '"')
       else:
           row_cells.append("dummy")
