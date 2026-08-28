@@ -30,9 +30,48 @@
       """Power-on value of a clock-enable field: all clocks off when gated."""
       return "0" if gated_at_por else f"{width}'h{(1 << width) - 1:x}"
 
+  # ISOLATION FIELDS, ONE PER COMPONENT AND num_instances BITS WIDE.
+  #
+  # Until 2026-08-27 each component took a single bit at its own position in the list, which
+  # made a multi-instance component impossible to isolate individually - and, worse, made every
+  # instance's tile drive the SAME status bit, a driver conflict that only never appeared
+  # because no NoC component declared 'isolate'. Bits are allocated cumulatively here so the
+  # control and the status always agree, and the same allocation feeds the RTL: the IR indexes
+  # this field, it does not recompute the offset.
+  #
+  # Reset value: ISOLATED (all ones). A block comes out of reset fenced and software opens it,
+  # which matches the reset state of the axi_isolate cell itself (its state registers reset to
+  # 'Isolate') and the software-reset registers above.
+  iso_fields = []
+  _iso_bit = 0
+  for _c in components:
+      _sc = _c.get('system_config') or {}
+      if not _sc.get('isolate'):
+          continue
+      _n = _c.get('num_instances', 1) or 1
+      iso_fields.append((_c, _iso_bit, _iso_bit + _n - 1))
+      _iso_bit += _n
+  if _iso_bit > 32:
+      raise ValueError(
+          f"isolation needs {_iso_bit} bits but the control register is 32 wide: "
+          f"the components declaring 'isolate' expand into too many instances between them")
+
   def por_rst(width):
-      """Power-on value of a software-reset field: all blocks held in reset when gated."""
-      return f"{width}'h{(1 << width) - 1:x}" if gated_at_por else "0"
+      """Power-on value of a software-reset field: ALWAYS held in reset, in both policies.
+
+      Deliberately NOT a function of 'power_on_state'. A tile takes this bit as its ONLY
+      reset source (universal_tile.sv.mako), so the power-on reset reaches a tile's payload
+      THROUGH this reset value - the route the gwaihir reference uses. Were it to reset
+      released, an 'enabled' project would bring its tiles out of reset at time zero while
+      the rest of the SoC is still in POR, and the only way to prevent that would be to AND
+      the two resets inside the tile: combinational logic on a reset net, downstream of the
+      POR synchronizer, which undoes the synchronous release it just produced and can carry
+      a glitch to part of the domain.
+
+      'power_on_state' keeps its meaning where it belongs, on the clock enables: 'enabled'
+      means the clocks are already running, not that the tiles skipped their reset.
+      """
+      return f"{width}'h{(1 << width) - 1:x}"
 %>\
 addrmap ${top_level_module_name}_sys_regs {
     name = "${config.project.name} System Controller";
@@ -51,12 +90,12 @@ addrmap ${top_level_module_name}_sys_regs {
     reg {
         name = "Isolation Control";
         desc = "Assert to isolate component's AXI interface before applying reset";
-        % for i, c in enumerate([c for c in components if c.get('system_config') and c.get('system_config').get('isolate')]):
+        % for c, lo, hi in iso_fields:
         field {
             name = "${c['name']}_isolate";
-            desc = "Isolate ${c['name']}";
+            desc = "Isolate ${c['name']}${" (one bit per instance)" if hi > lo else ""}";
             hw = r; sw = rw;
-        } ${c['name']}_isolate[${i}:${i}] = 1;
+        } ${c['name']}_isolate[${hi}:${lo}] = ${hi - lo + 1}'h${"%x" % ((1 << (hi - lo + 1)) - 1)};
         % endfor
     } isolate_ctrl;
 
@@ -64,11 +103,11 @@ addrmap ${top_level_module_name}_sys_regs {
         name = "Isolation Status";
         desc = "Acknowledgment from the hardware that AXI isolation is complete and safe";
         default sw = r; default hw = w;
-        % for i, c in enumerate([c for c in components if c.get('system_config') and c.get('system_config').get('isolate')]):
+        % for c, lo, hi in iso_fields:
         field {
             name = "${c['name']}_isolated";
-            desc = "${c['name']} isolated status";
-        } ${c['name']}_isolated[${i}:${i}] = 0;
+            desc = "${c['name']} isolated status${" (one bit per instance)" if hi > lo else ""}";
+        } ${c['name']}_isolated[${hi}:${lo}] = 0;
         % endfor
     } isolate_status;
     % endif

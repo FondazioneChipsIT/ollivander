@@ -403,6 +403,19 @@ elf_sec_max = int(str(testbench_cfg.get("elf_max_section_bytes", 0x400000)), 0)
   byte tb_elf_buf [TbElfSecBytesMax];
 % endif
 % if preload_mems and preload_mode == "readmemh":
+  // THE PRELOAD IS SERIALIZED ON THE TESTBENCH'S OWN SEQUENCE, not on a DUT signal, and
+  // that is a fix rather than a style choice. Waiting on the memory's reset - edge OR
+  // level - is unreliable: at time zero that net takes several transitions within the
+  // same instant (the software reset reaches the domain straight from the register bit),
+  // so any guard built on it is satisfied while the reset is still asserted. The SRAM
+  // model then wipes what was just written: tc_sram with SimInit "zeros" re-clears the
+  // whole array for as long as rst_ni is low, not once at time zero. The symptom is a
+  // memory full of zeros, a host looping on its reset vector and not one line of output -
+  // seen on crossbar_isle under Verilator on 2026-08-28, while QuestaSim, whose zero-time
+  // ordering differs, passed the same tree. The flag below is raised by the boot sequence
+  // once the bring-up is over, which no scheduler ordering can anticipate.
+  logic tb_preload_go = 1'b0;
+
   % for mem in preload_mems:
     <%
     comp_name = mem['instance']
@@ -436,8 +449,8 @@ elf_sec_max = int(str(testbench_cfg.get("elf_max_section_bytes", 0x400000)), 0)
       basename, ext = mem['file'].rsplit('.', 1)
       %>
       initial begin
-        // Wait for reset to be released on the memory wrapper
-        @(posedge dut.${comp_name}.rst_ni);
+        // Released by the boot sequence after the bring-up (see the flag's declaration).
+        wait (tb_preload_go);
         #10;
       % for g in range(num_groups):
         % for b in range(num_banks_per_group):
@@ -455,8 +468,8 @@ elf_sec_max = int(str(testbench_cfg.get("elf_max_section_bytes", 0x400000)), 0)
       end
     % else:
       initial begin
-        // Wait for reset to be released on the memory wrapper
-        @(posedge dut.${comp_name}.rst_ni);
+        // Released by the boot sequence after the bring-up (see the flag's declaration).
+        wait (tb_preload_go);
         #10;
         $display("[TB] Preloading memory ${comp_name} with ${mem['file']}...");
         $readmemh("${mem['file']}", dut.${comp_name});
@@ -828,6 +841,12 @@ if not uart_base:
   // The RT-divider bypass is now the clk_rst_bypass_i pin (driven at the tie
   // block above): no force remains in any boot mode.
   initial begin
+% if preload_mems and preload_mode == "readmemh" and not has_force_boot:
+    // No force-boot block is emitted for this host, so there is no bring-up to wait for:
+    // the preload is released as soon as the run starts. Without this the flag would
+    // never be raised and the preload would block forever.
+    tb_preload_go = 1'b1;
+% endif
     if ($test$plusargs("fast_boot")) begin
       $display("[TB] Fast boot mode enabled: bypassing real-time clock divider.");
     end
@@ -1024,6 +1043,16 @@ if not uart_base:
 ${jtag_clk_str}
   // The same two-phase contract as the force path: a gated domain's FFAR flops
   // need a clocked window with reset asserted (see the rationale block above).
+  //
+  // THE FIRMWARE DOES THE OPPOSITE, and both are correct - the difference is worth
+  // knowing when comparing this bring-up against the generated application. Here the
+  // clocks start while the blocks are still held, so the window below IS the clocked
+  // reset window and the release lands on a running clock: the safest edge there is.
+  // The firmware instead releases the reset FIRST and enables the clock after
+  // (<target>_enable), which reaches the same contract with no window at all - the
+  // first edge after the clock starts already finds the reset released. That is what
+  // let the application drop its 512-spin settling loop, whose length was only ever
+  // valid for the clock ratio of the project it had been measured on.
   #1000;
 ${jtag_rst_str}
   $display("[TB] Gated domains reset released after a clocked reset window.");
@@ -1337,6 +1366,14 @@ ${bringup_rst_str}
   % endif
   // The power-on bring-up forces are intentionally not released here: they model the
   // external agent that keeps the clock domains and tiles enabled for the whole run.
+% endif
+% if preload_mems and preload_mode == "readmemh":
+  // ONE raise, AFTER the three-way boot-mode chain closes, so every branch reaches it -
+  // architected, autonomous (spi_flash / i2c_eeprom) and force alike. Raising it inside a
+  // branch would leave the others waiting forever, which is a hang rather than a wrong
+  // result: caught statically on crux_micro (autonomous boot WITH readmemh preloads)
+  // before it reached a gate.
+  tb_preload_go = 1'b1;
 % endif
 % endif
 

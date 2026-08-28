@@ -255,6 +255,14 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
             reg_out = "sys_regs_hwif_out"
             reg_in = "sys_regs_hwif_in"
             if comp.system_config.get('isolate'):
+                # NO INDEX HERE, unlike the NoC builder, and it is not an omission. The
+                # isolation field is one bit per instance, and this builder instantiates a
+                # component exactly once: instance expansion comes from 'placement.logical',
+                # a coordinate on a mesh, which has no meaning on a crossbar. The field is
+                # therefore always a single bit, which PeakRDL renders as a scalar - and a
+                # scalar cannot be bit-selected. Should a crossbar component ever expand,
+                # the width mismatch is caught at generation time by the slang self-check
+                # rather than silently connecting one bit and leaving the rest at X.
                 inst.connections.append(PortConnection("axi_isolate_i", f"{reg_out}.isolate_ctrl.{c_name}_isolate.value"))
                 inst.connections.append(PortConnection("axi_isolated_o", f"{reg_in}.isolate_status.{c_name}_isolated.next"))
             if comp.system_config.get('fetch_enable'):
@@ -426,8 +434,11 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 ctrl_group = None
                 if soc_config.system_controller and soc_config.system_controller.auto_control_groups:
                     for g in soc_config.system_controller.auto_control_groups:
-                        orig_type = original_isle_types.get(c.name, c.type)
-                        if g.target_component_type in [c.type, orig_type, orig_type.replace('_isle', '_tile').replace('_subtile', '_tile')]:
+                        # Same authority the width, the bit offsets and the firmware contract
+                        # use: an inline copy of the matching rule is how the three drifted
+                        # apart in the first place.
+                        if any(m.name == c.name for m, _ in
+                               soc_config.control_group_members(g, original_isle_types)):
                             ctrl_group = g
                             break
                 if ctrl_group:
@@ -492,6 +503,32 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 # parameter is enough: every opting-in component receives ITS OWN window, which
                 # is what the convention says, and a component whose instances differ in depth
                 # builds what it maps instead of mapping part of what it builds.
+                # AXI ISOLATION ON THE NoC. Until 2026-08-27 this was wired only in
+                # build_crossbar_ir, while the RDL template and the offload contract emitted
+                # the registers and the helpers for ANY topology: a NoC component declaring
+                # 'isolate' therefore got a register, a firmware helper and a documented
+                # feature, with the port left to the generic tie-off and a status that never
+                # asserted. The helper burned its poll budget and reported a failure, which is
+                # the worst shape a missing feature can take - one that looks present.
+                #
+                # The tile exposes the pair whether the cell lives inside its isle (forwarded
+                # through passthrough_ports) or the tile instantiates it itself, so one
+                # connection covers both.
+                if (c.system_config or {}).get('isolate') and "axi_isolate_i" in tile_ports:
+                    # ONE BIT PER INSTANCE, indexed the same way the control groups are: the
+                    # field is num_instances wide (soc_regs.rdl.mako), so a multi-instance
+                    # component drives one status bit per tile instead of sixteen tiles
+                    # fighting over one scalar. PeakRDL renders a one-bit field as a plain
+                    # 'logic', which cannot be bit-selected, so a single-instance component is
+                    # referenced without an index - the same exception the group registers make.
+                    iso_sel = f"[{inst_idx}]" if instance_count(c) > 1 else ""
+                    inst.connections.append(PortConnection(
+                        "axi_isolate_i",
+                        f"sys_regs_hwif_out.isolate_ctrl.{c.name}_isolate.value{iso_sel}"))
+                    inst.connections.append(PortConnection(
+                        "axi_isolated_o",
+                        f"sys_regs_hwif_in.isolate_status.{c.name}_isolated.next{iso_sel}"))
+
                 base_is_port = "instance_base_addr_i" in tile_ports
                 wants_base = base_is_port or "InstanceBaseAddr" in supported
                 wants_size = "InstanceWindowSize" in supported

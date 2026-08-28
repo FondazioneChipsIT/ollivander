@@ -276,6 +276,70 @@ int main(void) {
     }
     print_str("[OFFLOAD] ${t_name} POWER-CYCLE PASS (2 cycles)\n");
 % endif
+% if t["num_instances"] > 1 and offload_power_cycles:
+
+    /* SELECTIVE POWER: park the LAST instance ALONE, then run the FIRST one and require it to
+     * finish.
+     *
+     * ARCHITECTED BOOT ONLY, the same condition the power-cycle loop above carries and for
+     * the same reason: a force-mode bench pins the power state of every domain by
+     * construction, so a firmware write that parks one instance changes nothing the forces
+     * do not immediately contradict - and the first transaction addressed to the instance
+     * that IS running never completes. The bench cannot express the difference, so the
+     * phase would not be a witness there, only a hang: 8.4 ms of simulated silence on
+     * noc_subtile until the testbench timeout, with no diagnostic possible because a hung
+     * AXI read has nothing to time out against (found 2026-08-28, this guard was missing). Everything above moves the whole group at once, which is why a control group
+     * whose bit indices ALIASED went unnoticed for as long as it did: with one write covering
+     * every bit, two instances sharing a bit behave exactly like two instances on their own.
+     *
+     * This phase is the witness for that. Before the fix of 2026-08-27 the bit index was the
+     * instance's position inside its own COMPONENT rather than inside the GROUP, so a second
+     * component of one isle type restarted from bit 0 - and parking the last instance would
+     * have parked the first as well. The first instance would then never answer, and this phase
+     * fails by timeout: loudly, and precisely in the case the defect produces.
+     *
+     * Nothing addresses the parked instance while it is down - a transaction into a gated isle
+     * does not complete and no inbound fence exists to terminate it - which is why only
+     * instance 0 is driven here. */
+    ${t_name}_enable();
+% if t["sys_isolate"]:
+    /* The whole group first: instance 0 has to inject into the network to report its EOC, and
+     * every instance comes out of reset isolated. */
+    if (${t_name}_deisolate() != 0) {
+        offload_fail("${t_name}", "de-isolation timed out (selective-power phase)");
+    }
+% endif
+    ${t_name}_load_payload(payload_${t_name}_image, PAYLOAD_${t_name.upper()}_SIZE_WORDS);
+    ${t_name}_disable_instance(${t_name.upper()}_OFFLOAD_NUM_INSTANCES - 1u);
+% if t["sys_isolate"]:
+    /* WITNESS FOR THE ISOLATION VECTOR: the parked instance must report isolated while
+     * instance 0 must not. A scalar isolation field cannot express that difference - every
+     * instance would read the same bit - so this check fails outright on the shape the
+     * register had before it was widened to one bit per instance. */
+    {
+        const uint32_t iso = OFFLOAD_SYS_REGS->isolate_status.f.${t_name}_isolated;
+        const uint32_t last = 1u << (${t_name.upper()}_OFFLOAD_NUM_INSTANCES - 1u);
+        if ((iso & last) == 0u || (iso & 1u) != 0u) {
+            offload_fail("${t_name}", "isolation is not per instance: the parked instance and "
+                                      "instance 0 report the same state");
+        }
+    }
+% endif
+    ${t_name}_init_returns(0);
+% if t["contract"] == "memory_mapped":
+    ${t_name}_set_entry(0, OFFLOAD_PAYLOAD_BASE);
+    ${t_name}_start(0);
+% endif
+    if (${t_name}_wait_done_instance(0) != 0) {
+        /* Names the SYMPTOM and the suspect, because a diagnostic that does not localize
+         * costs hours: instance 0 answered before, and the only thing that changed is that
+         * the last instance was parked. */
+        offload_fail("${t_name}", "instance 0 stalled with the last instance parked - the "
+                                  "control group's bit indices may alias");
+    }
+    print_str("[OFFLOAD] ${t_name} SELECTIVE-POWER PASS (last parked, first ran)\n");
+    ${t_name}_disable();
+% endif
 % endif
 
 % endfor

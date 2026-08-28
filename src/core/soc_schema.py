@@ -642,6 +642,25 @@ class Component(StrictModel):
                 self.dedicated_clock_div['name'] = f"{self.dedicated_clock_div['name']}_clk"
         return self
 
+    @model_validator(mode='after')
+    def check_isolation_has_something_to_isolate(self) -> 'Component':
+        """Isolation is OUTBOUND: it stops the component injecting into the network.
+
+        A component with no master interface therefore has nothing to isolate, and the
+        request cannot be honoured in any topology - but it is not inert: the register
+        field is created all the same, and its status bit would be left without a driver,
+        reading X in simulation and reporting "not isolated" forever to a firmware that
+        waits on it. Refused here rather than at that point, which is hours away.
+        """
+        if (self.system_config or {}).get('isolate') \
+                and not (self.interfaces or {}).get('axi_master'):
+            raise ValueError(
+                f"Component '{self.name}' declares system_config.isolate but has no "
+                f"'axi_master' interface. Isolation acts on the OUTBOUND path (it protects "
+                f"the network from the block, not the converse), so there is nothing for the "
+                f"fence to sit on. Declare interfaces.axi_master, or drop the isolate flag.")
+        return self
+
 # ==============================================================================
 # OLLIVANDER ROOT CONFIGURATION
 # ==============================================================================
@@ -808,7 +827,8 @@ class OllivanderConfig(StrictModel):
             orig_type = original_isle_types.get(comp.name, comp.type)
             candidates = [comp.type, orig_type,
                           orig_type.replace('_isle', '_tile').replace('_subtile', '_tile')]
-            if group.target_component_type in candidates:
+            targets = {group.target_component_type, group.target_tile_type} - {None}
+            if targets & set(candidates):
                 members.append((comp, offset))
                 offset += comp.num_instances
         return members
@@ -1692,10 +1712,31 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
             # the bring-up: the generated helpers get an <name>_enable() that
             # ungates the WHOLE group before the first slave-window access.
             contract["sys_ctrl_group"] = None
+            contract["sys_ctrl_bit_base"] = 0
+            contract["sys_ctrl_group_width"] = 1
+            # Membership comes from control_group_members and nowhere else. Three rules used to
+            # decide it - here, in control_group_width, and inline in the NoC IR builder - and
+            # two of them differed: this one honoured 'target_tile_type' while the others
+            # ignored it and applied the isle-to-tile rewrite instead. A component could
+            # therefore be a member for the firmware and not for the RTL, which is how a bit
+            # index published to software can name a register the hardware never wired.
             if config.system_controller and config.system_controller.auto_control_groups:
                 for g in config.system_controller.auto_control_groups:
-                    if g.type == "clk_rst_control" and c_type in (g.target_component_type, g.target_tile_type):
+                    if g.type != "clk_rst_control":
+                        continue
+                    if any(m.name == comp.name
+                           for m, _ in config.control_group_members(g, original_types)):
                         contract["sys_ctrl_group"] = g.name.lower()
+                        # Where this component's instances start inside the group's packed
+                        # register, and how wide that register is. Both from
+                        # control_group_members, the single authority the RTL bit indices come
+                        # from: a firmware that computed its own offset would be publishing a
+                        # bit the hardware never wired, which is the defect this pair exists
+                        # to make impossible rather than unlikely.
+                        contract["sys_ctrl_bit_base"] = config.control_group_bit_offset(
+                            g, comp, original_types)
+                        contract["sys_ctrl_group_width"] = config.control_group_width(
+                            g, original_types)
                         break
             # Multi-instance components: a placement box generates an ARRAY of
             # instances at 'size_per_instance' strides, and the offload firmware

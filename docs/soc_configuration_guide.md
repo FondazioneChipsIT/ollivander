@@ -150,7 +150,7 @@ Instructs Ollivander to generate a unified Control and Status Register (CSR) blo
 | `auto_control_groups` | List    | Auto-generates arrays of clock gates/resets for NoC components (e.g.,      |
 |                       |         | `cluster_ctrl`).                                                           |
 | `power_on_state`      | String  | *Optional*. `"gated"` (default) or `"enabled"`. Power-on state of every    |
-|                       |         | clock-enable and software-reset register generated below.                  |
+|                       |         | clock-enable register generated below. Resets are always held at power-on. |
 
 #### Clock and Reset Control Registers
 
@@ -168,12 +168,23 @@ The System Controller generates clock-enable and software-reset registers throug
 
 > **Note for firmware**: PeakRDL emits a 1-bit SystemRDL field as a *scalar*, so a single-bit field (every domain register, and any group controlling exactly one tile) is referenced without a bit index.
 
+**The order of the two writes is part of the contract**, and it is not symmetric:
+
+*   **Bringing a block up**: release the reset FIRST, then enable the clock. The reset release is what needs a clock edge to be seen cleanly by the block's flops, and the safest edge is the first one after the clock starts — so the reset must already be released when it arrives.
+*   **Taking a block down**: gate the clock FIRST, then assert the reset. The assert is asynchronous and needs no edge, and with the clock already stopped no edge falls near the transition.
+
+This ordering is what removed the need for a *clocked settling window* between the two writes: the generated `offload` application used to spin a fixed number of iterations between them, a number valid only for the clock ratio of the project it was measured on. The generated helpers (`<target>_enable()` / `<target>_disable()`, and their per-instance forms) implement the order, so firmware that uses them inherits it.
+
+**The bit index inside a group register is the instance's position in the GROUP**, not in its own component: a group controlling two components of four instances each is eight bits wide, the first component taking bits 0-3 and the second bits 4-7. The order in which components are assigned is the order they appear in the SoC description, and that order is a **contract** — the generated `<TARGET>_SYS_CTRL_BIT_BASE` macro publishes each target's first bit so firmware never recomputes it. Until 2026-08-27 the index was the position inside the component, so a second component restarted from bit 0 and silently aliased onto the first.
+
 #### `power_on_state`
 
-This single setting drives the reset value of **every** register above, so the two mechanisms can never end up with opposite power-on behaviour.
+This single setting drives the reset value of the **clock-enable** registers above, so the two mechanisms can never end up with opposite power-on behaviour.
 
-*   **`"gated"` (default)**: `*_clk_en = 0` and `*_rst = all ones` — every managed domain and every controlled tile comes up clock-gated and held in reset. This is the safe hardware default and matches the behaviour of the gwaihir reference SoC. Software, or an external agent, must bring the blocks up before using them.
-*   **`"enabled"`**: `*_clk_en = all ones` and `*_rst = 0` — the SoC comes up fully running without any CSR write. Convenient during bring-up, at the cost of leaving every controlled block powered from reset.
+*   **`"gated"` (default)**: `*_clk_en = 0` — every managed domain and every controlled tile comes up clock-gated. This is the safe hardware default and matches the behaviour of the gwaihir reference SoC. Software, or an external agent, must bring the blocks up before using them.
+*   **`"enabled"`**: `*_clk_en = all ones` — the clocks run from power-on without any CSR write. Convenient during bring-up, at the cost of leaving every controlled block clocked from reset.
+
+> **`*_rst` is not affected, in either setting: a software reset always powers on ASSERTED.** That is what carries the power-on reset into the controlled block — the register's own reset value, and nothing else. Before 2026-08-27 the reset value followed `power_on_state` too, and the tile compensated by ANDing the software reset with the synchronised POR; that combinational term downstream of two independently synchronised reset sources was the hazard, so the AND is gone and the register now holds the block by itself. The consequence for the user is that **`"enabled"` no longer means "fully running": one write to `*_rst` is still required**, and it must come before the clock is enabled (see the ordering note below).
 
 > **Boot dependency**: with `"gated"`, if the memory named by `software_stack.boot_memory` sits inside a managed domain or a controlled group, the host cannot fetch its own first instruction until something external enables that region — and firmware cannot do it, since it would have to be running already. Ollivander emits a warning at generation time when this is the case. The generated testbench performs the bring-up automatically, standing in for the JTAG / boot agent / `clk_rst_bypass_i` pin that real silicon requires.
 
@@ -299,7 +310,11 @@ The `host` block and the items in the `components` list share the **exact same s
 
 ### 3.2 System Configuration (`system_config`)
 Wires the component to the central `system_controller`.
-*   `isolate`: Boolean. Generates AXI isolation fences and status registers.
+*   `isolate`: Boolean. Generates an **outbound** AXI isolation fence per instance, plus the control and status registers to drive it. Available in **both topologies** and on any component declaring `interfaces.axi_master` — a component without one is refused, since isolation acts on the master path and there would be nothing for the fence to sit on.
+    *   **Direction.** The fence stops the component **injecting into the network**; it protects the network from the block, not the converse. Nothing prevents a transaction *arriving* at a block that is isolated or gated, and no such inbound fence exists in either topology: not addressing a parked block is a firmware responsibility. (Should an inbound fence ever be wanted, it would be a new function with its own name, not a widening of this flag.)
+    *   **Registers.** `isolate_ctrl.<component>_isolate` and `isolate_status.<component>_isolated`, both **one bit per instance** and both powering on `isolate = all ones` — every instance comes out of reset isolated and must be released explicitly.
+    *   **`isolated` means "drained OR in reset".** The status bit is the cell's own report that both channels reached the isolate state, so waiting on it is a real handshake rather than an echo of the control bit — but the cell's state registers reset *to* that state, so the bit also reads asserted while the block is held in reset. It is therefore meaningful to wait for isolation to be *released*, and misleading to read an asserted bit as proof that traffic was drained.
+    *   **Which clock the fence runs on** depends on who owns it. Where the isle exposes `axi_isolate_i` / `axi_isolated_o` the cell lives inside the isle, on the **gated** clock, and cannot move until that clock runs; otherwise the generated tile instantiates the cell itself on the **always-on network clock**. De-isolating *after* enabling the clock is the order that works in both cases, and it is the order the generated helpers use.
 *   `fetch_enable` / `boot_enable`: Boolean. Generates a core wake-up register.
 *   `boot_addr`: Int/Hex. Generates a programmable boot address register.
 *   `debug_req`: Boolean. Generates a programmable debug request register.
@@ -740,3 +755,16 @@ into 1 instance; a list applies to components that expand into several, through 
 ```
 
 Both are refused before anything is written, like every other check in this chapter. The values themselves are resolved once, immediately after validation, so that every later step — address map, RDL, SoC package, firmware, FlooGen — reads the same windows instead of each deriving its own.
+
+### 7.8 Isolation asked for where there is nothing to isolate
+
+`system_config.isolate` places an **outbound** fence on the component's master path (section 3.2), so a component that declares no `interfaces.axi_master` is asking for something no topology can build.
+
+```
+Component 'l2_shared_memory' declares system_config.isolate but has no 'axi_master' interface.
+Isolation acts on the OUTBOUND path (it protects the network from the block, not the converse),
+so there is nothing for the fence to sit on. Declare interfaces.axi_master, or drop the isolate
+flag.
+```
+
+The request is refused rather than ignored because ignoring it is not inert: the control and status registers are generated from the flag alone, so the status bit would be left without a driver — reading `X` in simulation, and telling a firmware that waits on it that the block is *not* isolated, forever. The failure would then surface as a boot that hangs, hours away from the line that caused it.

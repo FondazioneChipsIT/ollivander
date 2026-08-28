@@ -47,10 +47,16 @@
   has_narrow = has_master_narrow or has_slave_narrow
   has_wide   = has_master_wide or has_slave_wide
   
+  # Membership from config.control_group_members, the single authority the RTL bit indices,
+  # the register width and the firmware contract all use. This was a FOURTH inline copy of the
+  # rule: the other three were unified on 2026-08-27, and one left behind would have been
+  # enough to let them drift again. Only this component's original type is needed, so a
+  # one-entry map is passed rather than the whole table the generator holds.
   has_clk_ctrl = False
   if not is_host and config.system_controller and config.system_controller.auto_control_groups:
+      _orig = {comp.name: context.get('original_type', c_type)}
       for g in config.system_controller.auto_control_groups:
-          if g.target_component_type in [c_type, context.get('original_type', '')]:
+          if any(m.name == comp.name for m, _ in config.control_group_members(g, _orig)):
               has_clk_ctrl = True
               break
 
@@ -80,6 +86,26 @@
   error_slave_prefixes = comp.features.get('error_slaves', []) if comp.features else []
   isle_ports = []
   known_ports = set(isle_info.get("ports", {}).keys()) if isle_info else set()
+
+  # AXI ISOLATION OWNED BY THE TILE.
+  #
+  # Isolation fences the OUTBOUND path - it stops a block injecting into the network while it is
+  # being reset or powered down - so it needs a master port to sit on; a slave-only component has
+  # nothing to fence. Every cell that exists in the tree today lives inside an isle
+  # (spatz_cluster_isle, ethernet_isle), which is why the tile only forwards the pair when the
+  # isle declares it: an isle that owns its cell keeps it, and the tile adds nothing.
+  #
+  # For an isle that declares no cell - sram_isle, cluster_subtile - the tile instantiates one
+  # per master network here. It is the only place that can: the isle is hand-written and would
+  # need editing per component, while the tile is generated and the wires on both sides of the
+  # insertion point are already its own.
+  isle_owns_isolate = 'axi_isolate_i' in known_ports
+  tile_owns_isolate = (bool(comp.system_config and comp.system_config.get('isolate'))
+                       and not isle_owns_isolate and has_master)
+  iso_nets = []
+  if tile_owns_isolate:
+      if has_master_narrow: iso_nets.append("narrow")
+      if has_master_wide:   iso_nets.append("wide")
   
   if isle_info:
       isle_params.update(isle_info.get('supported_params', {}))
@@ -462,7 +488,8 @@ module ${p_name}_${c_type}
   ## from inside the blocks instead, they landed on lines of their own.
   has_isle_ports = bool(isle_ports)
   has_sysctrl_ports = bool(is_host and config.system_controller)
-  has_tail_ports = has_isle_ports or has_clk_ctrl or has_sysctrl_ports
+  has_iso_ports = bool(iso_nets)
+  has_tail_ports = has_isle_ports or has_clk_ctrl or has_iso_ports or has_sysctrl_ports
 %>\
   input wire ${noc_pkg}::floo_wide_t [West:North] floo_wide_i${"," if has_tail_ports else ""}
 
@@ -472,7 +499,7 @@ module ${p_name}_${c_type}
 
 % if isle_ports:
  % for i, p in enumerate(isle_ports):
-  ${p['dir']} ${p['type']} ${p['name']}${p.get('unpacked', '')}${"," if i < len(isle_ports)-1 or has_clk_ctrl or has_sysctrl_ports else ""}
+  ${p['dir']} ${p['type']} ${p['name']}${p.get('unpacked', '')}${"," if i < len(isle_ports)-1 or has_clk_ctrl or has_iso_ports or has_sysctrl_ports else ""}
  % endfor
 % endif
 
@@ -485,7 +512,18 @@ module ${p_name}_${c_type}
   // Groups mechanism, allowing fine-grained power management of the NoC array.
   input  logic tile_clk_en_i,
   input  logic tile_rst_ni,
-  input  logic clk_rst_bypass_i${"," if has_sysctrl_ports else ""}
+  input  logic clk_rst_bypass_i${"," if has_iso_ports or has_sysctrl_ports else ""}
+% endif
+
+% if has_iso_ports:
+  // =======================================================================
+  // AXI ISOLATION (owned by this tile: the isle declares no cell of its own)
+  // =======================================================================
+  // Driven from the System Controller's isolation CSRs, exactly as the crossbar drives an
+  // isle that owns its cell. 'axi_isolated_o' is asserted only when EVERY master network of
+  // this tile has drained, so one bit means "quiet in every direction this block can speak".
+  input  logic axi_isolate_i,
+  output logic axi_isolated_o${"," if has_sysctrl_ports else ""}
 % endif
 
 % if has_sysctrl_ports:
@@ -527,13 +565,21 @@ module ${p_name}_${c_type}
     .clk_o    ( tile_clk )
   );
 
+  // THE GROUP REGISTER BIT IS THIS TILE'S ONLY RESET SOURCE, and it is a flop output: no
+  // combinational logic sits on this net, so no glitch can reach part of the payload and the
+  // POR synchronizer's synchronous release is not undone downstream. The power-on reset
+  // arrives through that register's RESET VALUE, which soc_regs.rdl.mako pins to 'held in
+  // reset' under both power-on policies - the route the gwaihir reference uses. ANDing
+  // 'rst_ni' in here, as this did until 2026-08-27, added exactly that combinational
+  // combination of two asynchronous sources for a path the POR already covers.
+  //
+  // Only the bypass is muxed, and its select is static; the mux is a clock cell so the
+  // implementation flow treats this net as the tree it is.
 `ifdef TARGET_XILINX
-  assign tile_rst_n = (clk_rst_bypass_i) ? rst_ni : (rst_ni && tile_rst_ni);
+  assign tile_rst_n = (clk_rst_bypass_i) ? rst_ni : tile_rst_ni;
 `else
-  logic tile_rst_n_gated;
-  assign tile_rst_n_gated = rst_ni && tile_rst_ni;
   tc_clk_mux2 i_tc_reset_mux (
-    .clk0_i   ( tile_rst_n_gated ),
+    .clk0_i   ( tile_rst_ni ),
     .clk1_i   ( rst_ni ),
     .clk_sel_i( clk_rst_bypass_i ),
     .clk_o    ( tile_rst_n )
@@ -672,6 +718,19 @@ module ${p_name}_${c_type}
   `AXI_ASSIGN_RESP_STRUCT(wide_out_rsp, border_wide_rsp)
  % endif
 % endif
+% if iso_nets:
+
+  // ISOLATION NETS, DECLARED HERE AND NOT WITH THEIR CELLS FURTHER DOWN. The conversion
+  // block below drives 'iso_<net>_req' through an `AXI_ASSIGN macro, and a declaration
+  // that came after that use compiled under vlog but was rejected by the slang pass over
+  // the stubbed flist ("identifier used before its declaration"). Keeping the declarations
+  // ahead of every consumer is the fix; the cells themselves stay next to their comment.
+ % for net in iso_nets:
+  ${noc_pkg}::axi_${net}_in_req_t iso_${net}_req;
+  ${noc_pkg}::axi_${net}_in_rsp_t iso_${net}_rsp;
+  logic iso_${net}_isolated;
+ % endfor
+% endif
 % if mst_adapt:
 
   // The master side of an isle that keeps the AXI types of its own IP: its ID is
@@ -680,9 +739,81 @@ module ${p_name}_${c_type}
  % for net, req_t, rsp_t in mst_adapt:
   ${req_t} isle_${net}_req;
   ${rsp_t} isle_${net}_rsp;
-  `AXI_ASSIGN_REQ_STRUCT(${net}_in_req, isle_${net}_req)
-  `AXI_ASSIGN_RESP_STRUCT(isle_${net}_rsp, ${net}_in_rsp)
+  `AXI_ASSIGN_REQ_STRUCT(${"iso_" + net + "_req" if net in iso_nets else net + "_in_req"}, isle_${net}_req)
+  `AXI_ASSIGN_RESP_STRUCT(isle_${net}_rsp, ${"iso_" + net + "_rsp" if net in iso_nets else net + "_in_rsp"})
  % endfor
+% endif
+% if iso_nets:
+
+  // =======================================================================
+  // AXI ISOLATION CELLS (outbound: this block towards the network)
+  // =======================================================================
+  // Inserted between whatever drives the chimney's input and the chimney itself, which is the
+  // isle-to-network direction: 'axi_isolate' drains the transactions this block still has in
+  // flight, then silences its master port. TerminateTransaction answers anything the block
+  // issues afterwards with an error instead of blocking it, so a late access cannot deadlock
+  // the isle against its own closed fence.
+  //
+  // CLOCKED BY 'noc_clk', THE UNGATED CLOCK, DELIBERATELY. The isle runs on the gated
+  // 'tile_clk'; the two share a source, so during the drain both see the same edges and no
+  // domain is crossed. Afterwards the cell must keep silencing its output while the isle is
+  // gated, and must keep 'axi_isolated_o' readable - on the gated clock it would freeze
+  // isolated, which is functionally safe (the state and the silencing are held) but would make
+  // the status unreadable exactly when software wants to check it.
+  //
+  // NumPending comes from the chimney's own configuration for that network: the counter must
+  // track what this path can have in flight, and 'ChimneyDefaultCfg' is the value the chimney
+  // below is built with. Deriving it there rather than picking a constant is what keeps the two
+  // in step if the network configuration ever changes.
+  logic axi_isolate_sync;
+  ${require_file("olli_sync.sv")}
+  // The control crosses from the System Controller's clock domain. On today's mesh that is the
+  // same 'system' clock the tile runs on, so the synchronizer is redundant - it is here because
+  // 'dedicated_clock_div' makes a tile on a divided clock expressible, and the day someone
+  // declares one this is the difference between a clean bring-up and an intermittent one.
+  // RESET WITH THE NETWORK SIDE, not with the block being fenced: 'noc_rst_n' is the tile's
+  // ungated domain reset, the very reset the chimney below uses, and never 'tile_rst_n' (the
+  // gated software reset of the component). Two reasons, and the second is the load-bearing one:
+  // the fence must survive the reset of the block it is isolating, and both ends of this AXI
+  // path must reset together - a cell resetting independently of the chimney it feeds would
+  // restart one end while the other still held mid-transaction state.
+  olli_sync #(
+    .STAGES ( 2 )
+  ) i_axi_isolate_sync (
+    .clk_i    ( noc_clk ),
+    .rst_ni   ( ${"pwr_on_rst_ni" if "pwr_on_rst_ni" in known_ports else "noc_rst_n"} ),
+    .serial_i ( axi_isolate_i ),
+    .serial_o ( axi_isolate_sync )
+  );
+
+ % for net in iso_nets:
+
+  axi_isolate #(
+    .NumPending           ( floo_pkg::ChimneyDefaultCfg.MaxTxns ),
+    .TerminateTransaction ( 1'b1 ),
+    .AtopSupport          ( 1'b1 ),
+    .AxiAddrWidth         ( ${noc_pkg}::AxiCfg${"N" if net == "narrow" else "W"}.AddrWidth ),
+    .AxiDataWidth         ( ${noc_pkg}::AxiCfg${"N" if net == "narrow" else "W"}.DataWidth ),
+    .AxiIdWidth           ( ${noc_pkg}::AxiCfg${"N" if net == "narrow" else "W"}.InIdWidth ),
+    .AxiUserWidth         ( ${noc_pkg}::AxiCfg${"N" if net == "narrow" else "W"}.UserWidth ),
+    .axi_req_t            ( ${noc_pkg}::axi_${net}_in_req_t ),
+    .axi_resp_t           ( ${noc_pkg}::axi_${net}_in_rsp_t )
+  ) i_axi_${net}_out_isolate (
+    .clk_i      ( noc_clk ),
+    .rst_ni     ( noc_rst_n ),
+    .slv_req_i  ( iso_${net}_req ),
+    .slv_resp_o ( iso_${net}_rsp ),
+    .mst_req_o  ( ${net}_in_req ),
+    .mst_resp_i ( ${net}_in_rsp ),
+    .isolate_i  ( axi_isolate_sync ),
+    .isolated_o ( iso_${net}_isolated )
+  );
+ % endfor
+
+  // One status bit for the whole tile: asserted only when every master network has drained, so
+  // the firmware waits on a single fact and cannot gate a clock while one direction is still
+  // in flight.
+  assign axi_isolated_o = ${" && ".join("iso_" + n + "_isolated" for n in iso_nets)};
 % endif
 
   floo_nw_chimney #(
@@ -1024,17 +1155,28 @@ module ${p_name}_${c_type}
       if noc_mode == "dual":
           # The adapted signals where the isle keeps its own AXI types, the chimney's own
           # where it took the network types: see the widening above.
+          # Three possible destinations, in precedence order: the ID-adapting wire when this
+          # net is adapted (the adapter then feeds the isolation cell, if any), the isolation
+          # cell's slave side when the tile owns a cell on this net, or the chimney's input
+          # directly. The cell must sit BETWEEN the isle and the chimney, so it can never be
+          # bypassed by a connection made here.
           if has_master_narrow:
-              nsig = "isle_narrow" if "narrow" in adapted_mst_nets else "narrow_in"
+              nsig = ("isle_narrow" if "narrow" in adapted_mst_nets
+                      else "iso_narrow" if "narrow" in iso_nets else "narrow_in")
               isle_connections.append(f".axi_narrow_req_o  ( {nsig}_req )")
               isle_connections.append(f".axi_narrow_resp_i ( {nsig}_rsp )")
           if has_master_wide:
-              wsig = "isle_wide" if "wide" in adapted_mst_nets else "wide_in"
+              wsig = ("isle_wide" if "wide" in adapted_mst_nets
+                      else "iso_wide" if "wide" in iso_nets else "wide_in")
               isle_connections.append(f".axi_wide_req_o  ( {wsig}_req )")
               isle_connections.append(f".axi_wide_resp_i ( {wsig}_rsp )")
       else:
-          mst_req_sig = "narrow_in_req" if has_master_narrow else "wide_in_req"
-          mst_rsp_sig = "narrow_in_rsp" if has_master_narrow else "wide_in_rsp"
+          # Single-network master: the isolation cell, when the tile owns one, replaces the
+          # chimney's input as the isle's destination for the same reason as above.
+          _mnet = "narrow" if has_master_narrow else "wide"
+          _mpfx = f"iso_{_mnet}" if _mnet in iso_nets else f"{_mnet}_in"
+          mst_req_sig = f"{_mpfx}_req"
+          mst_rsp_sig = f"{_mpfx}_rsp"
           if '[' in axi_req_o_dim:
               isle_connections.append(f".axi_req_o  ( {{{mst_req_sig}}} )")
               isle_connections.append(f".axi_resp_i ( {{{mst_rsp_sig}}} )")

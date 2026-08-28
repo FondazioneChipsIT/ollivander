@@ -34,29 +34,35 @@ sys_regs_type = f"{top_level_module_name}_sys_regs_t"
  * modes and their reasons are explained in rtl_generator.py. */
 #define OFFLOAD_PAYLOAD_BASE ${hex(offload_payload_base)}u
 
-/* FFAR clocked reset window: flip-flops with asynchronous
- * reset sampled synchronously need clock EDGES while reset is still asserted
- * before the release is safe - the same two-phase contract the generated
- * testbench honors with an explicit 1 us pause. The firmware used to release
- * back-to-back and survive on bus-latency slack alone; the power-cycle
- * regression is exactly the place where that slack stops being enough. The
- * spin is deliberately generous: it must cover the SLOWEST divided clock any
- * gated domain of the fleet runs at, and it costs microseconds once per
- * enable. The drain read before it pins the clk_en write; volatile keeps the
- * loop alive at any optimization level. */
-#define OFFLOAD_FFAR_WINDOW_SPINS 512u
+/* NO CLOCKED RESET WINDOW HERE, AND NONE IS NEEDED - the ORDER replaces it.
+ *
+ * Flip-flops with an asynchronous reset sampled synchronously need clock edges while reset is
+ * still asserted before the release is safe. Until 2026-08-27 the firmware bought those edges
+ * with a spin loop of 512 iterations (measured: 14 cycles each, 7168 host cycles, ~72 us at
+ * 100 MHz) because it released the reset with the clock ALREADY RUNNING. The window was a
+ * fleet-wide constant justified by "the slowest divided clock any gated domain runs at" - a
+ * property of no project in particular - and it had never been tested against a real divisor.
+ *
+ * The sequence now toggles the reset only while the domain's clock is GATED, so no clock edge
+ * falls near the deassertion and the constraint is met by construction rather than by margin.
+ * That is the Carfield discipline, and it is also what makes the software-reset path a false
+ * path in synthesis (soc_rstgen.sv.mako explains the other half). Cost: nothing, and one
+ * fewer magic number to keep true.
+ *
+ * KEEP THE ORDER. Releasing the reset after starting the clock reintroduces the hazard the
+ * window used to paper over, and it will not fail in RTL simulation - recovery and removal are
+ * not checked there - so the gate will not catch a regression here. */
 
 % if offload_payload_ctrl_group:
 /* The payload memory sits under the '${offload_payload_ctrl_group}' auto control
- * group and powers on gated: ungate the whole group (clock on, then the FFAR
- * window, then reset release) before the first payload write. The read-backs
- * drain the posted writes so no later access can overtake the release. */
+ * group and powers on gated AND in reset: release the reset FIRST, while the clock is still
+ * gated, then start the clock. See the ordering note above for why that direction and not the
+ * other. The read-backs drain the posted writes so no later access can overtake either step. */
 static inline void offload_payload_mem_enable(void) {
-    OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_clk_en.w = 0xFFFFFFFFu;
-    (void)OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_clk_en.w;
-    for (volatile uint32_t i = 0; i < OFFLOAD_FFAR_WINDOW_SPINS; i++) { }
     OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_rst.w = 0u;
     (void)OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_rst.w;
+    OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_clk_en.w = 0xFFFFFFFFu;
+    (void)OFFLOAD_SYS_REGS->${offload_payload_ctrl_group}_clk_en.w;
 }
 % endif
 
@@ -92,6 +98,17 @@ P = project_name.upper()
 #define ${T}_OFFLOAD_ENTRY_REG(i)   (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["ctrl_offs"])}u + ${hex(t["entry_offs"])}u)
 #define ${T}_OFFLOAD_WAKE_REG(i)    (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["ctrl_offs"])}u + ${hex(t["wake_offs"])}u)
 #define ${T}_OFFLOAD_RETURN_BASE(i) (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["return_offs"])}u)
+/* This target's first bit in its control group, and the group's width: both resolved by
+ * the generator from the authority that assigns the RTL bit indices. */
+#define ${T}_SYS_CTRL_BIT_BASE      ${t["sys_ctrl_bit_base"]}u
+#define ${T}_SYS_CTRL_GROUP_WIDTH   ${t["sys_ctrl_group_width"]}u
+% if t["sys_isolate"]:
+/* Every instance of this target isolated at once. The isolation field is ONE BIT PER INSTANCE
+ * (soc_regs.rdl.mako sizes it from num_instances), so writing a bare 1 would isolate instance 0
+ * and RELEASE the other ${t["num_instances"] - 1} - the mask is what makes the whole-target
+ * helpers mean the whole target. */
+#define ${T}_ISOLATE_MASK          ${"0x%xu" % ((1 << t["num_instances"]) - 1)}
+% endif
 % endif
 
 % if t["sys_ctrl_group"]:
@@ -102,12 +119,94 @@ P = project_name.upper()
  * always-on system clock (universal_tile.sv), so the network is routable while
  * gated; only the isle behind the chimney needs this bring-up. */
 static inline void ${t_name}_enable(void) {
-    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w = 0xFFFFFFFFu;
-    (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w;
-    /* FFAR clocked reset window - rationale at the macro's definition. */
-    for (volatile uint32_t i = 0; i < OFFLOAD_FFAR_WINDOW_SPINS; i++) { }
+    /* Reset released FIRST, while the clock is still gated, then the clock started - see the
+     * ordering note at the top of this header. The read-backs drain the posted writes so the
+     * clock cannot start before the release has landed. */
     OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w = 0u;
     (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w;
+    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w = 0xFFFFFFFFu;
+    (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w;
+}
+
+% if t["sys_isolate"]:
+/* PER-INSTANCE isolation, the counterpart of ${t_name}_enable_instance / _disable_instance.
+ *
+ * The status bit is NOT a mere echo of the control bit: it is the cell's own report that the
+ * outbound path has drained (axi_isolate raises it only once both channels reached the Isolate
+ * state), so the wait is a real handshake and the timeout a real failure. It also reads asserted
+ * while the cell is IN RESET - the state registers reset to Isolate - which is exactly why
+ * de-isolation is the operation that must be waited on before addressing the block.
+ *
+ * The clock matters here and differs by topology: a tile-owned cell sits on the always-on
+ * network clock and answers whatever the tile's clock does, while an isle-owned cell sits inside
+ * the isle on the GATED clock and cannot move until that clock runs. Calling _deisolate_instance
+ * after _enable_instance is therefore the order that works in both. */
+static inline int ${t_name}_isolate_instance(uint32_t inst) {
+    const uint32_t bit = 1u << inst;
+    OFFLOAD_SYS_REGS->isolate_ctrl.f.${t_name}_isolate |= bit;
+    for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
+        if ((OFFLOAD_SYS_REGS->isolate_status.f.${t_name}_isolated & bit) != 0u) return 0;
+    }
+    return -1;
+}
+
+static inline int ${t_name}_deisolate_instance(uint32_t inst) {
+    const uint32_t bit = 1u << inst;
+    OFFLOAD_SYS_REGS->isolate_ctrl.f.${t_name}_isolate &= ~bit;
+    for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
+        if ((OFFLOAD_SYS_REGS->isolate_status.f.${t_name}_isolated & bit) == 0u) return 0;
+    }
+    return -1;
+}
+% endif
+
+/* PER-INSTANCE clock and reset, for the instances of THIS target only.
+ *
+ * The group's registers carry one bit per controlled tile, and this target's instances start at
+ * ${T}_SYS_CTRL_BIT_BASE - published by the generator from the same authority that assigns the
+ * bit indices in the RTL (soc_schema.control_group_members), never recomputed here. Read-modify
+ * -write is safe: the host is the only writer, single-threaded, and MMIO cannot cache.
+ *
+ * Same ORDER as the whole-group helpers, and for the same reason: reset released while the
+ * clock is still gated on the way up, clock gated before the reset is asserted on the way down.
+ *
+ * WHAT THESE CANNOT DO: nothing may address an instance that is parked. A transaction into a
+ * gated isle does not complete, and no inbound fence exists in either topology to terminate it
+ * (see the correction in the disable rationale below). The caller owns that discipline. */
+static inline void ${t_name}_enable_instance(uint32_t inst) {
+    const uint32_t bit = 1u << (${T}_SYS_CTRL_BIT_BASE + inst);
+    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w &= ~bit;
+    (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w;
+    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w |= bit;
+    (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w;
+}
+
+static inline void ${t_name}_disable_instance(uint32_t inst) {
+    const uint32_t bit = 1u << (${T}_SYS_CTRL_BIT_BASE + inst);
+% if t["sys_isolate"]:
+    /* Isolate THIS instance first, exactly as the whole-group helper does and for the same
+     * reason - the outbound path must be drained before the clock that would drain it stops.
+     * Best-effort, like the group helper: the caller that needs the handshake checked calls
+     * ${t_name}_isolate_instance() itself and reads its return value. */
+    (void)${t_name}_isolate_instance(inst);
+% endif
+    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w &= ~bit;
+    (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w;
+    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w |= bit;
+    (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w;
+}
+
+/* Wait for ONE instance's cores, so a phase can require a single instance to finish while its
+ * siblings are parked - which ${t_name}_wait_done cannot express, sweeping all of them. */
+static inline int ${t_name}_wait_done_instance(uint32_t inst) {
+    uint32_t done = 0;
+    for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
+        uint32_t slot = *(volatile uint32_t *)(uintptr_t)(
+            ${T}_OFFLOAD_RETURN_BASE(inst) + done * 4u);
+        if ((slot & 1u) == 0u) continue;
+        if (++done == ${T}_OFFLOAD_NUM_CORES) return 0;
+    }
+    return -1;
 }
 
 /* Put the group back to its power-on state once this target's phase is over.
@@ -124,8 +223,16 @@ static inline void ${t_name}_enable(void) {
  * evaluate, which is what makes a 16-cluster array affordable one phase at a
  * time), this exercises the power-down half of the domain's life cycle, which
  * nothing in the suite used to cover. Re-enabling later goes back through
- * ${t_name}_enable(), whose clock-then-reset order satisfies the FFAR contract
- * (async-reset flops need a clocked window with reset asserted). */
+ * ${t_name}_enable(), which releases the reset while the clock is still gated - the ordering
+ * that removed the need for a clocked window at all (note at the top of this header).
+ *
+ * ONE CORRECTION, since this comment carried it for months: the sentence above about a
+ * transaction "terminating cleanly against the isolation" describes an INBOUND fence, and no
+ * such fence exists in either topology. Every isolation cell in the tree sits on the OUTBOUND
+ * path and stops the block injecting into the network; none of them ever sees a transaction
+ * arriving at a gated block. Not addressing a gated instance is therefore a firmware
+ * responsibility, not a hardware guarantee - which is why the phases below never touch a
+ * target they have parked. */
 static inline void ${t_name}_disable(void) {
 % if t["contract"] == "control_wire":
     /* Power-on state includes the SoC-side wire: fetch_enable lives in the
@@ -136,14 +243,18 @@ static inline void ${t_name}_disable(void) {
     OFFLOAD_SYS_REGS->fetch_enable.f.${t_name}_fetch_enable = 0;
 % endif
 % if t["sys_isolate"]:
-    OFFLOAD_SYS_REGS->isolate_ctrl.f.${t_name}_isolate = 1;
+    OFFLOAD_SYS_REGS->isolate_ctrl.f.${t_name}_isolate = ${T}_ISOLATE_MASK;
     for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
-        if (OFFLOAD_SYS_REGS->isolate_status.f.${t_name}_isolated) break;
+        if (OFFLOAD_SYS_REGS->isolate_status.f.${t_name}_isolated == ${T}_ISOLATE_MASK) break;
     }
 % endif
-    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w = 0xFFFFFFFFu;
+    /* Clock gated FIRST, then the reset asserted: the assert is asynchronous and needs no
+     * edge, so cutting the clock before it means no edge falls near the transition - the
+     * mirror of the bring-up order, and the same reason. */
     OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w = 0u;
     (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_clk_en.w;
+    OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w = 0xFFFFFFFFu;
+    (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w;
 }
 % endif
 
@@ -153,10 +264,11 @@ static inline void ${t_name}_disable(void) {
 static inline int ${t_name}_deisolate(void) {
     OFFLOAD_SYS_REGS->isolate_ctrl.f.${t_name}_isolate = 0;
     for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
-        if (!OFFLOAD_SYS_REGS->isolate_status.f.${t_name}_isolated) return 0;
+        if (OFFLOAD_SYS_REGS->isolate_status.f.${t_name}_isolated == 0u) return 0;
     }
     return -1;
 }
+
 % endif
 
 /* Copy the payload image into the shared payload region and make it visible to

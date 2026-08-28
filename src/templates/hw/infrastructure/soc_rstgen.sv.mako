@@ -48,18 +48,28 @@ module ${p_name}_rstgen #(
     assign pwr_on_rsts_no[i] = pwr_on_rst_n;
 
     // =======================================================================
-    // 2. SOFTWARE-CONTROLLED RESET SYNCHRONIZATION
+    // 2. SOFTWARE-CONTROLLED RESET
     // =======================================================================
-    // Combine the synchronized POR with the software reset (driven by the System 
-    // Controller CSRs) and synchronize the result again to ensure a safe release.
-    // Note: Software reset is active low, meaning sw_rsts_ni[i] == 0 triggers a reset.
-    olli_rstgen i_sw_rstgen (
-      .clk_i       ( clks_i[i] ),
-      .rst_ni      ( pwr_on_rst_n & sw_rsts_ni[i] ),
-      .test_mode_i ( test_mode_i ),
-      .rst_no      ( rsts_no[i] ),
-      .init_no     ( /* unused */ )
-    );
+    // The software reset is the register bit ALONE - no second synchronizer, and no AND with
+    // the power-on reset either. One step beyond the Carfield reference, which keeps the AND
+    // and declares that path false; and the same shape gwaihir gives its tiles, where the
+    // payload reset is a single flop output.
+    //
+    // Why no AND: the power-on reset already reaches this domain through the reset VALUE of
+    // the register that drives 'sw_rsts_ni', which soc_regs.rdl.mako pins to 'held in reset'
+    // under both power-on policies. Combining the two here would put combinational logic on a
+    // reset net DOWNSTREAM of the synchronizer above, undoing the synchronous release it just
+    // produced and able to carry a glitch to part of the domain.
+    //
+    // Why no second synchronizer: it would restore the synchronous release, at the price of a
+    // single-cycle recovery constraint from the synchronizer to every flop of the domain, at
+    // full runtime speed - the burden the reference explicitly declines. The path is a FALSE
+    // PATH by design, safe because software only toggles this bit while the domain's clock is
+    // gated (offload.h.mako honours that order). Flops that need a CONSTRAINED release stay on
+    // 'pwr_on_rsts_no', which every isle declares as 'pwr_on_rst_ni' for exactly that purpose.
+    //
+    // Note: the software reset is active low, so sw_rsts_ni[i] == 0 holds the domain in reset.
+    assign rsts_no[i] = sw_rsts_ni[i];
   end
 
 endmodule : ${p_name}_rstgen

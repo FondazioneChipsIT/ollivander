@@ -509,6 +509,19 @@ prep-sim: update-hw
 build-sim: prep-sim build-sw
 	@printf "\n[MAKE] Compiling RTL with QuestaSim (vlog)...\n"
 	@mkdir -p logs
+	@# THE LIBRARY IS REBUILT FROM SCRATCH, same policy as the Verilator work directory
+	@# below and for a reason paid for in hours: a 'work' carrying modules from an earlier
+	@# generation of the SAME project cannot be told apart from a clean one by reading the
+	@# summary of a run. vlog recompiles what it is given, but a module that the current
+	@# flist no longer lists stays in the library and stays visible to vopt, so a green run
+	@# can attest a design that is partly the previous one. That is the leading explanation
+	@# of the intermittent offload stall (wip 2.2): three failures in six runs, none
+	@# reproducible, all in a tree where the library predated the sources.
+	@# QUESTA_KEEP_WORK=1 keeps it for targeted debug (an incremental recompile of one file
+	@# is minutes instead of an hour) - never for a run whose result will be reported.
+	@if [ "$(QUESTA_KEEP_WORK)" != "1" ]; then \
+		rm -rf work; \
+	fi
 	@$(call ensure-tools,vsim:questa); \
 	$(VSIM) -c -l logs/compile.log -suppress $(QUESTA_COMPILE_SUPPRESS) -do "set err [source $(OUT_DIR)/sim/questa/compile_vsim.tcl]; if {\$$err == 1} {quit -code 1}; quit"
 

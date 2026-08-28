@@ -190,6 +190,15 @@ components:
           size_per_instance: 0x00040000 # 256 kB per cluster
     features: 
       multicast_target: true  
+    system_config:
+      # THE FLEET'S WITNESS FOR AXI ISOLATION ON A NoC TOPOLOGY, and for the per-instance form
+      # of it. 'cluster_subtile' declares no isolation cell of its own, so the generated tile
+      # instantiates one per master network - two here, since 'noc_mode: dual' keeps narrow and
+      # wide separate - and reports a single 'isolated' bit per instance, asserted only when
+      # both have drained. The clusters are the only mesh component that can host an OUTBOUND
+      # fence at all: the L2 and the scratchpads are slave-only, and a fence in that direction
+      # protects the network from a block that is being reset, so it needs a master to sit on.
+      isolate: true
     parameters:
       UseHWPE: true
 

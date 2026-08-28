@@ -55,7 +55,26 @@ module olli_selftest #(parameter int N = 2) ();
 endmodule
 """
 
-_BASE_ARGS = ["slang", "--single-unit", "--ignore-unknown-modules", "--timescale=1ns/1ps"]
+# THE ERROR LIMIT IS LIFTED DELIBERATELY, and this is the difference between a check that
+# guards and one that reports success. slang stops after its default number of errors, and on
+# a full flist that budget is spent entirely by VENDOR sources before our own files are even
+# reached: measured on noc, 86 errors, every one of them in axi_demux, cv32e40p_tracer, the
+# *_reg_top blocks and floo_nw_chimney. Those are filtered out of the report by ownership -
+# correctly, they are not ours to fix - but filtering happens AFTER the limit has been
+# consumed, so a genuine error in what we generate was never emitted at all. Found on
+# 2026-08-28: a declaration-order defect in the generated tile passed this check on the full
+# flist (86 errors, none ours) and was caught by the stubbed pass, where there is almost no
+# vendor code to spend the budget; with the limit lifted the same tree yields 2063 errors and
+# 96 of them are the real defect. An explicit large number rather than 0: slang documents 0 as
+# "no limit", and a version reading it as "print none" would silently disable the check.
+# --allow-genblk-reference: the generated testbench preloads interleaved memories through
+# paths that cross an UNNAMED generate block inside the IP
+# ('i_dyn_mem_bank_group.genblk1[0].i_ecc_sram_wrap.i_bank.sram'). 'genblk1' is the implicit
+# name the LRM gives such a block; QuestaSim and Verilator both resolve it, and the whole
+# fleet boots through those paths - so refusing it would reject a construct that demonstrably
+# works, not find a defect. Surfaced on crossbar_isle the moment the error limit was lifted.
+_BASE_ARGS = ["slang", "--single-unit", "--ignore-unknown-modules", "--timescale=1ns/1ps",
+              "--error-limit=100000", "--allow-genblk-reference"]
 
 
 def _elaborate(argv):

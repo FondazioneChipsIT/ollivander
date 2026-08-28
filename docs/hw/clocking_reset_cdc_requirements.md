@@ -134,6 +134,21 @@ The reset network generates synchronized resets for each clock domain, combining
     *   `pwr_on_rsts_no` (output logic [NumRstDomains-1:0]): Array of synchronized power-on resets (bypassing SW control).
     *   `inits_no` (output logic [NumRstDomains-1:0]): Array of initialization pulses (optional).
 
+### 2.3 What is synchronized, and what deliberately is not
+
+The two output vectors are **not** the same reset seen twice, and the difference is the whole point of having both. Since 2026-08-27 the convention matches the astral / carfield reference SoCs:
+
+*   **`pwr_on_rsts_no[i]`** is the power-on reset, asserted asynchronously and **released synchronously** — four register stages inside `olli_rstgen`, in the target domain's clock. This is the reset for logic whose release must be constrained: isolation cells, CDC primitives, anything that would enter an illegal state if two of its flops left reset on different cycles.
+*   **`rsts_no[i]`** is the **software** reset from the System Controller register, taken as it comes out of the register with **no second synchronizer**. It is not combined with the power-on reset either: there is no `&&`, no gate, nothing between the register bit and the domain.
+
+Two consequences worth stating explicitly, because neither is obvious from the RTL alone:
+
+**The power-on reset reaches the payload through the register's reset value, not through this vector.** A software-reset register powers on asserted — always, in both `power_on_state` settings — so at time zero the block is held by its own control bit. That is what makes the removal of the combinational term safe, and it is exactly how the gwaihir reference behaves. Before that change the tile ANDed the synchronised POR with the software reset, putting combinational logic *downstream* of two independently synchronised asynchronous sources; that was the hazard the change removes.
+
+**The software-reset paths must be declared FALSE PATHS when the ASIC flow lands.** Ollivander ships no timing constraints today, so this requirement has no other home, and without it the first synthesis run will try to close a path we deliberately chose not to close. The argument for declaring it is a design rule, not a convenience: a software reset is only ever written **while the target block's clock is gated**, so no clock edge can arrive near the transition and recovery/removal have no meaning on it. The ordering that guarantees the premise is documented in the [SoC configuration guide](../soc_configuration_guide.md#clock-and-reset-control-registers) and implemented by the generated firmware helpers — clock gated before the reset is asserted, reset released before the clock is enabled.
+
+> **No simulation validates this.** RTL simulation does not check recovery and removal, so a reset released a cycle early is invisible to every gate in the suite, at any size. What the suite does exercise is bring-up: the generated `offload` application power-cycles each target and brings its instances up one at a time, which is the strongest available stress on the release path. Verilator earns its place here for the same reason — it is the tool most likely to propagate the `X` that a broken release produces.
+
 ---
 
 ## 3. Inter-Domain Synchronizers (CDC)

@@ -321,6 +321,13 @@ Every Isle must implement these basic clocking and reset signals:
 These signals are mapped automatically if their exact name is found in the module declaration (all names listed are actively supported by Ollivander):
 *   **`pwr_on_rst_ni`** (`logic`): Power-On Reset (active low) associated with the Isle's assigned clock domain. Used for persistent logic.
     *   **Ollivander Handling**: Connected to the power-on-reset output of the corresponding reset generator (e.g., `pwr_on_rsts_n[DomainIdx_periph]`).
+
+> **The two resets are a contract, and choosing between them is a design decision.**
+>
+> *   **`pwr_on_rst_ni`** is synchronously released (four stages inside the reset generator) and carries only the power-on reset. Put on it every flop whose release must be **timing-constrained**: anything that would produce a metastable value or an illegal state if it left reset on a different cycle from its neighbours.
+> *   **`rst_ni`** additionally carries the **software** reset from the System Controller register, and that path is deliberately **not** synchronised (aligned with the astral/carfield convention on 2026-08-27). The register is written only while the block's clock is gated, so recovery and removal have no meaning on it — and the ASIC flow is expected to declare it a **false path**. See [clocking, reset and CDC requirements](clocking_reset_cdc_requirements.md).
+>
+> An Isle that declares only `rst_ni` gets both resets folded into one net and is perfectly legal; it simply forgoes the distinction, and every flop inside it inherits the unconstrained release.
 *   **`sys_clk_i`** (`logic`): Global system clock (`host_clk`). Useful for IPs that operate in a peripheral clock domain but need a reference to the global system time.
     *   **Ollivander Handling**: Hardwired to the main `host_clk` signal.
 *   **`sys_rst_ni`** (`logic`): Global system Power-On Reset (`host_pwr_on_rst_n`, active low).
@@ -335,10 +342,13 @@ These signals are mapped automatically if their exact name is found in the modul
     *   **Ollivander Handling**: Intended to be connected to the `sys_regs_reg2hw.<component_name>_boot_addr.q` register output from the System Controller.
 *   **`fetch_en_i`** (`logic`): The core fetch enable signal driven by the System Controller registers (allows the Host to wake up the Isle).
     *   **Ollivander Handling**: Connected to the `sys_regs_reg2hw.<component_name>_fetch_enable.q` (or `_boot_enable.q`) register output.
-*   **`axi_isolate_i`** (`logic`): AXI isolation request driven by the System Controller, ensuring the Isle's AXI traffic is fenced during its own reset sequences.
-    *   **Ollivander Handling**: Connected to the `sys_regs_reg2hw.<component_name>_isolate.q` register output.
+*   **`axi_isolate_i`** (`logic`): AXI isolation request driven by the System Controller: it fences the Isle's **outbound** AXI traffic, so the network is protected from the block while the block is reset, gated or powered down.
+    *   **Ollivander Handling**: Connected to `sys_regs_hwif_out.isolate_ctrl.<component_name>_isolate.value`, indexed by instance when the component expands into several. Declaring the port is **optional**: an Isle that does not expose it still gets isolation when `system_config.isolate` is set — the generated tile then instantiates the `axi_isolate` cells itself, on its outbound master ports. Expose the port only if the Isle wants to own the fence, which is the right choice when it has internal state to quiesce alongside it.
 *   **`axi_isolated_o`** (`logic`): AXI isolation acknowledgment returned to the System Controller.
-    *   **Ollivander Handling**: Connected to the `sys_regs_hw2reg.<component_name>_isolate_status.d` register input.
+    *   **Ollivander Handling**: Connected to `sys_regs_hwif_in.isolate_status.<component_name>_isolated.next`, one bit per instance. A component exposing `axi_isolate_i` must expose this too.
+    *   **The signal means "drained OR in reset", and both halves matter.** It asserts when every isolated channel has reached its isolate state, which makes waiting on it a genuine handshake rather than an echo of the request — but the cells' state registers *reset to* that state, so it also reads asserted throughout reset. Waiting for isolation to be **released** is therefore meaningful; reading an asserted bit as proof that traffic was drained is not.
+    *   **Which clock it answers on** follows ownership: an Isle-owned cell runs on the Isle's (gated) clock and cannot move until that clock runs, while a tile-owned cell runs on the always-on network clock. De-isolating *after* enabling the clock is the order that works in both, and the order the generated firmware helpers use.
+    *   **A tile-owned cell resets with the network side, not with the block it fences**: it takes the tile's ungated domain reset (`rst_ni`), the same one the chimney uses, and never the gated software reset of the component. Both ends of that AXI path therefore reset together — a cell resetting independently of the chimney it feeds would restart one end while the other held mid-transaction state — and the fence survives the reset of the very block it is isolating, which is what makes "isolate, then reset" a usable sequence.
 *   **`debug_req_i`** (`logic [1:0]` or `logic`): External debug request signal driven by the System Controller.
     *   **Ollivander Handling**: Connected to the `sys_regs_reg2hw.<component_name>_debug_req.q` register output (enabled via `debug_req: true` in `system_config`).
 *   **`busy_o`** (`logic`): Busy status flag exported to the System Controller.

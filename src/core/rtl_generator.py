@@ -272,7 +272,11 @@ class RTLGenerator:
                 config=self.soc_config,
                 top_level_module_name=self.top_level_module_name,
                 sys_ctrl=self.soc_config.system_controller.model_dump(exclude_none=True),
-                components=[c.model_dump(exclude_none=True) for c in self.soc_config.components] if self.soc_config.components else [],
+                # 'num_instances' is a PROPERTY, so model_dump() drops it: it is injected here
+                # rather than recomputed in the template, which would be a second copy of the
+                # placement expansion. The isolation fields are sized from it.
+                components=[dict(c.model_dump(exclude_none=True), num_instances=c.num_instances)
+                            for c in self.soc_config.components] if self.soc_config.components else [],
                 domains=[d.model_dump(exclude_none=True) for d in self.soc_config.clock_tree.domains],
                 fmt_reg=fmt_reg, fmt_dom=fmt_dom, fmt_rst=fmt_rst, camel_case=camel_case,
                 gen_version=self.gen_version, git_hash=self.git_hash)
@@ -1305,7 +1309,11 @@ class RTLGenerator:
             "sys_ctrl": self.soc_config.system_controller.model_dump(exclude_none=True) if self.soc_config.system_controller else {},
             "wiring_matrix": wiring_matrix,
             "domains": [d.model_dump(exclude_none=True) for d in self.soc_config.clock_tree.domains],
-            "components": [c.model_dump(exclude_none=True) for c in self.soc_config.components] if self.soc_config.components else [],
+            # 'num_instances' is a PROPERTY, so model_dump() drops it: injected here rather
+            # than recomputed in a template, which would be a second copy of the placement
+            # expansion. The isolation register fields are sized from it.
+            "components": [dict(c.model_dump(exclude_none=True), num_instances=c.num_instances)
+                           for c in self.soc_config.components] if self.soc_config.components else [],
             "comp_info": comp_info,
             "ecc_schemes_dir": str(self.env.ecc_schemes_dir) if self.env.ecc_schemes_dir else None,
             "global_defines": sorted(list(global_defines)),

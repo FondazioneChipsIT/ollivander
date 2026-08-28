@@ -95,7 +95,12 @@ module snitch_hwpe_subsystem
   assign tcdm_req_o.q.write = ~tcdm.wen;
   assign tcdm_req_o.q.strb  = tcdm.be;
   assign tcdm_req_o.q.data  = tcdm.data;
-  assign tcdm_req_o.q.amo   = reqrsp_pkg::AMONone;
+  // 'snitch_pkg', not 'reqrsp_pkg': the same lesson as the removed import above, and the
+  // half of it that was missed. reqrsp_pkg wildcard-imports snitch_pkg, which makes the name
+  // visible INSIDE that package but does not re-export it, so 'reqrsp_pkg::AMONone' selects a
+  // member the package does not declare. QuestaSim and Verilator both accept it; slang does
+  // not, and it was invisible until the phase-11 error limit was lifted on 2026-08-28.
+  assign tcdm_req_o.q.amo   = snitch_pkg::AMONone;
   assign tcdm_req_o.q.user  = '0;
   // response channel
   assign tcdm.gnt           = tcdm_rsp_i.q_ready;
