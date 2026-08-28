@@ -232,7 +232,20 @@ VERILATOR_EXTRA_FLAGS ?=
 # an OPT_FAST=-O2 survived here after being removed from the flags above, silently
 # undoing the decision. One definition, one place to change: only the C++ standard is
 # forced, and OPT_FAST is deliberately absent (see the flag rationale).
-VERILATOR_BUILD_VARS ?= CFG_CXXFLAGS_STD=-std=gnu++20${vl_build_extra}
+# PRECOMPILED HEADERS ARE DISABLED WHEN THE OBJECT CACHE IS ccache 3.x - a correctness
+# measure, not a tuning choice. verilated.mk compiles every FAST/SLOW object through
+# $(OBJCACHE) with '-include <prefix>__pch.h.<fast|slow>', and ccache 3.x mishandles that
+# combination: it serves objects compiled against a STALE precompiled header, the linked
+# model is allocated smaller than the class constructing it, and Vtb_* segfaults inside
+# the model constructor before printing a line (proven three times, last on 2026-08-28 -
+# a night went into blaming the RTL). Emptying the two -include variables takes the pch
+# off the compile lines; the .gch files are still built as prerequisites and simply never
+# used. Measured cost: nil (6m26s cold without pch against 6m43s with, wip 5.2.3).
+# ccache 4.x keeps the pch ON: its changelog cites pch-handling fixes, and repeated runs
+# on this host never reproduced the poisoning. No ccache on PATH means no change at all.
+VERILATOR_CCACHE_MAJOR := $(shell ccache --version 2>/dev/null | head -n 1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')
+VERILATOR_PCH_VARS := $(if $(filter 0 1 2 3,$(VERILATOR_CCACHE_MAJOR)),VK_PCH_I_FAST= VK_PCH_I_SLOW=)
+VERILATOR_BUILD_VARS ?= CFG_CXXFLAGS_STD=-std=gnu++20 $(VERILATOR_PCH_VARS)${vl_build_extra}
 # The same flags without --build: the hierarchical build is driven in two explicit
 # phases below (emission of every child, THEN compilation), which is what keeps a
 # child's sources from being compiled while they are still being written.
@@ -633,6 +646,9 @@ prep-sim-verilator: update-hw
 
 build-sim-verilator: prep-sim-verilator build-sw
 	@printf "\n[MAKE] Building Verilator model (hierarchical)...\n"
+	@if [ -n "$(VERILATOR_PCH_VARS)" ]; then \
+		printf "[MAKE] ccache %s.x on PATH: precompiled headers DISABLED (ccache <4 + pch returns stale objects)\n" "$(VERILATOR_CCACHE_MAJOR)"; \
+	fi
 	@# NO REUSE BETWEEN BUILDS (development-phase policy). Verilator's
 	@# hierarchical cache validates neither its own outputs (a build aborted
 	@# mid-write leaves truncated headers the next run fails on: "unterminated
