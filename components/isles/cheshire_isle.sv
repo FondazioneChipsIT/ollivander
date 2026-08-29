@@ -65,6 +65,12 @@ module cheshire_isle
   parameter int unsigned RegNumSlvSync      = 0,
   parameter int unsigned NumIntrsIn         = 32,
   parameter int unsigned NumIntrsOut        = 32,
+  // Number of EXTERNAL interrupt targets fed from intr_ext_o. Derived by the generator
+  // from the SoC description: 1 when anything routes from this port, 0 otherwise. It was
+  // hardwired to 0 ("fixed assumption of the wrapper") while crux.yml kept routing 54
+  // lines from it - cheshire then took its tie-off branch and every routed line was dead
+  // (safety island and both CFIs; found by SafeConnect, 2026-08-28). Carfield sets 1.
+  parameter int unsigned NumIntrTgtsOut     = 0,
   parameter int unsigned NumIrqHarts        = 1,
   parameter int unsigned NumDbgHarts        = 1,
   localparam int unsigned NumIrqCtxts       = 2, // Number of interrupt contexts (M, S modes)
@@ -435,7 +441,7 @@ module cheshire_isle
 
     cfg.NumExtInIntrs     = NumIntrsIn;
     cfg.NumExtOutIntrs    = NumIntrsOut;
-    cfg.NumExtOutIntrTgts = 0; // This is now a fixed assumption of the wrapper
+    cfg.NumExtOutIntrTgts = NumIntrTgtsOut; // derived from the description's routing (see the parameter)
     cfg.NumExtIrqHarts    = NumIrqHarts;
     cfg.NumExtDbgHarts    = NumDbgHarts;
     

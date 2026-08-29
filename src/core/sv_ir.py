@@ -144,7 +144,11 @@ class SVArchitectureIR:
         return inst
 
     def add_assignment(self, lhs: str, rhs: str):
-        self.assignments.append((lhs, rhs))
+        # Idempotent: a dual-role port can legitimately be discovered by BOTH the wiring
+        # matrix and the exported-interface list, and two continuous assignments to one
+        # logic are illegal even when identical.
+        if (lhs, rhs) not in self.assignments:
+            self.assignments.append((lhs, rhs))
 
     def verify(self, comp_info: dict) -> list:
         """
@@ -152,6 +156,42 @@ class SVArchitectureIR:
         Returns a list of error/warning strings.
         """
         messages = []
+
+        # ------------------------------------------------------------------
+        # 0. Every consumed interrupt wire must have a driver (SafeConnect
+        #    class guard, 2026-08-29). An 'intr_*' wire read by a vector or an
+        #    input port but never driven elaborates perfectly and reads X (or 0
+        #    under two-state) forever: the CAN event spent months routed to a
+        #    PLIC bit that could not fire, invisible to every simulator and to
+        #    slang alike, because nothing here says a wire OUGHT to be driven -
+        #    that knowledge lives in the description, so it is enforced here.
+        # ------------------------------------------------------------------
+        intr_driven, intr_consumed = set(), set()
+        _IDENT = re.compile(r"\bintr_[a-zA-Z0-9_]+\b")
+        for lhs, rhs in self.assignments:
+            intr_driven.update(_IDENT.findall(lhs))
+            intr_consumed.update(_IDENT.findall(rhs))
+        for inst_name, inst in self.instances.items():
+            comp_name = inst_name[2:] if inst_name.startswith("i_") else inst_name
+            c_ports = comp_info.get(comp_name, {}).get("ports", {})
+            for conn in inst.connections:
+                names = _IDENT.findall(conn.expression)
+                if not names:
+                    continue
+                direction = (c_ports.get(conn.port_name) or {}).get("dir", "")
+                (intr_driven if direction == "output" else intr_consumed).update(names)
+        # Only SOURCE wires ('intr_<comp>_<port>_o') are judged here: destination vectors
+        # ('..._i', '..._sync') are driven by the top template's own combinational block and
+        # its sync cells, which the IR cannot see - including them produced five false
+        # positives on the first run. The orphan class this guard exists for is precisely a
+        # source wire (the CAN event was 'intr_apb_subsystem_can_bus_event_o').
+        for w in sorted(intr_consumed - intr_driven):
+            if not w.endswith("_o"):
+                continue
+            messages.append(f"[ERROR] Interrupt wire '{w}' is consumed but never driven: "
+                            f"the routed line can never fire. The source port is either "
+                            f"missing, misnamed, or claimed by another connection.")
+
         for inst_name, inst in self.instances.items():
             comp_name = inst_name[2:] if inst_name.startswith("i_") else inst_name
             # Fallback for tiled name mappings

@@ -285,24 +285,53 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
             if comp.system_config.get('has_eoc_status') and 'eoc' not in (comp.interrupts or {}) and 'eoc_o' not in (comp.interrupts or {}):
                 inst.connections.append(PortConnection("eoc_o", f"{reg_in}.eoc_status.{c_name}_eoc.next"))
 
-        # Wiring matrix connections
+        # Wiring matrix connections. A port that is BOTH an interrupt source and part of an
+        # exported interface gets both roles honoured: the instance port drives the dedicated
+        # 'intr_*' wire (the interrupt vector reads it), and the exported top-level signal is
+        # fed from that wire by a continuous assignment. Until 2026-08-28 the export simply
+        # WON: the matrix entry was skipped, the isle port went straight to the boundary, and
+        # the intr_ wire stayed undriven - the CAN event reached the pad and never the PLIC
+        # (found by SafeConnect; the watchdog, interrupt-only, always worked).
+        dual_role = {}
+        exported_ports = ([c.split('(')[0].strip().strip('.') for c in comp_extra_conns[comp.name]]
+                          if comp.name in comp_extra_conns else [])
+        by_port = {}
         for wc in wiring_matrix.get(comp.name, []):
             m = re.match(r'^\s*\.\s*([a-zA-Z0-9_]+)\s*\(\s*(.*)\s*\)\s*$', wc.strip())
             if m:
-                p_name = m.group(1).strip()
-                expr = m.group(2).strip()
-                if comp.name in comp_extra_conns:
-                    exported_ports = [c.split('(')[0].strip().strip('.') for c in comp_extra_conns[comp.name]]
-                    if p_name in exported_ports:
-                        continue
-                inst.connections.append(PortConnection(p_name, expr))
+                by_port.setdefault(m.group(1).strip(), []).append(m.group(2).strip())
+        for p_name, exprs in by_port.items():
+            intr = [e for e in exprs if e.startswith("intr_")]
+            other = [e for e in exprs if not e.startswith("intr_")]
+            if intr and (other or p_name in exported_ports):
+                # DUAL ROLE within the matrix itself: the same port was claimed both by an
+                # exported interface (section 3 of the wiring) and by an interrupt route
+                # (section 4). The interrupt takes the port - the vector reads its wire -
+                # and every exported destination is fed from that wire by an assignment.
+                # Before 2026-08-29 an undocumented dedupe let one silently win, and the
+                # CAN event reached the pad but never the PLIC.
+                dual_role[p_name] = intr[0]
+                inst.connections.append(PortConnection(p_name, intr[0]))
+                for e in other:
+                    ir.add_assignment(e, intr[0])
+                continue
+            if p_name in exported_ports:
+                continue
+            inst.connections.append(PortConnection(p_name, exprs[0]))
 
-        # Exported interfaces
+        # Exported interfaces; a dual-role port was already connected to its intr_ wire
+        # above, so the export becomes an assignment from that wire instead of a second
+        # (conflicting) port connection.
         if comp.name in comp_extra_conns:
             for ec in comp_extra_conns[comp.name]:
                 m = re.match(r'^\s*\.\s*([a-zA-Z0-9_]+)\s*\(\s*(.*)\s*\)\s*$', ec.strip())
                 if m:
-                    inst.connections.append(PortConnection(m.group(1).strip(), m.group(2).strip()))
+                    p_name = m.group(1).strip()
+                    expr = m.group(2).strip()
+                    if p_name in dual_role:
+                        ir.add_assignment(expr, dual_role[p_name])
+                        continue
+                    inst.connections.append(PortConnection(p_name, expr))
 
         # INSTANCE IDENTITY ON A PORT. The twin of the InstanceBaseAddr
         # parameter above, for isles that take the base at run time instead: it MUST

@@ -768,3 +768,8 @@ flag.
 ```
 
 The request is refused rather than ignored because ignoring it is not inert: the control and status registers are generated from the flag alone, so the status bit would be left without a driver — reading `X` in simulation, and telling a firmware that waits on it that the block is *not* isolated, forever. The failure would then surface as a boot that hangs, hours away from the line that caused it.
+
+
+### 7.9 An interrupt wire without a driver, and an interrupt index beyond the port
+
+Two checks close the class SafeConnect's findings belonged to (2026-08-29). First, **every consumed interrupt wire must have a driver** in the generated top: an `intr_*` wire that is read but never driven elaborates perfectly and reads zero forever — the CAN event spent months routed to a PLIC bit that could not fire, because the exported `can_bus` interface had claimed the port and the interrupt lost. (Both roles are now honoured: the port drives the interrupt wire, and the exported top-level signal is fed from it by an assignment.) Second, **an index into the host's `intr_ext_o` beyond `NumIntrsOut` is refused**: the line would be constant by configuration. The outbound-target count itself is no longer assumed but **derived** — `NumIntrTgtsOut` becomes 1 whenever the description routes from that port, which is what keeps cheshire out of its tie-off branch.

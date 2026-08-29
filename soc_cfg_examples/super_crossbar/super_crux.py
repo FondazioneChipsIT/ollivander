@@ -100,6 +100,9 @@ config = OllivanderConfig(
         base_addr=0x200A0000,
         sync_domain=False,
         pad_py="super_crux_pads.py",
+        # The CAN event is deliberately unpadded (parity with astral): it reaches the PLIC,
+        # and the SoC-level port survives because the exported can_bus interface carries it.
+        unpadded_ports={"apb_subsystem_can_bus_event_o": "open"},
         domains=[
             PadDomainConfig(name="domain_1v8", tech="behavioral"),
             PadDomainConfig(name="domain_3v3", tech="behavioral")

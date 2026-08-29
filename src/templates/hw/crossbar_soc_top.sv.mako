@@ -647,6 +647,15 @@ ${clock_and_reset_tree(config, p_name)}
   // Parameters and ports are injected automatically based on the component's 
   // SV header analysis (Phase 2) and the Wiring Matrix.
   
+% if ir.assignments:
+  // IR-level continuous assignments. Today these carry the dual-role interrupt exports:
+  // a port claimed both by an exported interface and by an interrupt route drives its
+  // 'intr_*' wire, and the exported top-level signal is fed from that wire here.
+% for lhs, rhs in ir.assignments:
+  assign ${lhs} = ${rhs};
+% endfor
+% endif
+
 % for inst_name, inst in ir.instances.items():
   // --- Component: ${inst.inst_name} (${inst.module_name}) ---
   ${inst.module_name} \

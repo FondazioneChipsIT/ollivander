@@ -64,6 +64,5 @@ domain_3v3,PAD_APB_RX,PAD_INPUT_V,1,true,,APB Subsystem RX,apb_subsystem_rx_i,,1
 domain_3v3,PAD_APB_TX,PAD_OUTPUT_V,1,true,,APB Subsystem TX,,apb_subsystem_tx_o,,,,,1'b1,,
 domain_3v3,PAD_CAN_RX,PAD_INPUT_V,1,true,,CAN Bus RX,apb_subsystem_can_bus_rx_i,,1'b1,1'b0,1'b0,1'b1,,,
 domain_3v3,PAD_CAN_TX,PAD_OUTPUT_V,1,true,,CAN Bus TX,,apb_subsystem_can_bus_tx_o,,,,,1'b1,,
-domain_3v3,PAD_CAN_EVENT,PAD_OUTPUT_V,1,true,,CAN Bus Event,,apb_subsystem_can_bus_event_o,,,,,1'b1,,
 domain_3v3,PAD_BOOT_MODE_{i},PAD_INPUT_V,2,true,,Boot Mode {i},boot_mode_i_{i},,1'b1,1'b0,1'b0,1'b1,,,
 domain_3v3,pad_muxed_gpio_{i},PAD_BIDIR_V,8,false,soc_exports.gpio_{i},GPIO Bus (muxed),,,,,,,,,

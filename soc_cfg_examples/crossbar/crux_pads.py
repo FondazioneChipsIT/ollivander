@@ -71,7 +71,6 @@ domain_3v3 = [
     {"name": "PAD_APB_TX", "pad_type": "PAD_OUTPUT_V", "multiple": 1, "is_static": True, "description": "APB Subsystem TX", "connections": {"chip2pad": "apb_subsystem_tx_o", "output_en": "1'b1"}},
     {"name": "PAD_CAN_RX", "pad_type": "PAD_INPUT_V", "multiple": 1, "is_static": True, "description": "CAN Bus RX", "connections": {"pad2chip": "apb_subsystem_can_bus_rx_i", "input_en": "1'b1", "pu_en": "1'b0", "pd_en": "1'b0", "schmitt_en": "1'b1"}},
     {"name": "PAD_CAN_TX", "pad_type": "PAD_OUTPUT_V", "multiple": 1, "is_static": True, "description": "CAN Bus TX", "connections": {"chip2pad": "apb_subsystem_can_bus_tx_o", "output_en": "1'b1"}},
-    {"name": "PAD_CAN_EVENT", "pad_type": "PAD_OUTPUT_V", "multiple": 1, "is_static": True, "description": "CAN Bus Event", "connections": {"chip2pad": "apb_subsystem_can_bus_event_o", "output_en": "1'b1"}},
     {"name": "PAD_BOOT_MODE_{i}", "pad_type": "PAD_INPUT_V", "multiple": 2, "is_static": True, "description": "Boot Mode {i}", "connections": {"pad2chip": "boot_mode_i_{i}", "input_en": "1'b1", "pu_en": "1'b0", "pd_en": "1'b0", "schmitt_en": "1'b1"}},
     {"name": "pad_muxed_gpio_{i}", "pad_type": "PAD_BIDIR_V", "multiple": 8, "is_static": False, "default_port": "soc_exports.gpio_{i}", "description": "GPIO Bus (muxed)"},
 ]

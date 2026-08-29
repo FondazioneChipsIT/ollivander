@@ -159,6 +159,10 @@ padframe:
   # both a pad and a declared tie-off.
   unpadded_ports:
     clk_rst_bypass_i: 0
+    # The CAN event reaches the PLIC (bit 11); it is deliberately NOT padded, in parity
+    # with astral, whose chip exposes no event pad. The SoC-level port stays because the
+    # exported can_bus interface carries it (dual role, honoured since 2026-08-29).
+    apb_subsystem_can_bus_event_o: open
 
   # --- Alternative 1: CSV Padlist (Default) ---
   pad_csv: "crux_pads.csv"

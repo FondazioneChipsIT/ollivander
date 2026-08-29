@@ -154,6 +154,24 @@ def autoconfigure_host(soc_config):
     
     soc_config.host.parameters.setdefault('NumIntrsIn', host_num_intrs_in)
     soc_config.host.parameters.setdefault('NumIntrsOut', host_num_intrs_out)
+    # OUTBOUND INTERRUPT TARGETS, derived instead of assumed. Scan every interrupt source
+    # for references to '<host>.intr_ext_o': one or more mean the host must actually drive
+    # the port (cheshire ties it to zero when NumExtOutIntrTgts is 0, and 54 routed lines
+    # were dead while the wrapper assumed 0). While here, refuse an index beyond the
+    # port's width - a config-imposed constant is exactly how the last defect hid.
+    _tgts_out = 0
+    for _c in ([soc_config.host] + (soc_config.components or [])):
+        for _irq in (_c.interrupts or {}).values():
+            _src = _irq.get('source')
+            for _s in (_src.values() if isinstance(_src, dict) else [_src]):
+                for _m in re.finditer(rf"{soc_config.host.name}\.intr_ext_o(?:\[(\d+)(?::\d+)?\])?", str(_s)):
+                    _tgts_out = 1
+                    if _m.group(1) is not None and int(_m.group(1)) >= host_num_intrs_out:
+                        raise ValueError(
+                            f"[{_c.name}] routes from {soc_config.host.name}.intr_ext_o"
+                            f"[{_m.group(1)}], but the host drives only {host_num_intrs_out} "
+                            f"outbound interrupts (NumIntrsOut): the line would be constant.")
+    soc_config.host.parameters.setdefault('NumIntrTgtsOut', _tgts_out)
     soc_config.host.parameters.setdefault('NumIrqHarts', host_num_irq_harts)
     soc_config.host.parameters.setdefault('NumDbgHarts', host_num_dbg_harts)
     soc_config.host.parameters.setdefault('AxiNumMstSync', host_axi_mst_sync)

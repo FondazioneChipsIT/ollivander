@@ -307,13 +307,6 @@
   connections:
     chip2pad: apb_subsystem_can_bus_tx_o
     output_en: 1'b1
-- name: PAD_CAN_EVENT
-  pad_type: PAD_OUTPUT_V
-  is_static: true
-  description: CAN Bus Event
-  connections:
-    chip2pad: apb_subsystem_can_bus_event_o
-    output_en: 1'b1
 - name: PAD_BOOT_MODE_{i}
   pad_type: PAD_INPUT_V
   multiple: 2
