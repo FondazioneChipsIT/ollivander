@@ -1239,7 +1239,11 @@ def generate_stubs(outdir_path: Path, soc_config, env_dependencies, base_dir: Pa
                 # Per-file stubs go through the same neutralization as the combined blob.
                 combined_stub, _ = neutralize_body_relative_param_defaults(combined_stub)
 
-                stub_file_path.write_text("// AUTO-GENERATED STUB FILE\n\n" + combined_stub, encoding='utf-8')
+                stub_file_path.write_text(
+            "// Copyright 2026 Fondazione Chips-IT.\n"
+            "// Solderpad Hardware License, Version 0.51, see LICENSE for details.\n"
+            "// SPDX-License-Identifier: SHL-0.51\n//\n"
+            + "// AUTO-GENERATED STUB FILE\n\n" + combined_stub, encoding='utf-8')
                 stub_file_mapping[p_abs] = safe_name
                 stubs_generated_count += 1
 
@@ -1351,7 +1355,10 @@ endmodule
 
     comment = get_generation_comment("//", base_dir)
     with open(stubs_dir / f"{project_name}_stubs.sv", "w") as f:
-        stubs_content = "// AUTO-GENERATED STUBS FOR FAST-CHECK\n" + comment + "\n" + "\n\n".join(stubs_out)
+        stubs_content = ("// Copyright 2026 Fondazione Chips-IT.\n"
+                         "// Solderpad Hardware License, Version 0.51, see LICENSE for details.\n"
+                         "// SPDX-License-Identifier: SHL-0.51\n//\n"
+                         "// AUTO-GENERATED STUBS FOR FAST-CHECK\n" + comment + "\n" + "\n\n".join(stubs_out))
         if fast_check_tool == "verilator":
             stubs_content = decompose_struct_params(stubs_content)
         f.write(stubs_content)

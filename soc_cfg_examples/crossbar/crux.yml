@@ -161,7 +161,7 @@ padframe:
     clk_rst_bypass_i: 0
     # The CAN event reaches the PLIC (bit 11); it is deliberately NOT padded, in parity
     # with astral, whose chip exposes no event pad. The SoC-level port stays because the
-    # exported can_bus interface carries it (dual role, honoured since 2026-08-29).
+    # exported can_bus interface carries it (dual role: the port drives the PLIC wire, the export is fed from it).
     apb_subsystem_can_bus_event_o: open
 
   # --- Alternative 1: CSV Padlist (Default) ---
@@ -289,9 +289,9 @@ components:
         - ports: 2             # Automatically splits the crossbar routing into an array of 2 AXI ports
           # Inside the host's CIE window [0x7800_0000, 0x8000_0000), astral's own
           # L2 base: cached+executable for CVA6 through the DESIGNED attribute
-          # mechanism, and OUT of the LlcOutRegion - the old 0x8800_0000 parking
-          # spot shadowed cheshire's DRAM rule (two decode rules matched every L2
-          # access) and borrowed its attributes by accident.
+          # mechanism. A base inside the LlcOutRegion instead would shadow
+          # cheshire's DRAM decode rule (two rules matching every L2 access) and
+          # borrow its attributes by accident.
           base_addr: 0x78000000
           size: 0x00200000
           sync_domain: false

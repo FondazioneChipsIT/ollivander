@@ -219,7 +219,7 @@ def host_axi_in_masters(soc_config, component_paths=None, original_types=None):
 def host_ext_out_id_width(soc_config, component_paths, original_types=None):
     """
     The id width the HOST's external master port actually drives, from the host
-    wrapper's own contract (wip 2.1, the latent-truncation fix).
+    wrapper's own contract.
 
     Cheshire-class hosts prepend the originating master's index to every outgoing
     id, so their external width is the effective master id width plus clog2 of the
@@ -292,7 +292,7 @@ def resolve_noc_id_widths(soc_config, component_paths, original_types=None, repo
             if name and name in published:
                 accepted.setdefault(net, []).append((comp.name, published[name]))
 
-    # The HOST imposes too (wip 2.1): its external master port's id width
+    # The HOST imposes too: its external master port's id width
     # follows its internal master count, so every network it masters must carry at
     # least that width or the top index bits truncate and responses misroute - the
     # exact failure a serial-link preload exposes (the L2's B

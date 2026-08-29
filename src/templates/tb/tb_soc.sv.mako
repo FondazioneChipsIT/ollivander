@@ -1,3 +1,5 @@
+<%namespace file="/license_header.mako" import="license"/>\
+${license(prefix='//')}\
 //
 <%!
   import re
@@ -113,7 +115,7 @@ module tb_${top_level_module_name}();
 ${stubs_str}
 
   // ===========================================================================
-  // Clock Generation - migrated into the VIP's clock agent (wip 2.1)
+  // Clock Generation - migrated into the VIP's clock agent
   // ===========================================================================
   // The periods are resolved HERE at generation time, with the same formulas
   // the inline clock blocks used, and reach the VIP as elaboration parameters;
@@ -169,7 +171,7 @@ ${stubs_str}
     boot_mode_i   = 2'b0;
 % endif
 <%
-  # wip 2.1 boot-mode resolution, hoisted here because both the reset-initials
+  # Boot-mode resolution, hoisted here because both the reset-initials
   # block and the DUT-adjacent VIP instantiation consume it long before the
   # boot-sequence python block runs. 'force' keeps the hierarchical forces
   # verbatim; 'jtag' drives the architected bring-up through the debug module.
@@ -185,7 +187,7 @@ ${stubs_str}
       boot_mode = "force"
   jtag_idcode = int(host_fixed.get("JtagIdCode", "1").strip('"\''))
   jtag_scratch_off = int(host_fixed.get("JtagScratchOffset", "0").strip('"\''))
-  # Serial-link agent activation (wip 2.1): the image travels the
+  # Serial-link agent activation: the image travels the
   # serial link only when the mode asks for it, the host declares the contract
   # AND the pins actually reach the top level (the schema validates the export;
   # the contract guard keeps this template robust on hosts that lack it).
@@ -411,7 +413,7 @@ elf_sec_max = int(str(testbench_cfg.get("elf_max_section_bytes", 0x400000)), 0)
   // model then wipes what was just written: tc_sram with SimInit "zeros" re-clears the
   // whole array for as long as rst_ni is low, not once at time zero. The symptom is a
   // memory full of zeros, a host looping on its reset vector and not one line of output -
-  // seen on crossbar_isle under Verilator on 2026-08-28, while QuestaSim, whose zero-time
+  // visible under Verilator, while QuestaSim, whose zero-time
   // ordering differs, passed the same tree. The flag below is raised by the boot sequence
   // once the bring-up is over, which no scheduler ordering can anticipate.
   logic tb_preload_go = 1'b0;
@@ -651,7 +653,7 @@ if not uart_base:
 
 % endif
   // ===========================================================================
-  // Verification IP (wip 2.1): every testbench agent in one bench
+  // Verification IP: every testbench agent in one bench
   // ===========================================================================
   // The VIP owns the mechanisms - clocks, resets, the UART RX agent and, under
   // boot_mode "jtag", the TAP driver with its Debug-Spec operations. This
@@ -710,8 +712,8 @@ if not uart_base:
         # instance by the generator (AxiOutIdWidth gets the global bus's
         # mst_id_width, etc.) and never appear in host.parameters, so without
         # this the substitution falls back to the ISLE HEADER DEFAULTS - the
-        # twin then mirrors a link the DUT was not built with. Found the hard
-        # way on super_crux: default AxiOutIdWidth=4 resolved the
+        # twin then mirrors a link the DUT was not built with: a default
+        # AxiOutIdWidth=4 once resolved the
         # twin's id width to 3 against the DUT's 2, one bit of framing skew,
         # and the first serial-link transaction of every run hung with no
         # error at any burst length. On the NoC family global_bus is absent
@@ -942,7 +944,7 @@ if not uart_base:
   # The JTAG twins of the force lines: same registers, same order, but real
   # system-bus writes through the generated `SYS_CTRL_* address macros of
   # <top>_regs.svh - one source of truth (the memory-map RDL) with the firmware.
-  # MINIMAL BRING-UP SET (wip 5.4). 'all' (the default) enables every managed
+  # MINIMAL BRING-UP SET. 'all' (the default) enables every managed
   # domain and every control group from time zero: simple, and what the force
   # path does. 'minimal' enables only what the SoC needs to reach its firmware -
   # the managed domains (clock infrastructure, not a per-instance cost) and the
@@ -989,9 +991,9 @@ if not uart_base:
   # the debug module's SBA cannot be trusted into register space when the host
   # builds the link (writes vanish behind an OKAY - the anomaly in the upstream
   # registry), and on the crossbar family sys_ctrl sits exactly on that path.
-  # Discovered the hard way: super_crux's whole bring-up "succeeded" over SBA,
-  # every domain stayed gated, and the first slink burst into the gated L2
-  # stalled with no error at any burst length.
+  # The failure shape: a whole bring-up "succeeds" over SBA,
+  # every domain stays gated, and the first slink burst into the gated L2
+  # stalls with no error at any burst length.
   if boot_mode == "uart":
       ctrl_write, ctrl_channel = "i_vip.gen_uart_boot.uart_write32", "the UART debug server"
   elif preload_mode == "slink":
@@ -1021,7 +1023,7 @@ if not uart_base:
 %>
 % if boot_mode in ("jtag", "slink", "uart"):
   // ==========================================================================
-  // Architected bring-up and boot (wip 2.1): the force-free path. Under boot
+  // Architected bring-up and boot: the force-free path. Under boot
   // 'jtag' the TAP comes alive first (liveness: IDCODE, dmactive, SBA ready);
   // under boot 'slink' JTAG is never touched - the serial link carries
   // everything, cheshire's and gwaihir's own PRELMODE=1 shape; under boot
@@ -1059,7 +1061,7 @@ ${jtag_rst_str}
 % endif
 % if preload_mode in ("jtag", "slink", "uart"):
   // ==========================================================================
-  // Architected image load (wip 2.1): the same flat hex the readmemh path
+  // Architected image load: the same flat hex the readmemh path
   // would split per bank, streamed instead through an architected channel -
   // the debug module's system bus (sba_load) or the serial link's AXI
   // (slink_load), per testbench.preload_mode. No dotted path into the SRAM
@@ -1198,10 +1200,8 @@ ${jtag_rst_str}
     // check fails the build on residual gaps), but 'file' may name ANY hex,
     // including a hand-built one that never met that Makefile. Gap bytes are
     // zero-filled explicitly - the linker emitted nothing there, and an
-    // unset key would read X. (These constructs briefly appeared to crash
-    // the threaded runtime of Verilator; that crash was later
-    // proven to be ccache poisoning of the precompiled-header build, not a
-    // defect of the code below.) Two traps for editors of this comment: no
+    // unset key would read X. (A crash once blamed on these constructs was
+    // ccache pch poisoning; the code is sound under the threaded runtime.) Two traps for editors of this comment: no
     // package-colon-colon-symbol spellings (the auto-importer reads
     // comments), and no line may BEGIN with the tool's name (a leading
     // 'verilator' in a comment parses as a metacomment pragma and errors).
@@ -1383,7 +1383,7 @@ ${bringup_rst_str}
     $finish;
   end
 
-  // Global watchdog (wip 2.1): the per-run timeout above is
+  // Global watchdog: the per-run timeout above is
   // SEQUENCED after the boot steps, so a stuck architected image load used
   // to hang forever with no verdict (found on the first slink pilot).
   // This parallel bound covers the whole run - bring-up, load

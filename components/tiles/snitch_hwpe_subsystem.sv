@@ -99,7 +99,7 @@ module snitch_hwpe_subsystem
   // half of it that was missed. reqrsp_pkg wildcard-imports snitch_pkg, which makes the name
   // visible INSIDE that package but does not re-export it, so 'reqrsp_pkg::AMONone' selects a
   // member the package does not declare. QuestaSim and Verilator both accept it; slang does
-  // not, and it was invisible until the phase-11 error limit was lifted on 2026-08-28.
+  // not - a strict front-end is what catches it.
   assign tcdm_req_o.q.amo   = snitch_pkg::AMONone;
   assign tcdm_req_o.q.user  = '0;
   // response channel

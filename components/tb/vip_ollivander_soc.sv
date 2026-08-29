@@ -20,7 +20,7 @@
 `include "apb/typedef.svh"
 //
 // ============================================================================
-// vip_ollivander_soc - the generic, IP-agnostic verification IP (wip 2.1)
+// vip_ollivander_soc - the generic, IP-agnostic verification IP
 // ============================================================================
 // Simulation-only. Instantiated by the GENERATED testbench, never by the SoC.
 // The JTAG transport is a self-contained procedural driver (see below): it
@@ -34,9 +34,8 @@
 // system-bus reads and writes). Everything project-specific -
 // WHICH registers to write, in WHAT order, at WHICH addresses - stays in the
 // generated testbench, which receives the addresses from the generator the
-// same way the firmware headers do. This is the IP-agnostic constraint of
-// wip 2.1: the VIP talks the RISC-V Debug Spec and pins, never a host's
-// internals.
+// same way the firmware headers do. This is the IP-agnostic constraint:
+// the VIP talks the RISC-V Debug Spec and pins, never a host's internals.
 //
 // The system-bus access size is fixed to 32 bits here BY THE TARGETS, not by
 // the channel: the system-controller and scratch registers this agent exists
@@ -82,7 +81,7 @@ module vip_ollivander_soc #(
   parameter bit HasUartBoot = 1'b0,
   parameter real UartBootBitPeriodNs = 8680.0,
   // --------------------------------------------------------------------------
-  // Serial-link agent (wip 2.1): the off-chip TWIN of the DUT's
+  // Serial-link agent: the off-chip TWIN of the DUT's
   // serial link. The AXI geometry arrives from the host's Slink* contract via
   // the generated testbench; the twin builds its own types from the widths,
   // because the wire protocol needs a STRUCTURAL width match, not type
@@ -387,7 +386,7 @@ module vip_ollivander_soc #(
   //
   // This replicates riscv-dbg's jtag_test driver stack task by task - each
   // task below names its jtag_test counterpart - but with two deliberate
-  // departures, both learned the hard way:
+  // departures, both mandatory:
   //  * NO class constructs and NO queue-typed arguments: Verilator 5.050
   //    crashes (Internal Error) on fixed arrays passed to class-task queue
   //    args through a virtual interface; packed vectors + an explicit length
@@ -776,7 +775,7 @@ module vip_ollivander_soc #(
   endtask
 
   // ==========================================================================
-  // Serial-link agent (wip 2.1): the off-chip twin.
+  // Serial-link agent: the off-chip twin.
   // ==========================================================================
   // Cheshire's shape, simplified: one class driver injects AXI transactions
   // into a mirror serial_link whose DDR pins cross-connect to the DUT's; a

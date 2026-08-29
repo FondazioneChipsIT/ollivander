@@ -49,7 +49,7 @@
   
   # Membership from config.control_group_members, the single authority the RTL bit indices,
   # the register width and the firmware contract all use. This was a FOURTH inline copy of the
-  # rule: the other three were unified on 2026-08-27, and one left behind would have been
+  # rule: three sibling copies were unified into this one, and one left behind would have been
   # enough to let them drift again. Only this component's original type is needed, so a
   # one-entry map is passed rather than the whole table the generator holds.
   has_clk_ctrl = False
@@ -438,7 +438,7 @@ module ${p_name}_${c_type}
   fixed_params_to_expose = []
   if isle_info and "fixed_params" in isle_info:
       for param_name, p_val in isle_info["fixed_params"].items():
-          # The Jtag* family joins the pass-through (wip 2.1): the testbench reads the
+          # The Jtag* family joins the pass-through: the testbench reads the
           # host's boot capabilities from the TILE wrapper on the NoC family, so the
           # isle-declared JTAG boot contract must survive the isle-to-tile conversion
           # exactly as the ForceBoot* one does. The Slink* preload contract
@@ -570,7 +570,7 @@ module ${p_name}_${c_type}
   // POR synchronizer's synchronous release is not undone downstream. The power-on reset
   // arrives through that register's RESET VALUE, which soc_regs.rdl.mako pins to 'held in
   // reset' under both power-on policies - the route the gwaihir reference uses. ANDing
-  // 'rst_ni' in here, as this did until 2026-08-27, added exactly that combinational
+  // 'rst_ni' in here would add exactly that combinational
   // combination of two asynchronous sources for a path the POR already covers.
   //
   // Only the bypass is muxed, and its select is static; the mux is a clock cell so the

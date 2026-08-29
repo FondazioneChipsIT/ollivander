@@ -1,3 +1,7 @@
+<%namespace file="/license_header.mako" import="license"/>\
+/*
+${license(prefix=" *")}\
+ */
 /*
  * =============================================================================
  * OLLIVANDER AUTO-GENERATED LINKER SCRIPT

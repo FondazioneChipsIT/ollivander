@@ -266,7 +266,11 @@ def main():
                   f"it will surface as MODMISSING; write a manual stub or extend the mapping.")
             skipped += 1
             continue
-        (out_dir / f"{name}.sv").write_text(stub, encoding="utf-8")
+        (out_dir / f"{name}.sv").write_text(
+        "// Copyright 2026 Fondazione Chips-IT.\n"
+            "// Solderpad Hardware License, Version 0.51, see LICENSE for details.\n"
+            "// SPDX-License-Identifier: SHL-0.51\n//\n"
+        + stub, encoding="utf-8")
         emitted.append(name)
     print(f"  -> gen_vhdl_stubs: {len(entities)} entities, "
           f"{len(entities) - len(set(entities) - referenced)} internal to the VHDL side, "

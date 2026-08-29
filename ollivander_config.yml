@@ -196,8 +196,7 @@ dependencies:
     git: "https://github.com/pulp-platform/FlooNoC.git"
     # The declared FLOOR, which documents the minimum the generator needs. It does
     # not pin: 'version' is a semver constraint in Bender, so this alone would keep
-    # floating inside 0.8.x - which is how we ended up compiling 0.8.4 RTL with a
-    # 0.8.1 generator for weeks. The pin that actually binds is in 'overrides'.
+    # floating inside 0.8.x. The pin that actually binds is in 'overrides'.
     version: "0.8.4"
     # Which generator this revision was validated against. Read by the check that
     # runs before FlooGen; nothing else consumes it, and Bender.yml.mako emits only
@@ -206,8 +205,6 @@ dependencies:
   hci:
     git: "https://github.com/FondazioneChipsIT/hci.git"
     rev: "3e63936991569d0b1e315d6914478937b37bb338"
-    # git: "https://github.com/pulp-platform/hci.git"
-    # rev: "master"
     patches:
       # Three copy-paste typos in the ECC-handshake generate branches: r_evalid is
       # derived from itself where the twin line above derives egnt from gnt, so the
@@ -272,9 +269,6 @@ dependencies:
   # below could go stale unnoticed. The added VERILATOR guard nests inside the SYNTHESIS one;
   # the Verilator flow keeps assertions off anyway, so the only loss is two $display
   # diagnostics. Upstream PR candidate: extend the guard.
-  # This entry had gone MISSING while this paragraph survived (found and restored
-  # together): a documented repair that no longer ran, invisible because the only project it
-  # mattered for could not be built under Verilator for other reasons.
   # hwpe-ctrl: hwpe_ctrl_slave drives its packed flags_o with mixed styles, which
   # Verilator refuses (BLKANDNBLK); the five ORDERED replacements moved to the script
   # per the three-patch rule above. Full rationale in the script header.
@@ -298,7 +292,7 @@ dependencies:
       - "$(PYTHON) {ollivander_dir}/scripts/patch_ibex_prim_asserts.py {bender_work}"
   # neureka: a 36-bit literal in a 9-bit case item; QuestaSim truncates it to the same
   # 9'h1ff Verilator refuses to guess (upstream PR candidate: fix the literal).
-  # Re-verified failing on Verilator 5.050 (registry audit, wip 3.7).
+  # Re-verified failing on Verilator 5.050.
   neureka:
     patches:
       - file: "{bender_work}/neureka/rtl/ctrl/neureka_ctrl.sv"
@@ -408,10 +402,8 @@ dependencies:
     rev: "a779a93426abe80e6c82418e678cec9b70af56ed"
     bender_targets:
       - "spatz"
-    # ONE list for both commands: this entry used to carry two 'pre_build_cmds' keys, and a
-    # duplicated YAML key is not an error for the loader - the last one silently wins, which
-    # disabled patch_spatz.py from the day the second key was added (the
-    # loader now refuses duplicate keys precisely because of this).
+    # ONE list for every command (the loader refuses a duplicated YAML key: with a plain
+    # loader the last key silently wins and disables the first list's commands).
     # First command: removal of the dead tcdm_interface verification cluster (script header).
     # Second: spatz vendors its own copies of the snitch core and of its companion interface
     # IPs, which collide with snitch_cluster on dozens of package, module and interface names
@@ -486,10 +478,10 @@ overrides:
   # --- The generator and the library it instantiates must not drift apart.
   # floo_noc is not here to settle a conflict: nobody else in the graph requires it. It is here
   # because the 'version' constraint in the registry does NOT pin - it floats inside 0.8.x, so a
-  # future 0.8.5 would enter on its own while the floogen in requirements.txt stayed put. That is
-  # exactly how we came to compile 0.8.4 RTL with a 0.8.1 generator, unnoticed, and 0.8.3 turned
-  # out to have corrected the multicast mask width in the meantime. Bender.lock is git-ignored, so
-  # without this line two clones of one Ollivander commit can resolve different revisions.
+  # future 0.8.5 would enter on its own while the floogen in requirements.txt stayed put, and the
+  # emitted packages and the instantiated library would silently diverge. Bender.lock is
+  # git-ignored, so without this line two clones of one Ollivander commit can resolve different
+  # revisions.
   # Move this revision and 'validated_with' in the registry together, or not at all.
   floo_noc: { git: "https://github.com/pulp-platform/FlooNoC.git", rev: "14c253c996fcdc78b793fe28ac18964769b768df" }
 

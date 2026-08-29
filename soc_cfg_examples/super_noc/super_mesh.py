@@ -211,9 +211,9 @@ config = OllivanderConfig(
         # Join adapter.
         #
         # A single instance is enough to demonstrate the composition. Each one is a full
-        # SoC in its own right (a Cheshire host, 16 Snitch clusters and 8 L2 tiles), so
-        # the array of 8 this example used to declare pushed the simulation past what
-        # vsim could map into memory, while adding nothing to what the example teaches.
+        # SoC in its own right (a Cheshire host, 16 Snitch clusters and 8 L2 tiles):
+        # an array of them pushes the simulation past what vsim can map into
+        # memory, while adding nothing to what the example teaches.
         Component(
             name="ai_mesh_macro",
             description="Nested AI Mesh Subsystem Macro (NoC-native IP)",

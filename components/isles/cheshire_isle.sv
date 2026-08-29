@@ -66,10 +66,9 @@ module cheshire_isle
   parameter int unsigned NumIntrsIn         = 32,
   parameter int unsigned NumIntrsOut        = 32,
   // Number of EXTERNAL interrupt targets fed from intr_ext_o. Derived by the generator
-  // from the SoC description: 1 when anything routes from this port, 0 otherwise. It was
-  // hardwired to 0 ("fixed assumption of the wrapper") while crux.yml kept routing 54
-  // lines from it - cheshire then took its tie-off branch and every routed line was dead
-  // (safety island and both CFIs; found by SafeConnect, 2026-08-28). Carfield sets 1.
+  // from the SoC description: 1 when anything routes from this port, 0 otherwise. It must
+  // never be assumed: with 0, cheshire takes its tie-off branch and every line the
+  // description routes from the port is silently dead. Carfield sets 1 (safety island).
   parameter int unsigned NumIntrTgtsOut     = 0,
   parameter int unsigned NumIrqHarts        = 1,
   parameter int unsigned NumDbgHarts        = 1,
@@ -77,7 +76,7 @@ module cheshire_isle
   // Ollivander Host Force-Boot configuration parameters
   // HasForceBoot: 1 indicates this host supports software force-booting in simulation
   localparam bit HasForceBoot = 1,
-  // JTAG boot support (wip 2.1): this host carries a riscv-dbg debug module whose
+  // JTAG boot support: this host carries a riscv-dbg debug module whose
   // system-bus master reaches the boot scratch registers at the HOST-INTERNAL
   // offset below (Cheshire's own register block; scratch[i] at +4*i). The offset
   // is host-owned knowledge, declared here exactly as ForceBootPath is, so the
@@ -166,7 +165,7 @@ module cheshire_isle
   parameter int unsigned SpihNumCs          = 1,
   parameter int unsigned SlinkNumChan       = 1,
   parameter int unsigned SlinkNumLanes      = 8,
-  // Serial-link preload contract (wip 2.1): the VIP instantiates an
+  // Serial-link preload contract: the VIP instantiates an
   // off-chip twin of this host's serial link, and the twin's AXI geometry must
   // mirror the DUT side's EXACTLY or the wire framing disagrees. Declared as
   // host-owned knowledge, the same pattern as the Jtag* block; the id
@@ -180,8 +179,7 @@ module cheshire_isle
   localparam int unsigned SlinkAxiDataWidth = AxiDataWidth,
   localparam int unsigned SlinkAxiUserWidth = AxiUserWidth,
   localparam int unsigned SlinkAxiIdWidth   = (AxiOutIdWidth > 0 && AxiOutIdWidth <= 3) ? AxiOutIdWidth : 3,
-  // External-master id-width contract (wip 2.1, latent-truncation
-  // fix): the internal crossbar prepends the ORIGINATING MASTER's index to
+  // External-master id-width contract: the internal crossbar prepends the ORIGINATING MASTER's index to
   // every outgoing id, so the external id width is the effective master id
   // width plus clog2 of the master count - and the count GROWS with feature
   // switches. SerialLink added the fifth master and exposed a bit the fabric
@@ -192,7 +190,7 @@ module cheshire_isle
   // receives (the NoC ingress, the parent's exported masters) join the same
   // crossbar and widen the same ids - counting only the internal ones left a
   // one-bit undercount on the mesh, silent because the masters above the
-  // clog2 plateau never spoke (the same latency pattern, one week older).
+  // clog2 plateau never spoke.
   // The generator resolves it numerically (the AxiNumMst* values are driven
   // into host.parameters before resolution) and sizes the interconnect id
   // width so the fabric FOLLOWS the host - astral's and gwaihir's practice.

@@ -45,7 +45,7 @@ sources:
 % if generated_types_pkg_files:
 
   # --- Per-Isle Types Packages ---
-  # Emitted by the isle-staging de-typing pass (wip 5.1): each staged isle's former
+  # Emitted by the isle-staging de-typing pass: each staged isle's former
   # `parameter type` header entries, resolved once against the SoC package. Listed
   # here, before the wrappers that import them, because the wrapper list below is
   # alphabetical and would order '<isle>.sv' ahead of '<isle>_types_pkg.sv'.

@@ -1,3 +1,5 @@
+<%namespace file="/license_header.mako" import="license"/>\
+${license(prefix='//')}\
 // =========================================================================
 // OLLIVANDER AUTO-GENERATED SYSTEMRDL
 // =========================================================================
@@ -32,7 +34,7 @@
 
   # ISOLATION FIELDS, ONE PER COMPONENT AND num_instances BITS WIDE.
   #
-  # Until 2026-08-27 each component took a single bit at its own position in the list, which
+  # A single bit per component at its own position in the list would be wrong: it
   # made a multi-instance component impossible to isolate individually - and, worse, made every
   # instance's tile drive the SAME status bit, a driver conflict that only never appeared
   # because no NoC component declared 'isolate'. Bits are allocated cumulatively here so the

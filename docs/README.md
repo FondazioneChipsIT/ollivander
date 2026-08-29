@@ -11,11 +11,11 @@ Read in this order:
 | Guide | What it covers |
 | :--- | :--- |
 | [Getting Started](getting_started.md) | Integrating Ollivander as a submodule, the project Makefile, the environment bridge file, build modes, generation and simulation |
-| [SoC Configuration Guide](soc_configuration_guide.md) | **The authoritative reference** for the SoC description (YAML or Python): every accepted block and field, and — in section 6 — what each kind of mistake reports |
+| [SoC Configuration Guide](soc_configuration_guide.md) | **The authoritative reference** for the SoC description (YAML or Python): every accepted block and field, and — in chapter 7 — what each kind of mistake reports |
 | [Environment Configuration Guide](env_configuration_guide.md) | Paths, the centralized dependency registry, patches and pre-build commands, forced resolutions (`overrides`) and their escape hatches |
 | [Padframe Configuration Guide](padframe_configuration_guide.md) | Physical I/O ring and pinmux via Padrick: CSV, Python, or native YAML pad lists, technology catalogs, power domains |
 
-The seven projects under [`soc_cfg_examples/`](../soc_cfg_examples/) are working references for everything above — each has a README stating what it demonstrates, and together they form the generator's own regression suite.
+The nine projects under [`soc_cfg_examples/`](../soc_cfg_examples/) are working references for everything above — [their own README](../soc_cfg_examples/README.md) carries a comparison table and each project's role — and together they form the generator's own regression suite.
 
 ---
 
@@ -37,6 +37,8 @@ A component enters the generator through a standardized SystemVerilog wrapper. W
 | Resource | What it covers |
 | :--- | :--- |
 | [SystemVerilog Intermediate Representation](developer/intermediate_representation.md) | The SV-IR data model, its construction flow, and the static verification engine that runs before rendering |
+| [Debugging a Failure](developer/debugging_a_failure.md) | Which log answers which question, the pass criterion, and how to read a failing run before blaming the design |
+| [SV-IR vs CIRCT](developer/references/circt_vs_custom_ir_analysis.md) | The comparative analysis behind keeping the custom IR over LLVM's CIRCT, with the trade-off table |
 | [Future Evolution Tasks](developer/wip/future_evolution_tasks.md) | Planned work and open decisions — read it **before** proposing an architectural change: the work may already be planned there, with its trade-offs discussed |
 | [Astral Simulation Reference](developer/references/astral_simulation_reference.md) | How the Astral reference project simulates and verifies — testbench/VIP architecture, boot modes, test suite, scripts, CI. `developer/references/` hosts these analyses of the read-only reference trees |
 | [Gwaihir Simulation Reference](developer/references/gwaihir_simulation_reference.md) | The same analysis for the Gwaihir mesh SoC, closing with a side-by-side comparison of the two reference verification models |

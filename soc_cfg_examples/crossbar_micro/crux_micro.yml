@@ -1,7 +1,7 @@
 # ==============================================================================
 # OLLIVANDER UNIFIED SoC ARCHITECTURE SCHEMA - crux_micro CONFIGURATION
 # ==============================================================================
-# The fleet's AUTONOMOUS-BOOT witness (wave six, 2026-08-24): crux_mini minus
+# The fleet's AUTONOMOUS-BOOT witness: crux_mini minus
 # the debugger. The bootrom fetches the firmware BY ITSELF from an SPI NOR
 # flash model - GPT scan, load of the ZSL partition into the host's internal
 # scratchpad, jump - and the bench only preloads the device model and waits

@@ -1,3 +1,5 @@
+<%namespace file="/license_header.mako" import="license"/>\
+${license(prefix='//')}\
 /*
  * =============================================================================
  * OLLIVANDER AUTO-GENERATED OFFLOAD HELPERS
@@ -37,7 +39,7 @@ sys_regs_type = f"{top_level_module_name}_sys_regs_t"
 /* NO CLOCKED RESET WINDOW HERE, AND NONE IS NEEDED - the ORDER replaces it.
  *
  * Flip-flops with an asynchronous reset sampled synchronously need clock edges while reset is
- * still asserted before the release is safe. Until 2026-08-27 the firmware bought those edges
+ * still asserted before the release is safe. A clocked settling window would buy those edges
  * with a spin loop of 512 iterations (measured: 14 cycles each, 7168 host cycles, ~72 us at
  * 100 MHz) because it released the reset with the clock ALREADY RUNNING. The window was a
  * fleet-wide constant justified by "the slowest divided clock any gated domain runs at" - a

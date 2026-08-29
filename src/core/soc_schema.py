@@ -723,7 +723,7 @@ class SimulationVerilator(StrictModel):
     run: Optional[List[str]] = None       # raw args appended to the built executable
     keep_work: Optional[bool] = None      # default of VERILATOR_KEEP_WORK
     # No waveform subsection: under the hierarchical flow the dump needs a generated
-    # main that owns it (wip 5.5); exposing a flag here would ship a segfault.
+    # main that owns it; exposing a flag here would ship a segfault.
 
 class SimulationConfig(StrictModel):
     """
@@ -1128,18 +1128,17 @@ _COMPONENT_BLOCK_SPEC = {
 _ROOT_BLOCK_SPEC = {
     "testbench": {"boot_force_delay_ns": int, "boot_force_fast_delay_ns": int,
                   "boot_timeout_ns": int, "boot_timeout_fast_ns": int, "sim_timeout_ns": int,
-                  # How the testbench brings the SoC up and boots the host (wip 2.1):
+                  # How the testbench brings the SoC up and boots the host:
                   # 'force' (default) keeps the hierarchical forces; 'jtag' drives the
                   # architected bring-up through the debug module via vip_ollivander_soc.
                   "boot_mode": str,
-                  # How much of a gated SoC the testbench brings up (wip 5.4):
+                  # How much of a gated SoC the testbench brings up:
                   # 'all' (default) enables every managed domain and control
                   # group; 'minimal' enables only the boot-critical set and lets
                   # the firmware ungate the rest per phase. jtag boot only - the
                   # force path has no per-phase story.
                   "bring_up": str,
-                  # How the firmware image reaches the preload memories (wip 2.1,
-                  # second half): 'readmemh' (default) injects the split hex files
+                  # How the firmware image reaches the preload memories: 'readmemh' (default) injects the split hex files
                   # through hierarchical paths into the SRAM instances; 'jtag'
                   # streams the flat hex through the debug module's system bus
                   # access (vip_ollivander_soc.sba_load) - no dotted path survives,

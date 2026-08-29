@@ -1,3 +1,5 @@
+<%namespace file="/license_header.mako" import="license"/>\
+${license(prefix='#')}\
 <%
   # ============================================================================
   # MAKO TEMPLATE FOR THE SIMULATION MAKEFILE (QuestaSim + Verilator backends)
@@ -161,19 +163,18 @@ VERILATOR_WARN ?= -Wno-fatal -Wno-TIMESCALEMOD -Wno-ASCRANGE -Wno-SYMRSVDWORD -W
 # - hierarchical verilation is the only build mode: repeated tiles verilate once as child
 #   libraries (declared in the generated sim/verilator/$(TOP_MOD).vlt) and the monolithic build costs
 #   hours and tens of GB instead of minutes and ~3 GB per unit;
-# - --threads 4 cuts the run from 19m37s to 6m33s on mesh, UART and EOT unchanged. It was
-#   deliberately absent at first, on a measurement taken when nothing was actually
-#   boxed (see the .vlt note below): back then it inflated verilation, and the top was
-#   elaborating the whole design. Eight threads gave a further 29% only, not worth being
+# - --threads 4 cuts the run from 19m37s to 6m33s on mesh, UART and EOT unchanged. The
+#   measurement is only meaningful once blocks actually box (unboxed, threads merely
+#   inflate verilation). Eight threads gave a further 29% only, not worth being
 #   more sensitive to a shared machine's load, and peak memory was 3.5 GB at both.
 #   CAVEAT, and the reason VERILATOR_THREADS exists as a knob: the gain may be
 #   family-dependent. On crux the run went 9m03s at one thread to 10m15s at four, i.e.
 #   threads appear to COST there, which fits the structure - mesh spreads sixteen
 #   identical tiles, crux has eight mostly single-instance isles, and a boxed block is
-#   evaluated inline on the calling thread, so there is nothing to spread. Not
-#   established: that comparison also moved -O2 to -Os. The control measurement is crux
-#   with VERILATOR_THREADS=1 at -Os, deliberately deferred past this commit; if it
-#   confirms, this default becomes per-topology instead of global;
+#   evaluated inline on the calling thread, so there is nothing to spread. Confirmed
+#   by the control measurement (crux at one thread and -Os: 7m35s against 8m39s at
+#   four): the crossbar family declares threads=1 through the per-project 'simulation'
+#   section, the mesh family keeps this default of 4;
 # - -DVL_TIME_CONTEXT is a CORRECTNESS flag, needed whether or not threads are enabled.
 #   --main makes Verilator define it for the top and only the top (verified: with --main
 #   the generated .mk carries it, without --main it does not), while the boxed children
@@ -237,8 +238,7 @@ VERILATOR_EXTRA_FLAGS ?=
 # $(OBJCACHE) with '-include <prefix>__pch.h.<fast|slow>', and ccache 3.x mishandles that
 # combination: it serves objects compiled against a STALE precompiled header, the linked
 # model is allocated smaller than the class constructing it, and Vtb_* segfaults inside
-# the model constructor before printing a line (proven three times, last on 2026-08-28 -
-# a night went into blaming the RTL). Emptying the two -include variables takes the pch
+# the model constructor before printing a line (proven repeatedly on this host). Emptying the two -include variables takes the pch
 # off the compile lines; the .gch files are still built as prerequisites and simply never
 # used. Measured cost: nil (6m26s cold without pch against 6m43s with, wip 5.2.3).
 # ccache 4.x keeps the pch ON: its changelog cites pch-handling fixes, and repeated runs
@@ -504,7 +504,7 @@ prep-sim: update-hw
 	@# -timescale gives a DEFAULT to compilation units that declare none (the
 	@# warning-3009 class): without it Questa maps their delays to the simulator
 	@# resolution, and a "#(20ns/2)" clock generator or a "#TT" sampling delay
-	@# silently runs a thousand times too fast. Found the hard way in wip 2.1:
+	@# silently runs a thousand times too fast. The failure shape:
 	@# the JTAG VIP's TCK ran at 20 ps and the riscv-dbg jtag_test driver
 	@# sampled TDO at +15 ps, reading every DMI bit one cycle early. Units that
 	@# declare their own timescale are unaffected.
@@ -528,8 +528,8 @@ build-sim: prep-sim build-sw
 	@# summary of a run. vlog recompiles what it is given, but a module that the current
 	@# flist no longer lists stays in the library and stays visible to vopt, so a green run
 	@# can attest a design that is partly the previous one. That is the leading explanation
-	@# of the intermittent offload stall (wip 2.2): three failures in six runs, none
-	@# reproducible, all in a tree where the library predated the sources.
+	@# of an intermittent stall class since retired: a library predating the
+	@# sources validates a design that no longer exists.
 	@# QUESTA_KEEP_WORK=1 keeps it for targeted debug (an incremental recompile of one file
 	@# is minutes instead of an hour) - never for a run whose result will be reported.
 	@if [ "$(QUESTA_KEEP_WORK)" != "1" ]; then \
@@ -657,7 +657,7 @@ build-sim-verilator: prep-sim-verilator build-sw
 	@# Rebuilding from scratch costs little - the top re-verilates on any
 	@# change anyway and ccache absorbs the C++ of unchanged children (measured:
 	@# 1h25 warm vs 1h44 cold on comparable SoCs) - so between-build reuse stays
-	@# off until a reliable invalidation exists (wip 5.2). Hierarchical verilation
+	@# off until a reliable invalidation exists. Hierarchical verilation
 	@# WITHIN a build (repeated tiles verilate once) is untouched.
 	@# VERILATOR_KEEP_WORK=1 skips the wipe for targeted debug, at your own risk;
 	@# on that path the .build_ok stamp still catches interrupted builds.

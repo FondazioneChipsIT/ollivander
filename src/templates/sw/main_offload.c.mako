@@ -1,3 +1,5 @@
+<%namespace file="/license_header.mako" import="license"/>\
+${license(prefix='//')}\
 /*
  * =============================================================================
  * OLLIVANDER AUTO-GENERATED OFFLOAD TEST FIRMWARE
@@ -288,11 +290,11 @@ int main(void) {
      * that IS running never completes. The bench cannot express the difference, so the
      * phase would not be a witness there, only a hang: 8.4 ms of simulated silence on
      * noc_subtile until the testbench timeout, with no diagnostic possible because a hung
-     * AXI read has nothing to time out against (found 2026-08-28, this guard was missing). Everything above moves the whole group at once, which is why a control group
+     * AXI read has nothing to time out against (a hang, not a wrong result: the guard below exists for this). Everything above moves the whole group at once, which is why a control group
      * whose bit indices ALIASED went unnoticed for as long as it did: with one write covering
      * every bit, two instances sharing a bit behave exactly like two instances on their own.
      *
-     * This phase is the witness for that. Before the fix of 2026-08-27 the bit index was the
+     * This phase is the witness for that. Without the group-relative rule the bit index would be the
      * instance's position inside its own COMPONENT rather than inside the GROUP, so a second
      * component of one isle type restarted from bit 0 - and parking the last instance would
      * have parked the first as well. The first instance would then never answer, and this phase

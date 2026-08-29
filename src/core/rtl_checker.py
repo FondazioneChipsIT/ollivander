@@ -61,11 +61,9 @@ endmodule
 # reached: measured on noc, 86 errors, every one of them in axi_demux, cv32e40p_tracer, the
 # *_reg_top blocks and floo_nw_chimney. Those are filtered out of the report by ownership -
 # correctly, they are not ours to fix - but filtering happens AFTER the limit has been
-# consumed, so a genuine error in what we generate was never emitted at all. Found on
-# 2026-08-28: a declaration-order defect in the generated tile passed this check on the full
-# flist (86 errors, none ours) and was caught by the stubbed pass, where there is almost no
-# vendor code to spend the budget; with the limit lifted the same tree yields 2063 errors and
-# 96 of them are the real defect. An explicit large number rather than 0: slang documents 0 as
+# consumed, so a genuine error in what we generate is never emitted at all: measured on a
+# full flist, the default budget was spent entirely on vendor diagnostics (86 errors, none
+# ours) while lifting it exposed a real declaration-order defect in a generated tile. An explicit large number rather than 0: slang documents 0 as
 # "no limit", and a version reading it as "print none" would silently disable the check.
 # --allow-genblk-reference: the generated testbench preloads interleaved memories through
 # paths that cross an UNNAMED generate block inside the IP

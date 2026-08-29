@@ -43,7 +43,7 @@ def get_type_param_fill(p, comp, soc_config, pkg):
 
     Extracted verbatim from build_crossbar_ir's dispatch so that the
     isle-staging pass can ask the same question the instantiation site answers: the
-    hier-block work (wip 5.1) replaces `parameter type` in the staged isle copies
+    hier-block work replaces `parameter type` in the staged isle copies
     with a generated per-isle types package, and its typedefs must be exactly these
     fills. The answer is ROLE-based - host, behind the LLC port, or plain slave -
     which is a per-component property: the staging transform may therefore only
@@ -139,7 +139,7 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                 if slvs:
                     inst.parameters[p] = slvs[0].get('ports', 1)
             # TYPE parameters: filled by the shared role-based helper above, so the
-            # isle-staging pass (wip 5.1 hier-block work) computes the same answer.
+            # isle-staging pass computes the same answer.
             elif (type_fill := get_type_param_fill(p, comp, soc_config, pkg)) is not None:
                 inst.parameters[p] = type_fill
             elif p == 'MACRO_BASE_ADDR':
@@ -288,10 +288,9 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
         # Wiring matrix connections. A port that is BOTH an interrupt source and part of an
         # exported interface gets both roles honoured: the instance port drives the dedicated
         # 'intr_*' wire (the interrupt vector reads it), and the exported top-level signal is
-        # fed from that wire by a continuous assignment. Until 2026-08-28 the export simply
-        # WON: the matrix entry was skipped, the isle port went straight to the boundary, and
-        # the intr_ wire stayed undriven - the CAN event reached the pad and never the PLIC
-        # (found by SafeConnect; the watchdog, interrupt-only, always worked).
+        # fed from that wire by a continuous assignment. Letting the export win instead leaves
+        # the intr_ wire undriven - the routed line reaches the boundary and never the PLIC,
+        # while an interrupt-only port (no export) works either way.
         dual_role = {}
         exported_ports = ([c.split('(')[0].strip().strip('.') for c in comp_extra_conns[comp.name]]
                           if comp.name in comp_extra_conns else [])
@@ -308,7 +307,7 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                 # exported interface (section 3 of the wiring) and by an interrupt route
                 # (section 4). The interrupt takes the port - the vector reads its wire -
                 # and every exported destination is fed from that wire by an assignment.
-                # Before 2026-08-29 an undocumented dedupe let one silently win, and the
+                # Without this rule an undocumented dedupe lets one silently win, and the
                 # CAN event reached the pad but never the PLIC.
                 dual_role[p_name] = intr[0]
                 inst.connections.append(PortConnection(p_name, intr[0]))
@@ -532,7 +531,7 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 # parameter is enough: every opting-in component receives ITS OWN window, which
                 # is what the convention says, and a component whose instances differ in depth
                 # builds what it maps instead of mapping part of what it builds.
-                # AXI ISOLATION ON THE NoC. Until 2026-08-27 this was wired only in
+                # AXI ISOLATION ON THE NoC. Historically this was wired only in
                 # build_crossbar_ir, while the RDL template and the offload contract emitted
                 # the registers and the helpers for ANY topology: a NoC component declaring
                 # 'isolate' therefore got a register, a firmware helper and a documented

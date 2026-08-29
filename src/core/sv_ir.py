@@ -159,9 +159,9 @@ class SVArchitectureIR:
 
         # ------------------------------------------------------------------
         # 0. Every consumed interrupt wire must have a driver (SafeConnect
-        #    class guard, 2026-08-29). An 'intr_*' wire read by a vector or an
+        #    class guard). An 'intr_*' wire read by a vector or an
         #    input port but never driven elaborates perfectly and reads X (or 0
-        #    under two-state) forever: the CAN event spent months routed to a
+        #    under two-state) forever: a routed source can sit forever on a
         #    PLIC bit that could not fire, invisible to every simulator and to
         #    slang alike, because nothing here says a wire OUGHT to be driven -
         #    that knowledge lives in the description, so it is enforced here.
