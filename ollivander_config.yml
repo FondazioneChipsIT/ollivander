@@ -99,26 +99,22 @@ dependencies:
     rev: "06410c36819924e32db2afa428d244dbdbcd5d4e"
   axi_obi:
     git: "https://github.com/pulp-platform/axi_obi.git"
-    version: "0.1.0"
-    patches:
-      # Necessary for every SoC Ollivander generates, not a precaution: components/isles/sram_isle.sv
-      # sets RUserWidth to 0 in both OBI configurations, and the IP computes
-      # IdRuserWidth = ObiCfg.IdWidth + RUserWidth, so the two are always equal. The unguarded
-      # slice [IdRuserWidth-1:ObiCfg.IdWidth] then degenerates: vopt reports "Range of part-select
-      # [1:2] into 'rsp_ruser' [1:0] is reversed" and the design does not load. Verified by removing
-      # the patch, which fails the NoC simulation with 12 elaboration errors.
-      - file: "{bender_work}/axi_obi/src/axi_to_obi.sv"
-        search: "    assign rsp_read_ruser_o [i] = rsp_ruser[         i][IdRuserWidth-1:ObiCfg.IdWidth];"
-        replace: "    if (IdRuserWidth > ObiCfg.IdWidth) assign rsp_read_ruser_o [i] = rsp_ruser[         i][IdRuserWidth-1:ObiCfg.IdWidth];"
-      - file: "{bender_work}/axi_obi/src/axi_to_obi.sv"
-        search: "    assign rsp_write_ruser_o[i] = rsp_ruser[NumBanks+i][IdRuserWidth-1:ObiCfg.IdWidth];"
-        replace: "    if (IdRuserWidth > ObiCfg.IdWidth) assign rsp_write_ruser_o[i] = rsp_ruser[NumBanks+i][IdRuserWidth-1:ObiCfg.IdWidth];"
+    # Untagged pin (upstream cut no release after v0.1.0), taken past c30a2f5: with RUserWidth 0
+    # (both OBI configurations of sram_isle) the rsp_ruser slice used to degenerate into a
+    # reversed part-select and the design did not load - two registry patches guarded it here
+    # until 2026-08-29, when this bump made upstream's own guard reach us. The other commits the
+    # bump carries are hygiene fixes ($clog2 underflow, VCS and synthesis touch-ups).
+    rev: "205c9bb338df6955a0c4a300c5140d9ce413ec56"
   can_bus:
     git: "https://github.com/AlSaqr-platform/can_bus.git"
     rev: "0ec0bf8b7dab6d5e4b3f7ec58338a8efee066379"
   cheshire:
     git: "https://github.com/pulp-platform/cheshire.git"
-    rev: "55650af4adf63fa2f445c063983bb91e363b3ff1"
+    # Pinned at upstream PR #290 exactly: the apb_mask[slink] guard it lands (vopt-7045 with the
+    # serial link disabled, both topologies) was a registry patch here until 2026-08-29. The bump
+    # stops short of the CLINT SystemRDL migration (6234e9e), carrying only a Makefile target and
+    # an unconnected idma_wrap port besides the fix.
+    rev: "faa7d15287e1f491d38a7f1f77ca52210e6b77a7"
     rdl_include_dirs:
       - "hw"
       - "hw/regs"
@@ -141,15 +137,6 @@ dependencies:
       - "test -s {bender_work}/cheshire/target/sim/models/s25fs512s.v || wget --no-check-certificate https://freemodelfoundry.com/fmf_vlog_models/flash/s25fs512s.v -O {bender_work}/cheshire/target/sim/models/s25fs512s.v"
       - "test -s {bender_work}/cheshire/target/sim/models/24FC1025.v || (wget https://ww1.microchip.com/downloads/en/DeviceDoc/24xx1025_Verilog_Model.zip -O {bender_work}/cheshire/target/sim/models/24xx1025.zip && unzip -p {bender_work}/cheshire/target/sim/models/24xx1025.zip 24FC1025.v > {bender_work}/cheshire/target/sim/models/24FC1025.v && rm {bender_work}/cheshire/target/sim/models/24xx1025.zip)"
     patches:
-      # An upstream defect, worth a pull request: ret.slink is assigned only inside
-      # `if (cfg.SerialLink)`, yet ret.apb_mask[ret.slink] is set unconditionally. With the serial
-      # link disabled the index stays 0 and the mask of an unrelated peripheral is raised, which
-      # enables a generate block that then drives reg_out_rsp[0] a second time - vopt-7045, and the
-      # design does not load. Verified by removing this patch: both topologies fail identically. The
-      # guard changes nothing for a configuration that does enable the serial link.
-      - file: "{bender_work}/cheshire/hw/cheshire_pkg.sv"
-        search: "    ret.apb_mask[ret.slink] = 1'b1;"
-        replace: "    if (cfg.SerialLink) begin\\n      ret.apb_mask[ret.slink] = 1'b1;\\n    end"
       # The PeakRDL-generated register storage is an unpacked struct holding an unpacked array,
       # and Verilator's V3Force cannot build force infrastructure through unpacked composites
       # ("opaque force path selector ARRAYSEL", internal error): the testbench force on the boot
@@ -417,7 +404,8 @@ dependencies:
     # (present in no branch: rewritten away upstream), so the IP's own flow cannot
     # run as shipped. Re-pinned here to a live revision - explicitly, because an
     # unpinned clone would make every clean tree fetch a different generator.
-    # Upstream candidate: refresh riscv-opcodes.version.
+    # Upstream refreshed the version itself meanwhile (#119, past our pin, to another live
+    # revision): a future spatz bump retires this patch, and there is nothing left to file.
     patches:
       - file: "{bender_work}/spatz/sw/toolchain/riscv-opcodes.version"
         search: "4bb9eebfc2cb97bd4d27a43880c8fe684cee242e"
@@ -526,10 +514,10 @@ overrides:
   # requires it from git. Bender demands that a package be a path dependency everywhere or nowhere,
   # and refuses the mixed graph outright: "not declared as a path dependency everywhere".
   # axi_obi: safety_island ships its own copy under future/axi_obi and declares it with 'path:',
-  # while sram_isle requires the released v0.1.0 from git. The two never met before the super
-  # examples put both families in one graph. The forcing makes the released source win graph-wide;
-  # Bender still prints warning W09 for the vendored copy, and then ignores it.
-  axi_obi: { git: "https://github.com/pulp-platform/axi_obi.git", rev: "84f21a6524bedcf17a569a62ac01b8a5610819c8" }
+  # while sram_isle requires it from git at the catalogue's pinned rev. The two never met before
+  # the super examples put both families in one graph. The forcing makes the git source win
+  # graph-wide; Bender still prints warning W09 for the vendored copy, and then ignores it.
+  axi_obi: { git: "https://github.com/pulp-platform/axi_obi.git", rev: "205c9bb338df6955a0c4a300c5140d9ce413ec56" }
 
   # --- A branch requirement, which no released version can ever satisfy.
   # common_cells: axi requires branch 'multicast-xbar', snitch_cluster branch 'snitch', redmule exactly =1.38.0.

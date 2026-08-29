@@ -26,6 +26,47 @@ In file order, `tb_<top>.sv` contains:
 7.  **The test sequence** — one `initial` block: wait for power-on reset release, then the boot sequence of the project's `boot_mode` (section 4), then a long watchdog delay and `$finish`. The watchdog is the *failure* path: a passing run terminates earlier, from inside the VIP, when the firmware signals EOT (section 7). A `CUSTOM TEST STIMULI` marker inside this block is the intended place for user-written stimulus.
 8.  **A time beacon** — `[TB_TIME] Simulation time: ...` printed every 100 us of simulated time, so a hung run is distinguishable from a slow one by transcript alone.
 
+The block view, with the convention that matters: solid arrows are pins and task calls — the routes an external agent would have on real silicon — while dotted arrows are the simulation-only hierarchical paths, which exist only under `preload_mode: readmemh` and are what the architected modes eliminate.
+
+```mermaid
+flowchart LR
+    subgraph TBF["tb_&lt;top&gt;.sv — generated per project"]
+        SEQ["test sequence<br/>boot timeline + watchdog $finish"]
+        TIE["time-zero tie-offs<br/>straps, idle levels"]
+        PRE["preload block<br/>$readmemh, gated by tb_preload_go"]
+        MON["AXI monitors<br/>[TB_AXI_MON]"]
+        DEV["behavioral flash / EEPROM model<br/>(autonomous modes only)"]
+        subgraph VIP["i_vip — vip_ollivander_soc.sv, shared by every project"]
+            CLK["clock agent"]
+            RST["reset agent"]
+            URX["UART RX agent<br/>console + EOT detector (ETX 0x03)"]
+            JT["JTAG driver stack<br/>jtag_init, sba_write32, sba_load"]
+            SL["serial-link twin<br/>slink_write32, slink_load"]
+            UB["uart-boot agent<br/>uart_load, uart_boot_exec"]
+        end
+    end
+    subgraph DUT["SoC top (the DUT)"]
+        HOST["host"]
+        SYSC["system controller<br/>clk_en / reset / isolate"]
+        BMEM["boot memory"]
+        TGT["offload targets"]
+    end
+    SEQ --> VIP
+    TIE --> DUT
+    CLK --> DUT
+    RST --> DUT
+    JT -->|"JTAG pins"| HOST
+    SL -->|"serial-link DDR pins"| HOST
+    UB -->|"UART RX pin"| HOST
+    HOST -->|"UART TX pin"| URX
+    DEV <-->|"SPI / I2C pins"| HOST
+    HOST --- SYSC
+    HOST --- BMEM
+    HOST --- TGT
+    PRE -.->|"hierarchical path<br/>(readmemh only)"| BMEM
+    MON -.->|"dotted-path observation<br/>(readmemh only)"| BMEM
+```
+
 ## 3. The Verification IP and Its Agents
 
 *   **Clock agent** — generates the main clock and up to 64 additional generated clocks, all with pre-resolved periods. Runtime knob: `+fast_boot` only.
@@ -92,9 +133,9 @@ Every message is tagged, and the tags are stable interfaces — the regression s
 A run passes when **both** hold, and the suite (`make test-all`) checks exactly this on both simulators:
 
 1.  the transcript contains `[UART]:` output (the firmware ran and spoke), and
-2.  the transcript contains `[TB] EOT received. Simulation finished.` — the firmware's final byte was `0x04`, received over the real UART path.
+2.  the transcript contains `[TB] EOT received. Simulation finished.` — the firmware's final byte was ETX (`0x03`), received over the real UART path (deliberately not ASCII EOT `0x04`, which the uart debug-boot protocol uses as its own end-of-transmission byte; see section 3).
 
-The EOT byte is appended by the test application itself (it is the `\x04` at the end of its last message). A run that hangs instead hits the testbench watchdog, `$finish`es *without* the EOT line, and fails the criterion; the `[TB_TIME]` beacons and the last `[UART]:` line then localize where it stopped.
+The end-of-test byte is appended by the test application itself (it is the `\x03` at the end of its last message). A run that hangs instead hits the testbench watchdog, `$finish`es *without* the EOT line, and fails the criterion; the `[TB_TIME]` beacons and the last `[UART]:` line then localize where it stopped.
 
 ## 8. The Test Applications
 
