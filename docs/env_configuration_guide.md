@@ -89,6 +89,8 @@ Each key in the `dependencies` dictionary represents the name of the IP.
 
 Do not point `rev` at a branch name. A branch moves, so the build stops being reproducible; and a branch cannot satisfy the semantic-version ranges other IPs may express against the same package, which pushes the project into a forced resolution (section 4) for no reason. The catalogue shipped with Ollivander contains no branch references, deliberately: every entry is a released version where the IP publishes one, an explicit commit otherwise.
 
+**Changing a pinned `rev` takes effect on the next plain `make generate` — including for patched packages.** Bender never overwrites a checkout that carries local modifications, and a patched checkout is modified by construction, so a revision bump used to leave the old tree silently in place until a full clean. The generator now detects the mismatch per package (against the lock's recorded revision, or against the checkout's own git HEAD where the lock has degraded the package to a path dependency) and deletes exactly that checkout before re-resolving, announcing it: `[INFO] Re-materializing '<name>': declared rev changed (<old> -> <new>)`. The fresh checkout is fetched at the declared revision and the patches and pre-build commands re-apply on the pristine tree. Anything a developer parked by hand inside that `bender_work/<name>` goes with it — which is why the log line exists, and why experiments belong outside `bender_work/`. Unchanged declarations cost nothing: the fast `bender checkout` path is taken and no checkout is touched.
+
 ### 3.2 Compilation Targets (`bender_targets`)
 Some IPs contain multiple implementations (e.g., FPGA vs ASIC) or optional sub-modules. Bender uses targets (`-t`) to select the right source files.
 

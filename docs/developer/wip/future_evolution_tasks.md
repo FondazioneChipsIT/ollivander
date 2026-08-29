@@ -439,27 +439,6 @@ The second is available because the isles already do this for the other family: 
 
 So the work is composition, not invention: the tile takes TWO clocks (the network's and its domain's), instantiates the isle on the latter, uses the async branch towards the chimney, and the mesh's `clock_tree` starts declaring generators and per-tile domains the way `crux.yml` already does. The control registers come for free from the system controller. What needs real attention is the testbench: the memory backdoors and the AXI monitors reach into tiles that would now sit in another domain.
 
-### 3.12 Surgical Re-Materialization of Bumped Checkouts (approved 2026-08-29, next in queue)
-
-Bender never overwrites a dirty checkout, and a patched checkout is dirty by construction — so when the declared `rev` of a patched dependency changes, the staleness detection fires, `bender update` rewrites the lock, and the OLD tree survives in `bender_work` with the old patch still applied: generation reports SUCCESS against a state that no longer exists. Observed live on the cheshire `55650af` → `faa7d15` bump (2026-08-29 pre-flight): the checkout stayed at the old revision while the lock moved, and only `TEST_CLEAN=1` — as a requirement, not a caution — made the gate attest the new pins.
-
-The fix is the last mile of a detection that already works: in the `bender_lock_is_stale` branch of `src/ollivander.py` that finds a checkout whose git HEAD disagrees with the declared revision, DELETE that checkout (logging it loudly: "re-materializing <dep>: declared rev changed") before running `bender update`, so the update re-fetches it fresh at the new revision and the patches and pre-build commands re-apply on a pristine tree. Steady-state generates pay nothing; a bump re-fetches only the dependency being bumped.
-
-The rejected alternative, restoring every checkout to pristine (`git checkout -- .` + `git clean`) before every Bender call, is a blanket solution with a hidden per-generate cost: it reverts generated tracked outputs (the clustergen bootrom above all) and wipes untracked meta-generated RTL and downloaded simulation models, re-paying meta-generation on every run to protect against an event that happens a few times a year.
-
-#### Advantages
-*   **A pin bump becomes an ordinary generate**: no full clean, no clean gate as a prerequisite for trusting the result.
-*   **Closes the "gate validates a state that no longer exists" hole by construction** for dependency bumps — the class this wave hit.
-*   **Cost bounded to the bumped dependency**: its pre-build side effects (model downloads guarded by `test -s`, one meta-generation run) are the correct price, paid once per bump.
-
-#### Difficulties & Mitigation Strategies
-*   **The mismatch detection today covers Path-degraded lock entries via git HEAD, and Git-sourced entries via the lock's `revision` field.** The deletion must hang off BOTH branches, or a clean-but-stale checkout keeps relying on Bender's own willingness to move it.
-    *   *Mitigation*: delete in the same function that returns "stale", keyed by the specific dependency that tripped it, and verify Bender's dirty semantics (whether untracked files count) only matters for documentation — deletion sidesteps the question.
-*   **The `missing_paths` guard refuses to generate when the surviving lock records `Path` for a directory that is gone.** The deletion and the forced `bender update` must happen before that guard runs, in the same invocation.
-    *   *Mitigation*: the guard already runs after checkout/update; verify the ordering with the cheshire case replayed (pin it back and forth on a scratch project).
-*   **A deletion is destructive for local experiments a developer may have parked in `bender_work`.** By contract the directory is a build product (`make clean` removes it), but silence would still be hostile.
-    *   *Mitigation*: the loud log line above, naming the dependency and both revisions.
-
 ---
 
 ## 4. Input Validation: What Is Still Missing

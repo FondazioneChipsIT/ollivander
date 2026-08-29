@@ -679,17 +679,31 @@ def main():
     # any mismatch. Timestamps are useless here: Bender.yml is regenerated on every run, so its
     # mtime is always newer than the lock's.
     def bender_lock_is_stale(lock_path):
+        """Return (stale, refetch): whether the lock disagrees with the declared revisions, and
+        {name: (checkout_path, reason)} for every package whose mismatch is pinned to a specific
+        checkout. The caller DELETES those checkouts before 'bender update': Bender never
+        overwrites a checkout carrying local modifications (warning W06), and a patched checkout
+        is modified by construction - so on a revision bump the update would rewrite the lock
+        while the OLD tree silently survived in bender_work, and the run would validate a state
+        that no longer exists (seen live on the cheshire 55650af -> faa7d15 bump, 2026-08-29: the
+        gate needed TEST_CLEAN=1 as a requirement, not a caution). Re-materializing only the
+        mismatched checkout keeps the steady state free and bounds a bump's cost to the
+        dependency being bumped (user-facing behaviour: env_configuration_guide.md, section 3.1).
+        """
+        refetch = {}
+        work_root = env.bender_dir / "bender_work"
         try:
             locked = (yaml.safe_load(lock_path.read_text(encoding="utf-8")) or {}).get("packages", {}) or {}
         except Exception:
-            return True  # An unreadable lock is not worth trusting.
+            return True, refetch  # An unreadable lock is not worth trusting.
         try:
             manifest_deps = (yaml.safe_load(env.bender_manifest_path.read_text(encoding="utf-8")) or {}).get("dependencies", {}) or {}
         except (OSError, yaml.YAMLError):
             # The manifest was written by this very run, so failing to read it back means something
             # is badly wrong. Carrying on with an empty declaration set would compare the lock
             # against nothing and pronounce it valid, which is the one answer that cannot be right.
-            return True
+            return True, refetch
+        stale = False
         declared = dict(manifest_deps)
         declared.update(overrides)  # An override wins over the manifest, exactly as in Bender.
         for name, spec in declared.items():
@@ -702,35 +716,59 @@ def main():
                 # is the normal case, not a disagreement. A dependency the manifest actually
                 # declares is another matter: if the lock does not carry it, the lock is behind.
                 if name in manifest_deps:
-                    return True
+                    stale = True
                 continue
             source = entry.get("source", {}) or {}
             rev = str(spec.get("rev", ""))
             if "Path" in source:
                 # Bender degraded this package to a path dependency because its checkout is not in
                 # a clean state (warning W06) - which is the expected consequence of patching it,
-                # since a patch modifies tracked files. The lock entry then carries neither a Git
+                # since a patch modifies tracked files (untracked pre-build artifacts, like the
+                # downloaded boot-device models, do NOT trigger the degradation - verified on the
+                # 2026-08-29 replays). The lock entry then carries neither a Git
                 # source nor a revision, so comparing the declaration against those nulls reports
                 # the lock stale on *every* run and re-resolves the whole graph each time: minutes
                 # per project, for a state we created on purpose. Ask git instead, which still
                 # knows the revision the checkout was fetched at, so a genuine revision bump on a
                 # patched IP is still detected.
                 if re.fullmatch(r"[0-9a-f]{40}", rev):
-                    head = subprocess.run(["git", "-C", str(env.bender_dir / source["Path"]),
+                    checkout = env.bender_dir / source["Path"]
+                    head = subprocess.run(["git", "-C", str(checkout),
                                            "rev-parse", "HEAD"], capture_output=True, text=True)
                     if head.returncode == 0 and head.stdout.strip() != rev:
-                        return True
+                        stale = True
+                        refetch[name] = (checkout, f"declared rev changed ({head.stdout.strip()[:10]} -> {rev[:10]})")
                 continue
             if spec.get("git") and source.get("Git") != spec["git"]:
-                return True
+                stale = True
+                refetch[name] = (work_root / name, f"git URL changed ({source.get('Git')} -> {spec['git']})")
+                continue
             # Only an explicit commit can be compared: a branch or tag name is a moving target
             # by definition, and the lock legitimately freezes it to whatever it pointed at.
             # Semantic-version constraints resolve to a revision that cannot be predicted here.
             if re.fullmatch(r"[0-9a-f]{40}", rev) and entry.get("revision") != rev:
-                return True
-        return False
+                stale = True
+                refetch[name] = (work_root / name, f"declared rev changed ({str(entry.get('revision'))[:10]} -> {rev[:10]})")
+        return stale, refetch
 
-    lock_is_stale = lock_file.is_file() and bender_lock_is_stale(lock_file)
+    lock_is_stale, stale_checkouts = bender_lock_is_stale(lock_file) if lock_file.is_file() else (False, {})
+    # Re-materialize every checkout whose declaration moved: deleted here, BEFORE 'bender
+    # update', so the update fetches it fresh at the new revision and the patches and pre-build
+    # commands re-apply on a pristine tree (Phase 4b runs after this). The deletion is loud on
+    # purpose: bender_work is a build product by contract, but a developer's parked experiment
+    # must never vanish without a line naming what went and why.
+    work_root = (env.bender_dir / "bender_work").resolve()
+    for name, (checkout, reason) in stale_checkouts.items():
+        checkout = checkout.resolve()
+        if not checkout.is_dir() or work_root not in checkout.parents:
+            continue  # Nothing on disk to refresh, or a path outside the workspace: never delete those.
+        print(f"  [INFO] Re-materializing '{name}': {reason}; removing {checkout} so Bender fetches it fresh.")
+        try:
+            shutil.rmtree(checkout)
+        except OSError as e:
+            # Leave the rest to 'bender update': a half-removed checkout is not clean either, so
+            # at worst the next run reports this same mismatch again, loudly.
+            print(f"[WARNING] Could not remove '{checkout}': {e}")
     try:
         if lock_file.is_file() and not lock_is_stale:
             try:
