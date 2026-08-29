@@ -334,10 +334,6 @@ The wave planned on 2026-08-27 is done and the behaviour it produced is document
 
 **3. The inbound fence does not exist, and is deliberately not `isolate`.** Isolation is outbound in every RTL instance we have, ours and the references': it protects the network from the block. Nothing stops a transaction *arriving* at a block that is gated, and not addressing a parked block is therefore a firmware responsibility (the generated phases never touch a target they have parked). Should the protection ever be wanted, the shape is a tile-level cell on the always-on clock with `TerminateTransaction`, and it is a **new function needing its own name** — widening `isolate` to mean both directions would make the existing flag ambiguous in every project that already sets it.
 
-#### Interrupt sources constant-driven inside hand-written isles: detection stays open (2026-08-29)
-
-The SafeConnect wave closed the interrupt class with two generation-time checks (guide section 7.9): every consumed `intr_*` wire must have a driver, and indices into `intr_ext_o` are bounds-checked with the target count derived from the routing. What remains open is the third shape: a routed source whose driver inside a **hand-written isle** is a constant (`assign ecc_error_o = '0` in `l2_isle.sv`, inherited verbatim from astral's `l2_wrap.sv:204`, kept by decision - reference parity). Detecting it means scanning the isle's own SV for constant drivers of routed ports (pyslang makes this cheap) and WARNING - not refusing, since the fleet deliberately ships one such case. Worth doing when a second case appears; the ECC one is documented and known.
-
 #### The memory isles name the same things differently (censused 2026-08-27)
 
 **Observation from the user, and the census confirms it**: across the three memory isles, three roles carry two names each, while the one role that HAS a convention is uniform everywhere.
