@@ -74,6 +74,22 @@ Defines the global interconnect architecture. Determines which templates are use
 *   `routing_algorithm`: String (e.g., `"XY"`).
 *   `networks`: Dictionary defining parallel physical networks (e.g., `narrow`, `wide`), each with `data_width` and `addr_width`. Both a `narrow` and a `wide` network are required: that is what the generator always emits, and omitting or misspelling one is refused rather than absorbed.
 *   `default_tile`: String representing the fallback router (e.g., `"dummy_tile"`).
+*   `collectives`: Object, optional. The schema-exposed half of FlooNoC's collective feature set — see below.
+
+**Collectives (`noc_settings.collectives`)**
+
+FlooNoC's reduction channels are declared here, symmetrically and per channel: `narrow_reduction` carries integer ALU operations on the narrow routers, `wide_reduction` floating-point operations on the wide ones. Each channel takes `enable` (Boolean, **default false** for both — a NoC carries exactly the reduction hardware its description asks for), `rd_pipeline_depth` (default 5) and `cut_offload_intf` (default true). The two channels are independent: enabling one does not require the other.
+
+```yaml
+    collectives:
+      wide_reduction: { enable: true, rd_pipeline_depth: 5, cut_offload_intf: true }
+```
+
+The depth and cut defaults mirror the FlooNoC RTL's own `RedDefaultCfg`, and the generator always writes both values into the FlooGen configuration explicitly. This is deliberate: FlooGen's model defaults (depth 0, no cut) disagree with the RTL's, so a bare `en_*_reduction: true` handed to FlooGen would build a combinational reduction path where the RTL's default is pipelined and cut. Through Ollivander, neither party's "default" is ever relied upon.
+
+Multicast (`en_narrow_multicast`, `en_wide_multicast`) and the hardware barrier (`en_barrier`) are currently constants of the emission, always on; a component opts into being a multicast target through its `features: { multicast_target: true }` declaration.
+
+Enabling `narrow_reduction` has consequences beyond the routers: every tile gains FlooNoC's integer offload ALU (`floo_alu_top`, 32-bit operations — the IP's current limit), and the multicast group's tiles gain a generated *collective stamper* between isle and chimney. No CPU store can drive per-transaction AXI user bits, so the stamper is how software issues a collective: writes to the group's contract-declared collect/barrier slots (instance 0's, see the component standardization, section 8.1) are stamped `IntAdd` / `LsbAnd` with the group's member mask, everything else passes through untouched, and the SoC-wide user width never changes. The group's instances must form a power-of-two aligned box: FlooNoC's member mask is a coordinate wildcard, and a set it cannot express exactly is refused at generation. The FP (wide) reduction set stays confined to the compute tiles, the only place an FPU backs the offload interface.
 
 **Network ID width (`networks.<name>.id_width`)**
 

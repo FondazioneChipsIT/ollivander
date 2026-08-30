@@ -85,6 +85,26 @@ module cluster_subtile
   localparam int unsigned OffloadLocalBase  = 'h1800_0000,
   localparam int unsigned OffloadReturnOffs = 'h0001_FF00,
   localparam int unsigned OffloadStackOffs  = 'h0001_F000,
+  // Collective slots, at the very top of the TCDM above the return slots
+  // (returns end at ReturnOffs + NumCores*4 = 'h1_FF24). These are the baked
+  // DESTINATIONS of the narrow-reduction test: every member instance writes its
+  // result GLOBALLY to instance 0's collect slot (the stamper window marks the
+  // write IntAdd with the group mask, the network reduces the W payloads) and
+  // its presence to the barrier slot (LsbAnd). Instance 0's address is the one
+  // that matters: a reduction's member mask only converts to coordinates
+  // through the SAM rule of its DESTINATION, so the destination must live
+  // inside the collective group's own address region.
+  localparam int unsigned OffloadCollectOffs = 'h0001_FFF8,
+  localparam int unsigned OffloadBarrierOffs = 'h0001_FFFC,
+  // The alias base the PAYLOAD writes the collective slots through. A member's
+  // contribution must always leave its cluster - the destination instance's
+  // router expects it back on the local port (expected_in_route_loopback) - but
+  // snitch's internal decode serves the cluster's own global range in the TCDM
+  // without ever exiting. The alias is a range that decode does NOT claim, so
+  // the write is forwarded out; the tile's stamper then rewrites it to the real
+  // slot address (and stamps it) BEFORE the chimney, so the alias never reaches
+  // the NoC and the SoC map never learns it exists.
+  localparam int unsigned OffloadCollAliasBase = 'h3800_0000,
   localparam int unsigned OffloadNumCores   = 9,
   // Snitch executes rv32imafd; the payload keeps the conservative integer subset.
   localparam string       OffloadIsa        = "rv32im_zicsr",

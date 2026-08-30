@@ -88,6 +88,13 @@ else:
         # single-source comment); the host firmware checks it per-core, exactly.
         f'-DOFFLOAD_SECONDARY_CODE={hex(offload_secondary_code)}',
     ]
+    if t.get("collective_test"):
+        # Global addresses of instance 0's stamped windows: writing them makes
+        # the network reduce (IntAdd) or barrier (LsbAnd) across the group.
+        specific += [
+            f'-DOFFLOAD_COLLECT_ADDR={hex(t["coll_alias_base"] + t["collect_offs"])}',
+            f'-DOFFLOAD_BARRIER_ADDR={hex(t["coll_alias_base"] + t["barrier_offs"])}',
+        ]
 payload_defines = " ".join(common + specific)
 %>\
 # Target '${t_name}': ${t["isa"]}/${t["abi"]}, registers via the '${t["contract"]}' contract.

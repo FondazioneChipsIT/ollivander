@@ -80,6 +80,25 @@ int main(void) {
     /* One store closes the protocol: result in the upper bits, done in bit 0. */
     slots[idx] = (value << 1) | 1u;
 
+#ifdef OFFLOAD_COLLECT_ADDR
+    /* Narrow-reduction collect: every instance's core 0 writes its RAW result
+     * to instance 0's collect slot. The write hits the tile's stamped window
+     * (IntAdd plus the group mask), the network merges the group's W payloads
+     * and the B response returns only once the whole group has written - the
+     * store itself is the rendezvous. The barrier slot exercises LsbAnd the
+     * same way. Both come AFTER the slot store above, so the per-core
+     * verification never depends on the collective machinery. */
+    if (idx == 0) {
+        /* Both collective stores are PARKED: no transport completes at the
+         * pinned FlooNoC (design-level - +acc does not heal it), and a
+         * collective store parks this core on its B response. Re-enable both
+         * when upstream matures (single switch in resolve_offload_targets).
+         * *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_ADDR = value;
+         * *(volatile uint32_t *)(uintptr_t)OFFLOAD_BARRIER_ADDR = 1u; */
+        (void)0;
+    }
+#endif
+
     while (1) {
         __asm__ volatile("wfi");
     }

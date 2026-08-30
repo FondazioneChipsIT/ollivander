@@ -190,13 +190,29 @@ network_type: "narrow-wide"
 routing:
   route_algo: "${config.topology.noc_settings.routing_algorithm}"
   use_id_table: true
+<%
+  ## The reduction pair comes from the schema (noc_settings.collectives) and is emitted only
+  ## when the description enables it; multicast and barrier remain constants of the emission
+  ## for now (wip 3.6). Depth and cut are ALWAYS written out explicitly: floogen's model
+  ## defaults (0 / false) disagree with the RTL's RedDefaultCfg (5 / true), so a bare
+  ## 'en_*_reduction: true' would build the worse of two "defaults" depending on who fills
+  ## it in (upstream_pr_candidates.md).
+  colls = config.topology.noc_settings.collectives
+%>\
   collective:
     en_narrow_multicast: true
     en_wide_multicast: true
     en_barrier: true
+% if colls.narrow_reduction.enable:
+    en_narrow_reduction:
+      rd_pipeline_depth: ${colls.narrow_reduction.rd_pipeline_depth}
+      cut_offload_intf: ${str(colls.narrow_reduction.cut_offload_intf).lower()}
+% endif
+% if colls.wide_reduction.enable:
     en_wide_reduction:
-      rd_pipeline_depth: 5
-      cut_offload_intf: true
+      rd_pipeline_depth: ${colls.wide_reduction.rd_pipeline_depth}
+      cut_offload_intf: ${str(colls.wide_reduction.cut_offload_intf).lower()}
+% endif
   decouple_rw: Phys
   vc_impl: naive
 

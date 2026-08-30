@@ -8,6 +8,7 @@
 
 from core.soc_schema import (
     OllivanderConfig, Project, Topology, NoCSettings, NoCNetwork,
+    NoCCollectives, NoCReductionChannel,
     SystemSettings, UserMapping, LlcMicroarch, RegBusMicroarch,
     ClockTree, ClockDomain, SystemController, AutoControlGroup,
     ExternalRegister, Component
@@ -61,7 +62,13 @@ config = OllivanderConfig(
                 "narrow": NoCNetwork(data_width=64, addr_width=48),
                 "wide": NoCNetwork(data_width=512, addr_width=48)
             },
-            default_tile="dummy_tile"
+            default_tile="dummy_tile",
+            # Same declaration as the YAML family (see mesh.yml for the full rationale):
+            # the schema defaults both reduction channels off, and the wide one is
+            # declared explicitly with the RTL's own RedDefaultCfg values.
+            collectives=NoCCollectives(
+                wide_reduction=NoCReductionChannel(enable=True, rd_pipeline_depth=5, cut_offload_intf=True),
+            )
         )
     ),
     

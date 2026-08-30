@@ -157,6 +157,34 @@ class NoCNetwork(StrictModel):
     # unreachable - and silently gave the wide network 4 where FlooNoC uses 3.
     id_width: Optional[int] = None
 
+class NoCReductionChannel(StrictModel):
+    """
+    One reduction channel of FlooNoC's collective set: integer ALU operations on
+    the narrow router, floating-point operations on the wide one. Disabled unless
+    the description declares it - the two channels are exposed symmetrically, both
+    default off (symmetric defaults by user decision, 2026-08-29), and each one is
+    enabled independently: a NoC carries exactly the reduction hardware its
+    description asks for, on whichever channels it asks.
+    """
+    enable: bool = False
+    # These defaults mirror the RTL's own RedDefaultCfg (floo_pkg.sv: depth 5,
+    # cut), NOT floogen's model defaults (depth 0, no cut): the two disagree on
+    # what "default" means, and the generator's is the worse hardware - a
+    # combinational reduction path where the RTL's default is pipelined and cut
+    # (recorded in upstream_pr_candidates.md). The emission always writes both
+    # values out explicitly, so neither party's default is ever relied upon.
+    rd_pipeline_depth: int = 5
+    cut_offload_intf: bool = True
+
+class NoCCollectives(StrictModel):
+    """
+    The schema-exposed half of FlooNoC's collective feature set. Multicast and
+    barrier remain constants of the emission for now (wip 3.6): they join here
+    when the functional-test wave exercises them.
+    """
+    narrow_reduction: NoCReductionChannel = Field(default_factory=NoCReductionChannel)
+    wide_reduction: NoCReductionChannel = Field(default_factory=NoCReductionChannel)
+
 class NoCSettings(StrictModel):
     """
     Configuration for Network-on-Chip (NoC) topologies (e.g., FlooNoC).
@@ -166,6 +194,7 @@ class NoCSettings(StrictModel):
     routing_algorithm: str
     networks: Dict[str, NoCNetwork]
     default_tile: str
+    collectives: NoCCollectives = Field(default_factory=NoCCollectives)
 
 class Topology(StrictModel):
     """Defines the main architectural interconnect style of the SoC."""
@@ -1751,6 +1780,30 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
             stride = slaves[0].get("size_per_instance", 0)
             contract["num_instances"] = max(1, num_inst)
             contract["instance_stride"] = int(stride, 0) if isinstance(stride, str) else int(stride)
+            # The collective (narrow-reduction) test rides this contract when the
+            # description enables the narrow channel and this component is the
+            # multicast group: the tile emission stamps writes to the contract's
+            # collect/barrier slots (see universal_tile.sv.mako), and the firmware
+            # exercises them. Everything here mirrors that emission's condition.
+            noc = config.topology.noc_settings if config.topology.type == "noc" else None
+            contract["collective_test"] = bool(
+                noc is not None
+                and noc.collectives.narrow_reduction.enable
+                and (comp.features or {}).get("multicast_target")
+                and contract.get("collect_offs") is not None
+                and contract.get("barrier_offs") is not None
+                and contract["num_instances"] > 1
+                # PARKED (2026-08-30): no collective transport completes at the
+                # pinned FlooNoC - sequential reductions contradict their own
+                # routing's fold topology (and +acc does NOT heal it: identical
+                # ReductionFrom2MoreInputs asserts under full visibility, so it
+                # is design-level, not a Questa-optimization artifact) and the
+                # parallel barrier never delivers a multi-member result
+                # (upstream_pr_candidates.md). A collective store parks the
+                # writing core on its B response, so the firmware must not
+                # issue any until upstream matures. Flip this literal to
+                # re-enable the whole phase.
+                and False)
             candidates[comp.name] = contract
 
     requested = (config.software_stack or {}).get("test_app", {}).get("offload_targets")

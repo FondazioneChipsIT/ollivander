@@ -211,6 +211,9 @@ int main(void) {
      * so all clusters of the array run the payload concurrently. */
     for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
         ${t_name}_init_returns(n);
+% if t.get("collective_test"):
+        if (n == 0) ${t_name}_init_collective();
+% endif
         ${t_name}_set_entry(n, OFFLOAD_PAYLOAD_BASE);
     }
     for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
@@ -261,6 +264,27 @@ int main(void) {
                 }
             }
         }
+% if t.get("collective_test"):
+<%
+  # The reduced sum, derived INDEPENDENTLY of the payload from the same two
+  # constants it is compiled with - the collective twin of 'expected' above.
+  exp_sum = (t["num_instances"] * expected) & 0xFFFFFFFF
+%>\
+        /* Collective phase: the group's core-0 stores were stamped IntAdd and
+         * LsbAnd by the tile windows; the network merged them into instance
+         * 0's slots. Sum and barrier are checked against generator-derived
+         * values, so a lost member, a ghost member or a wrong merge can never
+         * pass by accident. */
+        if (${t_name}_wait_collective(${hex(exp_sum)}u) != 0) {
+            print_str("[COLLECTIVE] ${t_name} collect=");
+            print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_COLLECT_ADDR);
+            print_str(" (expected ${hex(exp_sum)}) barrier=");
+            print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_BARRIER_ADDR);
+            print_str(" (expected 0x1)\n");
+            offload_fail("${t_name}", "collective reduction/barrier");
+        }
+        print_str("[COLLECTIVE] ${t_name} IntAdd sum + LsbAnd barrier PASS\n");
+% endif
         print_str("[OFFLOAD] ${t_name} PASS (");
         print_hex(${t_name.upper()}_OFFLOAD_NUM_INSTANCES);
         print_str(" instances, ret=");
@@ -328,6 +352,9 @@ int main(void) {
     }
 % endif
     ${t_name}_init_returns(0);
+% if t.get("collective_test"):
+    ${t_name}_init_collective();
+% endif
 % if t["contract"] == "memory_mapped":
     ${t_name}_set_entry(0, OFFLOAD_PAYLOAD_BASE);
     ${t_name}_start(0);

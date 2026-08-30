@@ -62,9 +62,19 @@
 
   use_join = has_slave and has_slave_narrow and has_slave_wide and noc_mode.startswith("joined")
   
-  # Determine RouteCfg based on multicast feature, using explicit scopes
+  # Determine RouteCfg based on multicast feature, using explicit scopes.
+  # NOTE the split of axes (wip 3.6.1, settled 2026-08-30): use_mcast is an ENDPOINT
+  # property (this tile's chimney can inject/receive collective transactions) and keeps
+  # gating the chimney below; the ROUTER's collective capability is a property of the
+  # NETWORK - a router without it ignores the replication mask in transit ("No MCast
+  # supported" in floo_route_select) and wormhole-parks the flit - so every router
+  # receives the emitted CollectiveCfg, with only the FP reduction set following the
+  # component (the FPU behind the wide offload exists only where has_offload).
   use_mcast = comp.features and comp.features.get('multicast_target')
   route_cfg = "RouteCfg" if use_mcast else "RouteCfgNoMcast"
+  colls = config.topology.noc_settings.collectives
+  narrow_red_on = colls.narrow_reduction.enable
+
   
   # Determine the underlying IP to instantiate (restoring the original _subtile or _isle suffix)
   _orig_type = context.get('original_type', c_type.replace('_tile', '_isle'))
@@ -394,6 +404,84 @@
       return str(p_val)
       
   has_offload = 'offload_wide_req_i' in known_ports
+
+  # Collective-injection stamper (the narrow-reduction test): only the collective
+  # group's own tiles inject - the reduction is write-side (members write, the
+  # network merges the W payloads, the host later reads the single result), and
+  # the member mask only converts to coordinates through the SAM rule of the
+  # DESTINATION, so the destination lives inside the group's own region: the
+  # collect/barrier slots of instance 0, at the contract offsets the isle declares.
+  stamper_on = False
+  stamper_windows = []
+  if narrow_red_on and use_mcast and has_offload and isle_info:
+      _fx = isle_info.get("fixed_params", {})
+      _coff = _fx.get("OffloadCollectOffs")
+      _boff = _fx.get("OffloadBarrierOffs")
+      _slv = (comp.interfaces or {}).get("axi_slave")
+      _slv = _slv[0] if isinstance(_slv, list) else _slv
+      _bases = _slv.get("base_addr") if _slv else None
+      # Per-instance bases come in both schema forms: an explicit list, or a
+      # scalar base plus size_per_instance repeated over the placement box.
+      _bi = None
+      if isinstance(_bases, list):
+          _bi = [int(str(_b), 0) for _b in _bases]
+      elif _bases is not None and _slv.get("size_per_instance"):
+          # placement is schema free-form (a dict): one or more logical boxes,
+          # each expanding into one instance per grid cell.
+          _pl = comp.placement if isinstance(comp.placement, dict) else {}
+          _logical = _pl.get("logical")
+          _items = _logical if isinstance(_logical, list) else ([_logical] if _logical else [])
+          _n = 0
+          for _it in _items:
+              _bx = _it.get("box") if isinstance(_it, dict) else None
+              if _bx:
+                  _n += (_bx["x_end"] - _bx["x_start"] + 1) * (_bx["y_end"] - _bx["y_start"] + 1)
+          if _n > 1:
+              _b0 = int(str(_bases), 0)
+              _stride = int(str(_slv["size_per_instance"]), 0)
+              _bi = [_b0 + _i * _stride for _i in range(_n)]
+      if _coff is not None and _boff is not None and _bi is not None and len(_bi) > 1:
+          _mask = 0
+          for _b in _bi:
+              _mask |= _b ^ _bi[0]
+          # FlooNoC's collective mask is a wildcard: it spans exactly
+          # 2^popcount(mask) members. An instance set that is not a power-of-two,
+          # stride-aligned box would silently include ghost members in every
+          # reduction, so it is refused here, at generation.
+          if len(_bi) != (1 << bin(_mask).count("1")):
+              raise ValueError(
+                  f"[COLLECTIVE] component '{comp.name}': its {len(_bi)} instance bases do not form "
+                  f"a wildcard-expressible group (mask 0x{_mask:x} spans {1 << bin(_mask).count('1')} "
+                  f"members). Re-place the instances on a power-of-two aligned box, or disable the "
+                  f"narrow reduction.")
+          _c0 = min(_bi)
+          _coff_i = int(str(_coff), 0)
+          _boff_i = int(str(_boff), 0)
+          # The windows sit on the isle-declared ALIAS base: a member's write
+          # must always exit its cluster (the destination's router expects the
+          # local contribution on its loopback port), and the alias is the range
+          # the isle's internal decode forwards out. The stamper rewrites each
+          # matched address to the real slot (dest) before the chimney routes.
+          _alias = int(str(_fx.get("OffloadCollAliasBase")), 0)
+          # Value-carrying (sequential) reductions merge exactly TWO inputs per
+          # router in FlooNoC - the tree must be binary - so the IntAdd window's
+          # member set is a two-instance SUBGROUP whose row-merge is the whole
+          # tree: the two highest-x instances of the bottom row, with the
+          # destination (instance 0) outside their column span. The barrier is
+          # a PARALLEL op (n-ary by design) and keeps the full group.
+          _sub_mask = _mask              # the full group: every instance a member
+          _sub_base = _bi[0]
+          # {op, alias base, alias last, member group base, member mask,
+          #  absolute dest (instance 0's slot), slot offset (non-member fallback)}
+          stamper_windows = [
+              ("IntAdd", _alias + _coff_i, _alias + _coff_i + 3, _sub_base, _sub_mask, _c0 + _coff_i, _coff_i),
+              ("LsbAnd", _alias + _boff_i, _alias + _boff_i + 3, _c0,       _mask,     _c0 + _boff_i, _boff_i),
+          ]
+          stamper_on = True
+  # The plain (SoC-wide) user width, to rebuild {mask, op, user} at the chimney.
+  _um = config.system_settings.user_mapping
+  plain_user_w = max(_um.amo_msb, _um.ecc_err_bit) + 1
+  narrow_addr_w = config.topology.noc_settings.networks['narrow'].addr_width
           
 %><%namespace file="/license_header.mako" import="license"/>\
 ${license()}\
@@ -620,15 +708,47 @@ module ${p_name}_${c_type}
   ${noc_pkg}::red_wide_req_t offload_wide_req_out;
   ${noc_pkg}::red_wide_rsp_t offload_wide_rsp_in;
 % endif
+% if narrow_red_on:
+  ${noc_pkg}::red_narrow_req_t offload_narrow_req_out;
+  ${noc_pkg}::red_narrow_rsp_t offload_narrow_rsp_in;
+% endif
+
+% if has_offload:
+  // This tile hosts the wide offload consumer (the cluster's FPU behind the DCA
+  // adapter below), so its router carries the full emitted collective set.
+  localparam floo_pkg::collective_cfg_t TileCollectiveCfg = ${noc_pkg}::RouteCfg.CollectiveCfg;
+% else:
+  // Every router transits collective flits, so every router gets the emitted
+  // configuration - but reduction COMPUTES at each merging router of the tree,
+  // and this tile has no FPU behind the wide offload: the FP set is masked off
+  // here, and the generator refuses wide reduction masks whose trees would
+  // merge outside the compute region. The integer set stays: its offload unit
+  // (floo_alu_top, below) is small enough to live in every tile.
+  localparam floo_pkg::collective_cfg_t TileCollectiveCfg = '{
+      OpCfg: '{
+          EnNarrowMulticast: ${noc_pkg}::RouteCfg.CollectiveCfg.OpCfg.EnNarrowMulticast,
+          EnWideMulticast:   ${noc_pkg}::RouteCfg.CollectiveCfg.OpCfg.EnWideMulticast,
+          EnLsbAnd:          ${noc_pkg}::RouteCfg.CollectiveCfg.OpCfg.EnLsbAnd,
+          EnFpAdd:           1'b0,
+          EnFpMul:           1'b0,
+          EnFpMin:           1'b0,
+          EnFpMax:           1'b0,
+          EnIntAdd:          ${noc_pkg}::RouteCfg.CollectiveCfg.OpCfg.EnIntAdd,
+          EnIntMul:          ${noc_pkg}::RouteCfg.CollectiveCfg.OpCfg.EnIntMul,
+          EnIntMinS:         ${noc_pkg}::RouteCfg.CollectiveCfg.OpCfg.EnIntMinS,
+          EnIntMinU:         ${noc_pkg}::RouteCfg.CollectiveCfg.OpCfg.EnIntMinU,
+          EnIntMaxS:         ${noc_pkg}::RouteCfg.CollectiveCfg.OpCfg.EnIntMaxS,
+          EnIntMaxU:         ${noc_pkg}::RouteCfg.CollectiveCfg.OpCfg.EnIntMaxU
+      },
+      NarrRedCfg: ${noc_pkg}::RouteCfg.CollectiveCfg.NarrRedCfg,
+      WideRedCfg: ${noc_pkg}::RouteCfg.CollectiveCfg.WideRedCfg
+  };
+% endif
 
   floo_nw_router #(
     .AxiCfgN       ( ${noc_pkg}::AxiCfgN ),
     .AxiCfgW       ( ${noc_pkg}::AxiCfgW ),
-% if use_mcast:
     .RouteAlgo     ( ${noc_pkg}::RouteCfg.RouteAlgo ),
-% else:
-    .RouteAlgo     ( ${soc_pkg}::RouteCfgNoMcast.RouteAlgo ),
-% endif
     .NumRoutes     ( 5 ), // 4 Cardinals + 1 Eject
     .InFifoDepth   ( 2 ),
     .OutFifoDepth  ( 2 ),
@@ -637,21 +757,23 @@ module ${p_name}_${c_type}
     .floo_req_t    ( ${noc_pkg}::floo_req_t ),
     .floo_rsp_t    ( ${noc_pkg}::floo_rsp_t ),
     .floo_wide_t   ( ${noc_pkg}::floo_wide_t ),
-% if use_mcast:
+% if has_offload:
     .red_wide_req_t( ${noc_pkg}::red_wide_req_t ),
     .red_wide_rsp_t( ${noc_pkg}::red_wide_rsp_t ),
 % endif
+% if narrow_red_on:
+    .red_narrow_req_t( ${noc_pkg}::red_narrow_req_t ),
+    .red_narrow_rsp_t( ${noc_pkg}::red_narrow_rsp_t ),
+% endif
     .WideRwDecouple( ${noc_pkg}::WideRwDecouple ),
-    .VcImpl        ( ${noc_pkg}::VcImpl )
-% if use_mcast:
-    , .CollectiveCfg ( ${noc_pkg}::${route_cfg}.CollectiveCfg )
+    .VcImpl        ( ${noc_pkg}::VcImpl ),
+    .CollectiveCfg ( TileCollectiveCfg ),
     // Collective traffic needs the loopback path: a multicast flit replicated onto
     // several outputs may legitimately include the port it arrived on. FlooNoC
     // defaults NoLoopback to 1'b1 and asserts !(EnCollective && NoLoopback), so the
     // value is derived here from the very configuration passed above, instead of
     // patching the default inside the fetched IP.
-    , .NoLoopback    ( !floo_pkg::en_collective(${noc_pkg}::${route_cfg}.CollectiveCfg.OpCfg) )
-% endif
+    .NoLoopback    ( !floo_pkg::en_collective(TileCollectiveCfg.OpCfg) )
   ) i_router (
     .clk_i          ( noc_clk ),
     .rst_ni         ( noc_rst_n ),
@@ -671,9 +793,76 @@ module ${p_name}_${c_type}
     , .offload_wide_req_o  ()
     , .offload_wide_rsp_i  ('0)
    % endif
+   % if narrow_red_on:
+    , .offload_narrow_req_o( offload_narrow_req_out )
+    , .offload_narrow_rsp_i( offload_narrow_rsp_in )
+   % else:
     , .offload_narrow_req_o()
     , .offload_narrow_rsp_i('0)
+   % endif
   );
+
+% if narrow_red_on:
+  // =======================================================================
+  // 1b. NARROW (INTEGER) REDUCTION OFFLOAD UNIT
+  // =======================================================================
+  // Reduction computes at every merging router of the tree, so every tile
+  // carries the integer unit: floo_alu_top is FlooNoC's own offload ALU
+  // (64-bit scalar, fpnew-style handshake, input/output cuts on by default).
+  // collect_op_e encodes operation AND signedness in one value; the ALU
+  // takes them apart (op + int format), so the case below is a decode, not
+  // a policy. The formats are the 32-bit ones by NECESSITY, not choice: the
+  // shipped floo_alu_top computes 32-bit operations only (its Invalid_Input
+  // assertion refuses every other format, unconditionally and on every
+  // cycle) while the offload interface carries 64-bit operands - reductions
+  // therefore compute on the low word. The 64/32 gap is recorded in
+  // upstream_pr_candidates.md. The crossed ready wiring mirrors floo_router's own binding of
+  // i_reduction_unit: the request-ready travels in the RSP struct and the
+  // result-ready in the REQ struct.
+  floo_alu_pkg::alu_operation_e  narrow_red_alu_op;
+  floo_alu_pkg::alu_int_format_e narrow_red_alu_fmt;
+
+  always_comb begin
+    narrow_red_alu_op  = floo_alu_pkg::ADD;
+    narrow_red_alu_fmt = floo_alu_pkg::INT32;
+    // Decode only under valid: an idle offload interface legitimately carries
+    // X/garbage on the op field, and an ungated case would evaluate it every
+    // cycle in every router of the mesh - millions of spurious violations per
+    // run, none of them about real traffic.
+    if (offload_narrow_req_out.valid) begin
+      case (offload_narrow_req_out.req.op)
+        floo_pkg::IntAdd:  begin narrow_red_alu_op = floo_alu_pkg::ADD; narrow_red_alu_fmt = floo_alu_pkg::INT32;  end
+        floo_pkg::IntMul:  begin narrow_red_alu_op = floo_alu_pkg::MUL; narrow_red_alu_fmt = floo_alu_pkg::INT32;  end
+        floo_pkg::IntMinS: begin narrow_red_alu_op = floo_alu_pkg::MIN; narrow_red_alu_fmt = floo_alu_pkg::INT32;  end
+        floo_pkg::IntMinU: begin narrow_red_alu_op = floo_alu_pkg::MIN; narrow_red_alu_fmt = floo_alu_pkg::UINT32; end
+        floo_pkg::IntMaxS: begin narrow_red_alu_op = floo_alu_pkg::MAX; narrow_red_alu_fmt = floo_alu_pkg::INT32;  end
+        floo_pkg::IntMaxU: begin narrow_red_alu_op = floo_alu_pkg::MAX; narrow_red_alu_fmt = floo_alu_pkg::UINT32; end
+        default: ;  // FP and micro ops never reach the narrow offload interface
+      endcase
+    end
+  end
+
+  floo_alu_top #(
+    .tag_t         ( logic )
+  ) i_narrow_red_alu (
+    .clk_i         ( noc_clk ),
+    .rst_ni        ( noc_rst_n ),
+    .flush_i       ( 1'b0 ),
+    .operands_i    ( {offload_narrow_req_out.req.operand2,
+                      offload_narrow_req_out.req.operand1} ),
+    .op_i          ( narrow_red_alu_op ),
+    .fmt_i         ( narrow_red_alu_fmt ),
+    .vector_mode_i ( 1'b0 ),
+    .tag_i         ( 1'b0 ),
+    .in_valid_i    ( offload_narrow_req_out.valid ),
+    .in_ready_o    ( offload_narrow_rsp_in.ready ),
+    .result_o      ( offload_narrow_rsp_in.rsp.result ),
+    .status_o      ( ),
+    .tag_o         ( ),
+    .out_valid_o   ( offload_narrow_rsp_in.valid ),
+    .out_ready_i   ( offload_narrow_req_out.ready )
+  );
+% endif
 
   // Route the internal router arrays to the physical Tile pins
   assign floo_req_o                      = router_floo_req_out[West:North];
@@ -694,6 +883,63 @@ module ${p_name}_${c_type}
   ${noc_pkg}::axi_narrow_in_rsp_t  narrow_in_rsp;
   ${noc_pkg}::axi_narrow_out_req_t narrow_out_req;
   ${noc_pkg}::axi_narrow_out_rsp_t narrow_out_rsp;
+% if stamper_on:
+
+  // =======================================================================
+  // 2a. COLLECTIVE-OPERATION STAMPER
+  // =======================================================================
+  // No CPU store can drive per-transaction AXI user bits, so the collective
+  // opcode and the member mask are STAMPED here, between the isle and the
+  // chimney, on writes that hit the generated windows below - the firmware
+  // expresses a collective by choosing an address. The widened {mask, op,
+  // user} signal exists only on this segment: the SoC-wide user width is
+  // untouched. The mask is address-shaped; the chimney converts it to
+  // coordinates through the destination's SAM rule.
+  typedef struct packed {
+    logic [${narrow_addr_w - 1}:0] base;
+    logic [${narrow_addr_w - 1}:0] last;
+    logic [${narrow_addr_w - 1}:0] group_base;
+    logic [${narrow_addr_w - 1}:0] dest;
+    logic [${narrow_addr_w - 1}:0] offs;
+    logic [3:0]                    op;
+    logic [${narrow_addr_w - 1}:0] mask;
+  } coll_win_t;
+
+  localparam coll_win_t [${len(stamper_windows) - 1}:0] CollWindows = '{
+% for op, base, last, gbase, mask, dest, offs in list(reversed(stamper_windows)):
+    '{base: ${narrow_addr_w}'h${f"{base:012x}"}, last: ${narrow_addr_w}'h${f"{last:012x}"},
+      group_base: ${narrow_addr_w}'h${f"{gbase:012x}"}, dest: ${narrow_addr_w}'h${f"{dest:012x}"},
+      offs: ${narrow_addr_w}'h${f"{offs:012x}"}, op: floo_pkg::${op},
+      mask: ${narrow_addr_w}'h${f"{mask:012x}"}}${"" if loop.last else ","}
+% endfor
+  };
+
+  ${noc_pkg}::collective_axi_narrow_in_req_t narrow_in_req_coll;
+  ${noc_pkg}::collective_axi_narrow_in_rsp_t narrow_in_rsp_coll;
+
+  ${require_file("olli_collective_stamper.sv")}
+  olli_collective_stamper #(
+    .NumWindows ( ${len(stamper_windows)} ),
+    .AddrWidth  ( ${narrow_addr_w} ),
+    .UserWidth  ( ${plain_user_w} ),
+    .MaskWidth  ( ${narrow_addr_w} ),
+    .OpWidth    ( 4 ),
+    .slv_req_t  ( ${noc_pkg}::axi_narrow_in_req_t ),
+    .slv_rsp_t  ( ${noc_pkg}::axi_narrow_in_rsp_t ),
+    .mst_req_t  ( ${noc_pkg}::collective_axi_narrow_in_req_t ),
+    .mst_rsp_t  ( ${noc_pkg}::collective_axi_narrow_in_rsp_t ),
+    .win_rule_t ( coll_win_t ),
+    .Windows    ( CollWindows )
+  ) i_collective_stamper (
+    .clk_i           ( noc_clk ),
+    .rst_ni          ( noc_rst_n ),
+    .instance_base_i ( instance_base_addr_i[${narrow_addr_w - 1}:0] ),
+    .slv_req_i ( narrow_in_req ),
+    .slv_rsp_o ( narrow_in_rsp ),
+    .mst_req_o ( narrow_in_req_coll ),
+    .mst_rsp_i ( narrow_in_rsp_coll )
+  );
+% endif
   ${noc_pkg}::axi_wide_in_req_t    wide_in_req;
   ${noc_pkg}::axi_wide_in_rsp_t    wide_in_rsp;
   ${noc_pkg}::axi_wide_out_req_t   wide_out_req;
@@ -844,8 +1090,15 @@ module ${p_name}_${c_type}
     .id_t                ( ${noc_pkg}::id_t ),
     .rob_idx_t           ( ${noc_pkg}::rob_idx_t ),
     .hdr_t               ( ${noc_pkg}::hdr_t ),
+% if stamper_on:
+    // The slave-side AXI carries the collective user struct: the chimney reads
+    // {mask, op} from aw.user, and the stamper above is the only writer of it.
+    .axi_narrow_in_req_t ( ${noc_pkg}::collective_axi_narrow_in_req_t ),
+    .axi_narrow_in_rsp_t ( ${noc_pkg}::collective_axi_narrow_in_rsp_t ),
+% else:
     .axi_narrow_in_req_t ( ${noc_pkg}::axi_narrow_in_req_t ),
     .axi_narrow_in_rsp_t ( ${noc_pkg}::axi_narrow_in_rsp_t ),
+% endif
     .axi_narrow_out_req_t( ${noc_pkg}::axi_narrow_out_req_t ),
     .axi_narrow_out_rsp_t( ${noc_pkg}::axi_narrow_out_rsp_t ),
     .axi_wide_in_req_t   ( ${noc_pkg}::axi_wide_in_req_t ),
@@ -862,8 +1115,13 @@ module ${p_name}_${c_type}
     .test_enable_i       ( test_mode_i ),
     .route_table_i       ( '0 ),
     .sram_cfg_i          ( '0 ),
+% if stamper_on:
+    .axi_narrow_in_req_i ( narrow_in_req_coll ),
+    .axi_narrow_in_rsp_o ( narrow_in_rsp_coll ),
+% else:
     .axi_narrow_in_req_i ( narrow_in_req ),
     .axi_narrow_in_rsp_o ( narrow_in_rsp ),
+% endif
     .axi_narrow_out_req_o( narrow_out_req ),
     .axi_narrow_out_rsp_i( narrow_out_rsp ),
     .axi_wide_in_req_i   ( wide_in_req ),

@@ -320,6 +320,32 @@ static inline void ${t_name}_init_returns(uint32_t inst) {
         *(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE(inst) + i * 4u) = 0;
     }
 }
+% if t.get("collective_test"):
+
+/* Collective (narrow-reduction) slots: instance 0's collect and barrier words,
+ * behind the tile's stamped windows. The host reaches them as plain unicast
+ * (its own tile carries no stamper), so zeroing and reading are ordinary
+ * accesses; only the GROUP's writes are stamped. */
+#define ${T}_OFFLOAD_COLLECT_ADDR  ${hex(t["base_addr"] + t["collect_offs"])}u
+#define ${T}_OFFLOAD_BARRIER_ADDR  ${hex(t["base_addr"] + t["barrier_offs"])}u
+
+static inline void ${t_name}_init_collective(void) {
+    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR = 0;
+    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_BARRIER_ADDR = 0;
+}
+
+/* The reduced sum appears in one piece once the network has merged the whole
+ * group, so polling for the exact expected value is race-free: any partial
+ * state reads as the initial zero. The barrier lands as the LsbAnd of the
+ * group's ones. */
+static inline int ${t_name}_wait_collective(uint32_t exp_sum) {
+    for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
+        if ((*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR == exp_sum) &&
+            (*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_BARRIER_ADDR == 1u)) return 0;
+    }
+    return -1;
+}
+% endif
 
 /* Publish the payload entry point where the instance's bootrom will read it. */
 static inline void ${t_name}_set_entry(uint32_t inst, uint32_t entry) {

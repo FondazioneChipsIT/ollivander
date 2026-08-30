@@ -40,6 +40,13 @@ topology:
       narrow: { data_width: 64, addr_width: 48 }
       wide:   { data_width: 512, addr_width: 48 }
     default_tile: "dummy_tile"  # Used to fill empty coordinates in the 2D mesh
+    # FlooNoC collective set, the reduction pair: declared explicitly because the schema
+    # defaults BOTH channels off; each channel is enabled independently. The wide FP reduction is part
+    # of the reference configuration this SoC mirrors; depth and cut restate the RTL's own
+    # RedDefaultCfg. The narrow (integer) channel joins once the functional-test wave clears
+    # it - enabling it is the subject of the collectives probe (wip 3.6.1).
+    collectives:
+      wide_reduction: { enable: true, rd_pipeline_depth: 5, cut_offload_intf: true }
 
 # ------------------------------------------------------------------------------
 # 2. SYSTEM MICROARCHITECTURE SETTINGS
