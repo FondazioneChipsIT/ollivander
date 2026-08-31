@@ -26,46 +26,9 @@ In file order, `tb_<top>.sv` contains:
 7.  **The test sequence** — one `initial` block: wait for power-on reset release, then the boot sequence of the project's `boot_mode` (section 4), then a long watchdog delay and `$finish`. The watchdog is the *failure* path: a passing run terminates earlier, from inside the VIP, when the firmware signals EOT (section 7). A `CUSTOM TEST STIMULI` marker inside this block is the intended place for user-written stimulus.
 8.  **A time beacon** — `[TB_TIME] Simulation time: ...` printed every 100 us of simulated time, so a hung run is distinguishable from a slow one by transcript alone.
 
-The block view, with the convention that matters: solid arrows are pins and task calls — the routes an external agent would have on real silicon — while dotted arrows are the simulation-only hierarchical paths, which exist only under `preload_mode: readmemh` and are what the architected modes eliminate.
+The block view — the DUT frame sits *inside* the testbench frame because `tb_<top>.sv` instantiates it (item 3 above); the legend is at the bottom of the figure:
 
-```mermaid
-flowchart LR
-    subgraph TBF["tb_&lt;top&gt;.sv — generated per project"]
-        SEQ["test sequence<br/>boot timeline + watchdog $finish"]
-        TIE["time-zero tie-offs<br/>straps, idle levels"]
-        PRE["preload block<br/>$readmemh, gated by tb_preload_go"]
-        MON["AXI monitors<br/>[TB_AXI_MON]"]
-        DEV["behavioral flash / EEPROM model<br/>(autonomous modes only)"]
-        subgraph VIP["i_vip — vip_ollivander_soc.sv, shared by every project"]
-            CLK["clock agent"]
-            RST["reset agent"]
-            URX["UART RX agent<br/>console + EOT detector (ETX 0x03)"]
-            JT["JTAG driver stack<br/>jtag_init, sba_write32, sba_load"]
-            SL["serial-link twin<br/>slink_write32, slink_load"]
-            UB["uart-boot agent<br/>uart_load, uart_boot_exec"]
-        end
-    end
-    subgraph DUT["SoC top (the DUT)"]
-        HOST["host"]
-        SYSC["system controller<br/>clk_en / reset / isolate"]
-        BMEM["boot memory"]
-        TGT["offload targets"]
-    end
-    SEQ --> VIP
-    TIE --> DUT
-    CLK --> DUT
-    RST --> DUT
-    JT -->|"JTAG pins"| HOST
-    SL -->|"serial-link DDR pins"| HOST
-    UB -->|"UART RX pin"| HOST
-    HOST -->|"UART TX pin"| URX
-    DEV <-->|"SPI / I2C pins"| HOST
-    HOST --- SYSC
-    HOST --- BMEM
-    HOST --- TGT
-    PRE -.->|"hierarchical path<br/>(readmemh only)"| BMEM
-    MON -.->|"dotted-path observation<br/>(readmemh only)"| BMEM
-```
+![Block diagram of the generated testbench: the outer frame is tb_<top>.sv; the left column holds the test sequence, the shared VIP with its agents, the device model, the tie-offs and the preload/monitor blocks; the right column is the DUT, instantiated inside the testbench](assets/tb_block_diagram.svg)
 
 ## 3. The Verification IP and Its Agents
 
@@ -142,7 +105,7 @@ The end-of-test byte is appended by the test application itself (it is the `\x03
 Selected per run with `TEST_APP` (`make generate TEST_APP=hello_world`); the offload-capable examples default to `offload`.
 
 *   **`hello_world`** — prints the greeting over UART and terminates with EOT. It exercises boot, the UART path, and whatever bring-up the boot needs — nothing else. Its target set for `bring_up: minimal` derivation is exactly the boot-critical set.
-*   **`offload`** — a strict superset: the same greeting and EOT, plus, for **each** component that declares the `Offload*` contract, a full offload round driven by the host: (1) enable the payload memory's control group and load the payload — the payload travels *inside the host binary* as a generated C array (`payload_<target>.h`, produced by `bin2header.py` from the target-compiled ELF) and is copied by the host CPU, the silicon-representative route; (2) de-isolate and ungate the target's control group; (3) start the target's cores on the payload entry; (4) wait for end-of-computation, with a timeout that dumps the target's state registers on expiry; (5) verify the return code, print `[OFFLOAD] <target> PASS (...)`, and hand the group back to its power-on state so the next target starts from a clean slate. Under the architected boot (`boot_mode: jtag`), every group-gated target runs this whole phase **twice** — power-up, run, check, power-down, then again through a payload re-load — and prints `[OFFLOAD] <target> POWER-CYCLE PASS (2 cycles)`: the second pass is the regression of the domain re-entry path silicon depends on (the enable helpers honor the FFAR clocked reset window, and `disable()` returns the always-on `fetch_enable` to its power-on state precisely so a re-enabled cluster cannot restart from its reset-default boot address). Force-mode projects keep the single pass: their bench pins the power state by construction, and cycling against it would fight the forces. The final line, `[OFFLOAD] All targets passed.`, carries the EOT byte. Multi-instance targets (component arrays) run their instances in parallel and verify per-instance slots.
+*   **`offload`** — a strict superset: the same greeting and EOT, plus, for **each** component that declares the `Offload*` contract, a full offload round driven by the host: (1) enable the payload memory's control group and load the payload — the payload travels *inside the host binary* as a generated C array (`payload_<target>.h`, produced by `bin2header.py` from the target-compiled ELF) and is copied by the host CPU, the silicon-representative route; (2) de-isolate and ungate the target's control group; (3) start the target's cores on the payload entry; (4) wait for end-of-computation, with a timeout that dumps the target's state registers on expiry; (5) verify the return code, print `[OFFLOAD] <target> PASS (...)`, and hand the group back to its power-on state so the next target starts from a clean slate. Under the hosted architected boots (`boot_mode: jtag`, `slink` or `uart`), every group-gated target runs this whole phase **twice** — power-up, run, check, power-down, then again through a payload re-load — and prints `[OFFLOAD] <target> POWER-CYCLE PASS (2 cycles)`: the second pass is the regression of the domain re-entry path silicon depends on (the enable helpers honor the FFAR clocked reset window, and `disable()` returns the always-on `fetch_enable` to its power-on state precisely so a re-enabled cluster cannot restart from its reset-default boot address). Force-mode projects keep the single pass: their bench pins the power state by construction, and cycling against it would fight the forces. The autonomous boots (`spi_flash`, `i2c_eeprom`) also keep the single pass — today no example combines an autonomous boot with an offload target, so that combination has no witness. The final line, `[OFFLOAD] All targets passed.`, carries the EOT byte. Multi-instance targets (component arrays) run their instances in parallel and verify per-instance slots.
 
 **How an offload pass is decided.** The payload runs a small generated workload (a checksum over a scratch buffer, XORed with a compile-time constant) and delivers the result over the channel its contract declares: the cluster's return-value register plus an EOC wire (`control_wire`), or per-core return slots in cluster-local memory - core 0 writes the checksum with a done bit, every other core a bare done. The **expected value is derived independently**: the generator computes the same checksum at generation time and bakes it into the host as a constant, so payload and host must agree through two separate derivations - a corrupted load, a wrong entry point or a bad window decode yields a mismatch, never a lucky pass (and the scratch buffer is pre-initialized precisely so a payload that never ran cannot leave a value mistaken for a result). Verification is strict: EOC/done within a timeout, core 0 of **every** instance equal to the expected value, and every secondary core of a memory_mapped cluster equal to one distinctive generator-owned code, exactly — a dead core is caught by the done poll, a wrong-path core by the code check, and the two print differently.
 

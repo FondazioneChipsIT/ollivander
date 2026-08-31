@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 856" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+  <!-- Theme-neutral palette (matches crossbar_topology.svg): GitHub's neutral gray reads on both light and dark. -->
+  <!-- Containment mirrors the source: the DUT frame sits INSIDE the tb frame because tb_<top>.sv instantiates it. -->
+  <defs>
+    <marker id="head" markerWidth="10" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,4.5 L0,9 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+
+  <!-- ============ outer frame: the generated testbench ============ -->
+  <rect x="20" y="40" width="1140" height="752" rx="10" stroke="#8b949e" fill="rgba(139,148,158,0.04)" stroke-width="1.5"/>
+  <text x="38" y="66" fill="#8b949e" font-weight="600">tb_&lt;top&gt;.sv — generated per project</text>
+
+  <!-- ============ left column: test logic and agents ============ -->
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.12)" stroke-width="1.2">
+    <rect x="40" y="92" width="300" height="52" rx="5"/>
+  </g>
+  <g fill="#8b949e">
+    <text x="54" y="112">test sequence</text>
+    <text x="54" y="130" font-size="11">boot timeline + watchdog $finish</text>
+  </g>
+  <line x1="110" y1="144" x2="110" y2="170" stroke="#8b949e" stroke-width="1.5" marker-end="url(#head)"/>
+  <text x="120" y="162" fill="#8b949e" font-size="11">task calls</text>
+
+  <!-- the shared VIP and its agents -->
+  <rect x="40" y="176" width="640" height="336" rx="8" stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2"/>
+  <text x="56" y="199" fill="#8b949e" font-size="12" font-weight="600">i_vip — vip_ollivander_soc.sv (shared by every project)</text>
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.12)" stroke-width="1.2">
+    <rect x="60" y="212" width="290" height="36" rx="4"/>
+    <rect x="60" y="254" width="290" height="36" rx="4"/>
+    <rect x="60" y="296" width="290" height="46" rx="4"/>
+    <rect x="60" y="348" width="290" height="46" rx="4"/>
+    <rect x="60" y="400" width="290" height="46" rx="4"/>
+    <rect x="60" y="452" width="290" height="46" rx="4"/>
+  </g>
+  <g fill="#8b949e">
+    <text x="74" y="235">clock agent</text>
+    <text x="74" y="277">reset agent</text>
+    <text x="74" y="315">JTAG driver stack</text>
+    <text x="74" y="332" font-size="11">jtag_init, sba_write32, sba_load</text>
+    <text x="74" y="367">serial-link twin</text>
+    <text x="74" y="384" font-size="11">slink_write32, slink_load</text>
+    <text x="74" y="419">uart-boot agent</text>
+    <text x="74" y="436" font-size="11">uart_load, uart_boot_exec</text>
+    <text x="74" y="471">UART RX agent</text>
+    <text x="74" y="488" font-size="11">console + EOT detector (ETX 0x03)</text>
+  </g>
+
+  <!-- testbench-side blocks below the VIP -->
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.12)" stroke-width="1.2">
+    <rect x="40" y="536" width="300" height="52" rx="5"/>
+    <rect x="40" y="600" width="300" height="40" rx="5"/>
+    <rect x="40" y="676" width="300" height="48" rx="5"/>
+    <rect x="40" y="732" width="300" height="36" rx="5"/>
+  </g>
+  <g fill="#8b949e">
+    <text x="54" y="556">behavioral flash / EEPROM model</text>
+    <text x="54" y="574" font-size="11">(autonomous modes only)</text>
+    <text x="54" y="625">time-zero tie-offs</text>
+    <text x="54" y="695">preload block ($readmemh,</text>
+    <text x="54" y="713" font-size="11">gated by tb_preload_go)</text>
+    <text x="54" y="755">AXI monitors [TB_AXI_MON]</text>
+  </g>
+
+  <!-- ============ right column: the instantiated DUT ============ -->
+  <rect x="850" y="92" width="290" height="676" rx="8" stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.5"/>
+  <text x="866" y="117" fill="#8b949e" font-size="12" font-weight="600">SoC top — the DUT</text>
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.12)" stroke-width="1.2">
+    <rect x="870" y="300" width="250" height="284" rx="5"/>
+    <rect x="910" y="598" width="210" height="44" rx="4"/>
+    <rect x="910" y="650" width="210" height="32" rx="4"/>
+    <rect x="910" y="690" width="210" height="64" rx="4"/>
+  </g>
+  <text x="995" y="448" fill="#8b949e" font-size="14" font-weight="600" text-anchor="middle">host</text>
+  <g fill="#8b949e">
+    <text x="924" y="616">system controller</text>
+    <text x="924" y="633" font-size="11">clk_en / reset / isolate</text>
+    <text x="924" y="671">offload targets</text>
+    <text x="924" y="726">boot memory</text>
+  </g>
+  <!-- host-to-subsystem spine -->
+  <g stroke="#8b949e" stroke-width="1.2" fill="none">
+    <path d="M890,584 V722"/>
+    <path d="M890,620 H910"/>
+    <path d="M890,666 H910"/>
+    <path d="M890,722 H910"/>
+  </g>
+
+  <!-- ============ solid edges: pins and task calls ============ -->
+  <g stroke="#8b949e" stroke-width="1.5" fill="none">
+    <path d="M350,230 H845" marker-end="url(#head)"/>
+    <path d="M350,272 H845" marker-end="url(#head)"/>
+    <path d="M350,319 H865" marker-end="url(#head)"/>
+    <path d="M350,371 H865" marker-end="url(#head)"/>
+    <path d="M350,423 H865" marker-end="url(#head)"/>
+    <path d="M866,475 H355" marker-end="url(#head)"/>
+    <path d="M346,562 H865" marker-start="url(#head)" marker-end="url(#head)"/>
+    <path d="M340,620 H845" marker-end="url(#head)"/>
+  </g>
+  <!-- dotted edges: simulation-only hierarchical paths -->
+  <g stroke="#8b949e" stroke-width="1.5" fill="none" stroke-dasharray="5 5">
+    <path d="M340,700 H905" marker-end="url(#head)"/>
+    <path d="M340,750 H905" marker-end="url(#head)"/>
+  </g>
+
+  <!-- edge labels -->
+  <g fill="#8b949e" font-size="11" text-anchor="middle">
+    <text x="595" y="223">clocks</text>
+    <text x="595" y="265">por, rst_ni</text>
+    <text x="595" y="312">JTAG pins</text>
+    <text x="595" y="364">serial-link DDR pins</text>
+    <text x="595" y="416">UART RX pin</text>
+    <text x="595" y="468">UART TX pin</text>
+    <text x="595" y="555">SPI / I2C pins</text>
+    <text x="595" y="613">straps, idle levels</text>
+    <text x="595" y="693">hierarchical path (readmemh only)</text>
+    <text x="595" y="743">hierarchical observation (readmemh only)</text>
+  </g>
+
+  <!-- ============ legend ============ -->
+  <line x1="40" y1="812" x2="100" y2="812" stroke="#8b949e" stroke-width="1.5" marker-end="url(#head)"/>
+  <text x="114" y="816" fill="#8b949e" font-size="12">pins and task calls — the routes an external agent has on real silicon</text>
+  <line x1="40" y1="838" x2="100" y2="838" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#head)"/>
+  <text x="114" y="842" fill="#8b949e" font-size="12">simulation-only hierarchical paths (readmemh mode only) — what the architected modes remove</text>
+</svg>
