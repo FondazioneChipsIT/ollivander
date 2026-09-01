@@ -276,14 +276,31 @@ int main(void) {
          * values, so a lost member, a ghost member or a wrong merge can never
          * pass by accident. */
         if (${t_name}_wait_collective(${hex(exp_sum)}u) != 0) {
-            print_str("[COLLECTIVE] ${t_name} collect=");
+            /* Dump every slot the run was supposed to fill: which phase is
+             * short localizes the failure without a second run. */
+            print_str("[COLLECTIVE] ${t_name}");
+% if t.get("collective_reduce"):
+            print_str(" collect=");
             print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_COLLECT_ADDR);
-            print_str(" (expected ${hex(exp_sum)}) barrier=");
+            print_str(" (expected ${hex(exp_sum)})");
+% endif
+            print_str(" barrier=");
             print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_BARRIER_ADDR);
-            print_str(" (expected 0x1)\n");
-            offload_fail("${t_name}", "collective reduction/barrier");
+            print_str(" (expected 0x1)");
+% if t.get("collective_mcast"):
+            print_str(" mcast:");
+            for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
+                print_str(" ");
+                print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_MCAST_ADDR(n));
+            }
+% endif
+            print_str("\n");
+            offload_fail("${t_name}", "collective phase");
         }
-        print_str("[COLLECTIVE] ${t_name} IntAdd sum + LsbAnd barrier PASS\n");
+        print_str("[COLLECTIVE] ${t_name} ${" + ".join(
+            (["IntAdd sum"] if t.get("collective_reduce") else [])
+            + ["LsbAnd barrier"]
+            + (["Multicast"] if t.get("collective_mcast") else []))} PASS\n");
 % endif
         print_str("[OFFLOAD] ${t_name} PASS (");
         print_hex(${t_name.upper()}_OFFLOAD_NUM_INSTANCES);

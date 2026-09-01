@@ -92,22 +92,34 @@ else:
         # Global addresses of instance 0's stamped windows: writing them makes
         # the network reduce (IntAdd) or barrier (LsbAnd) across the group.
         specific += [
-            f'-DOFFLOAD_COLLECT_ADDR={hex(t["coll_alias_base"] + t["collect_offs"])}',
+            # One switch the payload keys the whole collective section on: the
+            # phases inside it are then selected by their own defines.
+            '-DOFFLOAD_COLLECTIVE_PHASE=1',
             f'-DOFFLOAD_BARRIER_ADDR={hex(t["coll_alias_base"] + t["barrier_offs"])}',
-            # Local (own-range) views: the head polls its own column landing and
-            # every core0 reads its meta without touching the network.
-            f'-DOFFLOAD_COLL_COL_LOCAL={hex(local_base + t["collect_col_offs"])}',
+            # Local (own-range) view of the meta word: every core0 reads its
+            # role without touching the network.
             f'-DOFFLOAD_COLL_META_LOCAL={hex(local_base + t["coll_meta_offs"])}',
-            # REAL global address of the final slot, for the pre-barrier read
-            # poll: reads must NOT travel through the alias (the stamper only
-            # rewrites AW hits, and an aliased AR would reach the SAM undecoded).
-            f'-DOFFLOAD_COLLECT_READ_ADDR={hex(t["base_addr"] + t["collect_offs"])}',
         ]
-        if t.get("two_phase"):
-            # Only a real 2D grid gets the column window; a degenerate (1D)
-            # group reduces straight onto the final slot.
+        if t.get("collective_reduce"):
             specific += [
-                f'-DOFFLOAD_COLLECT_COL_ADDR={hex(t["coll_alias_base"] + t["collect_col_offs"])}',
+                f'-DOFFLOAD_COLLECT_ADDR={hex(t["coll_alias_base"] + t["collect_offs"])}',
+                f'-DOFFLOAD_COLL_COL_LOCAL={hex(local_base + t["collect_col_offs"])}',
+                # REAL global address of the final slot, for the pre-barrier read
+                # poll: reads must NOT travel through the alias (the stamper only
+                # rewrites AW hits, and an aliased AR would reach the SAM undecoded).
+                f'-DOFFLOAD_COLLECT_READ_ADDR={hex(t["base_addr"] + t["collect_offs"])}',
+            ]
+            if t.get("two_phase"):
+                # Only a real 2D grid gets the column window; a degenerate (1D)
+                # group reduces straight onto the final slot.
+                specific += [
+                    f'-DOFFLOAD_COLLECT_COL_ADDR={hex(t["coll_alias_base"] + t["collect_col_offs"])}',
+                ]
+        if t.get("collective_mcast"):
+            specific += [
+                f'-DOFFLOAD_MCAST_ADDR={hex(t["coll_alias_base"] + t["mcast_offs"])}',
+                f'-DOFFLOAD_MCAST_LOCAL={hex(local_base + t["mcast_offs"])}',
+                '-DOFFLOAD_MCAST_VALUE=0x5A11ED00',
             ]
 payload_defines = " ".join(common + specific)
 %>\

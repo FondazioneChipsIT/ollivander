@@ -109,7 +109,13 @@ module cluster_subtile
   // collective meta ({y_dim, is_head}) here BEFORE waking it - cluster hartids
   // restart at zero per instance, so the payload has no identity of its own
   // and the head election must arrive from the side that knows the geometry.
-  localparam int unsigned OffloadCollMetaOffs   = 'h0001_FFE0,
+  localparam int unsigned OffloadCollMetaOffs    = 'h0001_FFE0,
+  // Multicast landing slot. Unlike the reduction slots this one is NOT a single
+  // destination: one member issues a write into the stamped window and the
+  // network replicates it to every member, each landing at ITS OWN copy of this
+  // offset (the destination chimney rebuilds the local address from the member
+  // id). The host then reads all of them. Beat-aligned like the others.
+  localparam int unsigned OffloadMcastOffs      = 'h0001_FFD8,
   // The alias base the PAYLOAD writes the collective slots through. A member's
   // contribution must always leave its cluster - the destination instance's
   // router expects it back on the local port (expected_in_route_loopback) - but

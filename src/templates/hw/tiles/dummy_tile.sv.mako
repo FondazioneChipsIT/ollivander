@@ -51,7 +51,37 @@ module ${p_name}_dummy_tile
   // 1. FLOONOC ROUTER INSTANTIATION
   // =======================================================================
   // Instantiates a standard 5-port router (4 Cardinal directions + 1 Eject).
-  // Multicast is safely disabled for dummy tiles as they don't host an endpoint.
+  // A dummy tile hosts no endpoint, so it never injects or receives a
+  // collective - but it may have to CARRY one. Transit is a property of the
+  // router, not of the endpoint: with the collective config left at its
+  // all-zero default, floo_route_select ties the multicast route selection to
+  // zero ("No MCast supported") and a replicated flit crossing an empty
+  // coordinate is dropped in silence. Today's geometries route around the
+  // dummies, so nothing observes it; the configuration is passed anyway,
+  // because the day a placement puts one on a collective path the failure
+  // would be a lost flit with no diagnostic.
+  // Transit-only collective set. Multicast and the LsbAnd barrier are PARALLEL
+  // operations: the router merges or replicates flits itself, with no compute.
+  // Every arithmetic reduction is masked off instead, because it COMPUTES at
+  // each merging router through an offload interface, and a dummy tile has no
+  // unit behind it - enabling one here makes the router demand reduction types
+  // this tile cannot provide, and elaboration fails on the offload port
+  // (vsim-3701, measured 2026-09-01). A reduction tree must therefore never be
+  // shaped so that it merges on an empty coordinate; replication across one is
+  // now carried correctly.
+  localparam floo_pkg::collective_cfg_t DummyCollectiveCfg = '{
+      OpCfg: '{
+          EnNarrowMulticast: RouteCfg.CollectiveCfg.OpCfg.EnNarrowMulticast,
+          EnWideMulticast:   RouteCfg.CollectiveCfg.OpCfg.EnWideMulticast,
+          EnLsbAnd:          RouteCfg.CollectiveCfg.OpCfg.EnLsbAnd,
+          EnFpAdd:  1'b0, EnFpMul:  1'b0, EnFpMin:  1'b0, EnFpMax:  1'b0,
+          EnIntAdd: 1'b0, EnIntMul: 1'b0, EnIntMinS: 1'b0,
+          EnIntMinU: 1'b0, EnIntMaxS: 1'b0, EnIntMaxU: 1'b0
+      },
+      NarrRedCfg: RouteCfg.CollectiveCfg.NarrRedCfg,
+      WideRedCfg: RouteCfg.CollectiveCfg.WideRedCfg
+  };
+
   floo_nw_router #(
     .AxiCfgN       (AxiCfgN),
     .AxiCfgW       (AxiCfgW),
@@ -65,7 +95,9 @@ module ${p_name}_dummy_tile
     .floo_rsp_t    (floo_rsp_t),
     .floo_wide_t   (floo_wide_t),
     .WideRwDecouple(WideRwDecouple),
-    .VcImpl        (VcImpl)
+    .VcImpl        (VcImpl),
+    .CollectiveCfg (DummyCollectiveCfg),
+    .NoLoopback    (!floo_pkg::en_collective(DummyCollectiveCfg.OpCfg))
   ) i_router (
     .clk_i               (clk_i),
     .rst_ni              (rst_ni),

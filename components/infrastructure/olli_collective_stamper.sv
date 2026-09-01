@@ -22,6 +22,19 @@
 // comment), so this module is purely combinational.
 
 
+// BENDER: name="axi"
+
+`include "axi/typedef.svh"
+
+// ELABORATION-ONLY DEFAULTS. A macro consumer compiles this file but leaves the
+// nested macro a blackbox, so no instantiation of this module survives there and
+// the generated-RTL self-check elaborates it as a TOP with its default
+// parameters - where `parameter type slv_req_t = logic` turns every member
+// access in the body into an error (103 of them on super_crossbar, 2026-09-01).
+// These typedefs give the defaults the shape the body expects; every real
+// instantiation overrides all four, so they never reach a simulation.
+`AXI_TYPEDEF_ALL(olli_stamp_dflt, logic [47:0], logic [3:0], logic [63:0], logic [7:0], logic [4:0])
+
 module olli_collective_stamper #(
   /// Number of generated collective windows (0 windows degenerates to a pure
   /// user-width adapter, everything stamped Unicast).
@@ -32,12 +45,16 @@ module olli_collective_stamper #(
   parameter int unsigned MaskWidth = 48,
   parameter int unsigned OpWidth   = 4,
   /// Isle-side (plain user) and chimney-side (collective user) AXI types.
-  parameter type slv_req_t = logic,
-  parameter type slv_rsp_t = logic,
-  parameter type mst_req_t = logic,
-  parameter type mst_rsp_t = logic,
+  parameter type slv_req_t = olli_stamp_dflt_req_t,
+  parameter type slv_rsp_t = olli_stamp_dflt_resp_t,
+  parameter type mst_req_t = olli_stamp_dflt_req_t,
+  parameter type mst_rsp_t = olli_stamp_dflt_resp_t,
   /// One generated window: an inclusive address range and the stamp it carries.
-  parameter type win_rule_t = logic,
+  parameter type win_rule_t = struct packed {
+      logic [47:0] base; logic [47:0] last; logic [47:0] group_base;
+      logic [47:0] member_mask; logic [47:0] coll_mask; logic [47:0] offs;
+      logic [3:0]  op;
+  },
   parameter win_rule_t [(NumWindows > 0 ? NumWindows : 1)-1:0] Windows = '0
 ) (
   input  logic                 clk_i,

@@ -326,11 +326,20 @@ static inline void ${t_name}_init_returns(uint32_t inst) {
  * behind the tile's stamped windows. The host reaches them as plain unicast
  * (its own tile carries no stamper), so zeroing and reading are ordinary
  * accesses; only the GROUP's writes are stamped. */
-#define ${T}_OFFLOAD_COLLECT_ADDR  ${hex(t["base_addr"] + t["collect_offs"])}u
 #define ${T}_OFFLOAD_BARRIER_ADDR  ${hex(t["base_addr"] + t["barrier_offs"])}u
-#define ${T}_OFFLOAD_COLL_COL_ADDR(inst)  (${hex(t["base_addr"] + t["collect_col_offs"])}u + (inst) * ${hex(t["instance_stride"])}u)
 #define ${T}_OFFLOAD_COLL_META_ADDR(inst) (${hex(t["base_addr"] + t["coll_meta_offs"])}u + (inst) * ${hex(t["instance_stride"])}u)
 #define ${T}_OFFLOAD_COLL_Y_DIM    ${t["y_dim"]}u
+% if t.get("collective_reduce"):
+#define ${T}_OFFLOAD_COLLECT_ADDR  ${hex(t["base_addr"] + t["collect_offs"])}u
+#define ${T}_OFFLOAD_COLL_COL_ADDR(inst)  (${hex(t["base_addr"] + t["collect_col_offs"])}u + (inst) * ${hex(t["instance_stride"])}u)
+% endif
+% if t.get("collective_mcast"):
+/* Multicast landing: one member issues, the network replicates, and each
+ * member lands the value at ITS OWN copy of the slot - so verification reads
+ * all of them, not one. */
+#define ${T}_OFFLOAD_MCAST_ADDR(inst) (${hex(t["base_addr"] + t["mcast_offs"])}u + (inst) * ${hex(t["instance_stride"])}u)
+#define ${T}_OFFLOAD_MCAST_VALUE   0x5A11ED00u
+% endif
 
 /* Zero every collective landing slot and hand each instance its collective
  * meta word ({y_dim, is_head}): cluster hartids restart at zero per instance,
@@ -338,13 +347,24 @@ static inline void ${t_name}_init_returns(uint32_t inst) {
  * travels through plain memory, written before any instance wakes. Bases
  * enumerate y-fastest, so instance n's row index is n % y_dim. */
 static inline void ${t_name}_init_collective(void) {
-    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR = 0;
     *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_BARRIER_ADDR = 0;
+% if t.get("collective_reduce"):
+    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR = 0;
+% endif
     for (uint32_t n = 0; n < ${T}_OFFLOAD_NUM_INSTANCES; n++) {
+% if t.get("collective_reduce"):
         *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLL_COL_ADDR(n) = 0;
+% endif
+% if t.get("collective_mcast"):
+        *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_MCAST_ADDR(n) = 0;
+% endif
+        /* meta = {num_instances[31:16], y_dim[15:2], is_mcast_issuer[1],
+         * is_column_head[0]}. Exactly ONE instance issues the multicast:
+         * sixteen issuers would be sixteen multicasts. */
         *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLL_META_ADDR(n) =
             (((n % ${T}_OFFLOAD_COLL_Y_DIM) == 0u) ? 1u : 0u)
-            | (${T}_OFFLOAD_COLL_Y_DIM << 1)
+            | ((n == 0u) ? 2u : 0u)
+            | (${T}_OFFLOAD_COLL_Y_DIM << 2)
             | (${T}_OFFLOAD_NUM_INSTANCES << 16);
     }
 }
@@ -363,9 +383,25 @@ static inline void ${t_name}_disable_collective(void) {
  * state reads as the initial zero. The barrier lands as the LsbAnd of the
  * group's ones. */
 static inline int ${t_name}_wait_collective(uint32_t exp_sum) {
+    (void)exp_sum;
     for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
-        if ((*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR == exp_sum) &&
-            (*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_BARRIER_ADDR == 1u)) return 0;
+% if t.get("collective_reduce"):
+        if (*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR != exp_sum) continue;
+% endif
+        if (*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_BARRIER_ADDR != 1u) continue;
+% if t.get("collective_mcast"):
+        /* Every member must hold the multicast value in its own slot: this is
+         * what distinguishes a replication from a single write that landed. */
+        {
+            uint32_t seen = 0;
+            for (uint32_t n = 0; n < ${T}_OFFLOAD_NUM_INSTANCES; n++) {
+                if (*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_MCAST_ADDR(n)
+                    == ${T}_OFFLOAD_MCAST_VALUE) seen++;
+            }
+            if (seen != ${T}_OFFLOAD_NUM_INSTANCES) continue;
+        }
+% endif
+        return 0;
     }
     return -1;
 }

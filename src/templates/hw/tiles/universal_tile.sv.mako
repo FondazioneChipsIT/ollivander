@@ -411,13 +411,20 @@
   # the member mask only converts to coordinates through the SAM rule of the
   # DESTINATION, so the destination lives inside the group's own region: the
   # collect/barrier slots of instance 0, at the contract offsets the isle declares.
+  # The stamper is needed by ANY collective the group issues, not by the
+  # reduction alone: the barrier (LsbAnd) and the multicast are ordinary
+  # network capabilities - always emitted - that only need a stamped window to
+  # be reachable from software. Each window below is therefore gated on the
+  # contract slot that names it, and the reduction pair additionally on the
+  # narrow channel being declared.
   stamper_on = False
   stamper_windows = []
-  if narrow_red_on and use_mcast and has_offload and isle_info:
+  if use_mcast and has_offload and isle_info:
       _fx = isle_info.get("fixed_params", {})
       _coff = _fx.get("OffloadCollectOffs")
       _ccoff = _fx.get("OffloadCollectColOffs")
       _boff = _fx.get("OffloadBarrierOffs")
+      _mcoff = _fx.get("OffloadMcastOffs")
       # placement boxes: needed for the per-instance bases (scalar form) AND for
       # the dimension decomposition below, so they are parsed for both forms.
       _pl = comp.placement if isinstance(comp.placement, dict) else {}
@@ -442,7 +449,7 @@
               _b0 = int(str(_bases), 0)
               _stride = int(str(_slv["size_per_instance"]), 0)
               _bi = [_b0 + _i * _stride for _i in range(_n)]
-      if _coff is not None and _ccoff is not None and _boff is not None and _bi is not None and len(_bi) > 1:
+      if _boff is not None and _bi is not None and len(_bi) > 1:
           _mask = 0
           for _b in _bi:
               _mask |= _b ^ _bi[0]
@@ -457,9 +464,10 @@
                   f"members). Re-place the instances on a power-of-two aligned box, or disable the "
                   f"narrow reduction.")
           _c0 = min(_bi)
-          _coff_i  = int(str(_coff), 0)
-          _ccoff_i = int(str(_ccoff), 0)
           _boff_i  = int(str(_boff), 0)
+          _coff_i  = int(str(_coff), 0) if _coff is not None else None
+          _ccoff_i = int(str(_ccoff), 0) if _ccoff is not None else None
+          _mcoff_i = int(str(_mcoff), 0) if _mcoff is not None else None
           # Every WINDOWED slot must sit on a narrow-beat boundary: FlooNoC's
           # collective machinery consumes the beat at channel width - LsbAnd
           # ANDs data bit 0 of the whole beat (floo_reduction_arbiter) and the
@@ -470,8 +478,9 @@
           _beat = getattr(config.topology.noc_settings.networks['narrow'], 'data_width', 64) // 8
           for _nm, _o in (("OffloadCollectOffs", _coff_i),
                           ("OffloadCollectColOffs", _ccoff_i),
-                          ("OffloadBarrierOffs", _boff_i)):
-              if _o % _beat:
+                          ("OffloadBarrierOffs", _boff_i),
+                          ("OffloadMcastOffs", _mcoff_i)):
+              if _o is not None and _o % _beat:
                   raise ValueError(
                       f"[COLLECTIVE] component '{comp.name}': {_nm}=0x{_o:x} is not aligned to the "
                       f"narrow beat ({_beat} bytes). FlooNoC reduces the beat at channel width, so a "
@@ -491,6 +500,10 @@
           # column head) and a ROW window (the heads reduce to instance 0).
           # The barrier is a PARALLEL op (n-ary by design): full 2D mask.
           _stride = sorted(_bi)[1] - _c0
+          # Dimension decomposition: needed by the sequential reduction only.
+          # The barrier and the multicast are n-ary by construction (a parallel
+          # merge and a replication), so they take the full group mask and none
+          # of the guards below applies to them.
           _ydims = set()
           for _it in _items:
               _bx = _it.get("box") if isinstance(_it, dict) else None
@@ -518,19 +531,29 @@
           #  stamp), collective mask (the 1D set stamped into the header, and
           #  what the stamper clears off the writer's own base to reach its
           #  chain head), slot offset}
-          if _two_phase:
-              stamper_windows = [
-                  ("IntAdd", _alias + _ccoff_i, _alias + _ccoff_i + 3, _c0, _mask,   _y_mask, _ccoff_i),
-                  ("IntAdd", _alias + _coff_i,  _alias + _coff_i + 3,  _c0, _x_mask, _x_mask, _coff_i),
-              ]
-          else:
-              # One dimension is degenerate: the whole group already is a 1D
-              # chain, one window onto the final slot suffices.
-              stamper_windows = [
-                  ("IntAdd", _alias + _coff_i, _alias + _coff_i + 3, _c0, _mask, _mask, _coff_i),
-              ]
+          if narrow_red_on and _coff_i is not None and _ccoff_i is not None:
+              if _two_phase:
+                  stamper_windows += [
+                      ("IntAdd", _alias + _ccoff_i, _alias + _ccoff_i + 3, _c0, _mask,   _y_mask, _ccoff_i),
+                      ("IntAdd", _alias + _coff_i,  _alias + _coff_i + 3,  _c0, _x_mask, _x_mask, _coff_i),
+                  ]
+              else:
+                  # One dimension is degenerate: the whole group already is a 1D
+                  # chain, one window onto the final slot suffices.
+                  stamper_windows += [
+                      ("IntAdd", _alias + _coff_i, _alias + _coff_i + 3, _c0, _mask, _mask, _coff_i),
+                  ]
+          # Barrier: parallel (n-ary) op, full group mask, always available.
           stamper_windows.append(
               ("LsbAnd", _alias + _boff_i, _alias + _boff_i + 3, _c0, _mask, _mask, _boff_i))
+          # Multicast: one member writes, the network replicates to the whole
+          # group and each destination lands it at its OWN copy of the slot. The
+          # destination the stamp carries is the group's minimum corner, which is
+          # what the router's mask expansion starts from - the same
+          # (base & ~mask) the other windows compute.
+          if _mcoff_i is not None:
+              stamper_windows.append(
+                  ("Multicast", _alias + _mcoff_i, _alias + _mcoff_i + 3, _c0, _mask, _mask, _mcoff_i))
           stamper_on = True
   # The plain (SoC-wide) user width, to rebuild {mask, op, user} at the chimney.
   _um = config.system_settings.user_mapping

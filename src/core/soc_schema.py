@@ -1797,12 +1797,15 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
             # collect/barrier slots (see universal_tile.sv.mako), and the firmware
             # exercises them. Everything here mirrors that emission's condition.
             noc = config.topology.noc_settings if config.topology.type == "noc" else None
+            # The umbrella flag: a group that can carry ANY collective. The
+            # barrier and the multicast are network capabilities always present
+            # in the emission, so they need no channel declaration - only the
+            # contract slots that make them reachable from software. The
+            # reduction pair is the one that also needs its channel declared,
+            # hence the two sub-flags below.
             contract["collective_test"] = bool(
                 noc is not None
-                and noc.collectives.narrow_reduction.enable
                 and (comp.features or {}).get("multicast_target")
-                and contract.get("collect_offs") is not None
-                and contract.get("collect_col_offs") is not None
                 and contract.get("barrier_offs") is not None
                 and contract.get("coll_meta_offs") is not None
                 and contract["num_instances"] > 1
@@ -1815,6 +1818,13 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
                 # can never contradict 'collectives.narrow_reduction.enable'.
                 and (config.software_stack or {}).get("test_app", {})
                           .get("collective_test", True))
+            contract["collective_reduce"] = bool(
+                contract["collective_test"]
+                and noc is not None and noc.collectives.narrow_reduction.enable
+                and contract.get("collect_offs") is not None
+                and contract.get("collect_col_offs") is not None)
+            contract["collective_mcast"] = bool(
+                contract["collective_test"] and contract.get("mcast_offs") is not None)
             # LIVE since 2026-08-31: the transport works under FlooNoC's 1D usage
             # contract - sequential reductions are dimension-ordered two-phase
             # windows (columns to their heads, then the head row) and every
