@@ -1197,7 +1197,8 @@ _ROOT_BLOCK_SPEC = {
                   "elf_max_section_bytes": int},
     "software_stack": {"toolchain": str, "boot_memory": str,
                        "test_app": {"name": str, "auto_generate_c": bool, "baudrate": int,
-                                    "offload_targets": [str], "payload_memory": str}},
+                                    "offload_targets": [str], "payload_memory": str,
+                                    "collective_test": bool}},
 }
 
 
@@ -1780,6 +1781,16 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
             stride = slaves[0].get("size_per_instance", 0)
             contract["num_instances"] = max(1, num_inst)
             contract["instance_stride"] = int(stride, 0) if isinstance(stride, str) else int(stride)
+            # Column height of the placement box: the dimension-ordered collective
+            # phases (see universal_tile.sv.mako, same derivation) and the host's
+            # head election (offload.h.mako) both need it. Bases enumerate
+            # y-fastest, so instance n's row index is simply n % y_dim.
+            contract["y_dim"] = 1
+            if isinstance(logical, dict) and "box" in logical:
+                _b = logical["box"]
+                contract["y_dim"] = int(_b.get("y_end", 0)) - int(_b.get("y_start", 0)) + 1
+            contract["two_phase"] = (contract["y_dim"] > 1
+                                     and contract["num_instances"] > contract["y_dim"])
             # The collective (narrow-reduction) test rides this contract when the
             # description enables the narrow channel and this component is the
             # multicast group: the tile emission stamps writes to the contract's
@@ -1791,19 +1802,26 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
                 and noc.collectives.narrow_reduction.enable
                 and (comp.features or {}).get("multicast_target")
                 and contract.get("collect_offs") is not None
+                and contract.get("collect_col_offs") is not None
                 and contract.get("barrier_offs") is not None
+                and contract.get("coll_meta_offs") is not None
                 and contract["num_instances"] > 1
-                # PARKED (2026-08-30): no collective transport completes at the
-                # pinned FlooNoC - sequential reductions contradict their own
-                # routing's fold topology (and +acc does NOT heal it: identical
-                # ReductionFrom2MoreInputs asserts under full visibility, so it
-                # is design-level, not a Questa-optimization artifact) and the
-                # parallel barrier never delivers a multi-member result
-                # (upstream_pr_candidates.md). A collective store parks the
-                # writing core on its B response, so the firmware must not
-                # issue any until upstream matures. Flip this literal to
-                # re-enable the whole phase.
-                and False)
+                # OPT-OUT, never opt-in: the phase runs wherever the hardware
+                # can carry it, and a project that does not want it says so.
+                # The reverse default would recreate the very condition this
+                # whole feature came out of - collectives shipped enabled and
+                # never exercised, so nobody learns they are broken. The switch
+                # silences the FIRMWARE only: the emission is unchanged, so it
+                # can never contradict 'collectives.narrow_reduction.enable'.
+                and (config.software_stack or {}).get("test_app", {})
+                          .get("collective_test", True))
+            # LIVE since 2026-08-31: the transport works under FlooNoC's 1D usage
+            # contract - sequential reductions are dimension-ordered two-phase
+            # windows (columns to their heads, then the head row) and every
+            # windowed slot is beat-aligned so the collective machinery reduces
+            # the written half of the beat (the old barrier offset was not, and
+            # never converged). Reference behaviour: MAGIA cc/collective_rebase,
+            # reproduced in-tree; chronicle in wip 3.6.1.
             candidates[comp.name] = contract
 
     requested = (config.software_stack or {}).get("test_app", {}).get("offload_targets")

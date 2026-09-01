@@ -336,6 +336,13 @@ int main(void) {
     }
 % endif
     ${t_name}_load_payload(payload_${t_name}_image, PAYLOAD_${t_name.upper()}_SIZE_WORDS);
+% if t.get("collective_test"):
+    /* One instance alone is not a group: park the collective phase via the
+     * meta word (see the payload's guard). This write must happen while EVERY
+     * instance is still powered - a store into the gated last instance would
+     * never complete and park the host (learned the hard way, 2026-08-31). */
+    ${t_name}_disable_collective();
+% endif
     ${t_name}_disable_instance(${t_name.upper()}_OFFLOAD_NUM_INSTANCES - 1u);
 % if t["sys_isolate"]:
     /* WITNESS FOR THE ISOLATION VECTOR: the parked instance must report isolated while
@@ -352,9 +359,6 @@ int main(void) {
     }
 % endif
     ${t_name}_init_returns(0);
-% if t.get("collective_test"):
-    ${t_name}_init_collective();
-% endif
 % if t["contract"] == "memory_mapped":
     ${t_name}_set_entry(0, OFFLOAD_PAYLOAD_BASE);
     ${t_name}_start(0);

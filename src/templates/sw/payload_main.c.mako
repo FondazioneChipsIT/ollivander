@@ -89,13 +89,54 @@ int main(void) {
      * same way. Both come AFTER the slot store above, so the per-core
      * verification never depends on the collective machinery. */
     if (idx == 0) {
-        /* Both collective stores are PARKED: no transport completes at the
-         * pinned FlooNoC (design-level - +acc does not heal it), and a
-         * collective store parks this core on its B response. Re-enable both
-         * when upstream matures (single switch in resolve_offload_targets).
-         * *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_ADDR = value;
-         * *(volatile uint32_t *)(uintptr_t)OFFLOAD_BARRIER_ADDR = 1u; */
-        (void)0;
+        /* Dimension-ordered reduction (FlooNoC's sequential engine merges at
+         * most TWO contributions per node, so 2D groups reduce as 1D chains,
+         * columns first): every instance adds into its own column head; the
+         * heads - elected by the host through the meta word, since hartids
+         * restart per instance - then add the column sums along their row
+         * onto the final slot the host polls. */
+        uint32_t coll_meta = *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLL_META_LOCAL;
+        /* meta == 0 means "collectives off for this run": the host parks the
+         * phase in runs where the group is not whole (the selective-power
+         * pass wakes ONE instance - a column store there would wait forever
+         * for parked peers and leave held state in the routers). */
+        if (coll_meta != 0u) {
+#ifdef OFFLOAD_COLLECT_COL_ADDR
+        *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_COL_ADDR = value;
+        if (coll_meta & 1u) {
+            /* Column head: wait for the whole column to land LOCALLY (any
+             * partial state reads as the initial zero, so the exact match is
+             * race-free), then carry the column sum into the row phase. An
+             * absent column parks this poll - the host's bounded
+             * wait_collective is the failure detector, by design. */
+            uint32_t coll_ydim = (coll_meta >> 1) & 0x7FFFu;
+            while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_COLL_COL_LOCAL
+                   != value * coll_ydim) {}
+            *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_ADDR = value * coll_ydim;
+        }
+#else
+        /* Degenerate 1D group: single phase, straight onto the final slot. */
+        (void)coll_meta;
+        *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_ADDR = value;
+#endif
+        /* PHASE SERIALIZATION before the barrier: two collective streams with
+         * different masks interleaved toward one destination can head-of-line
+         * deadlock in the router's reduction join (same dst, different mask -
+         * the join admits only same-mask flits, and the ones it waits for can
+         * be queued behind the ones it ignores). The reference environment
+         * never interleaves phases either. Reads do not reduce: every core 0
+         * confirms the FINAL sum landed before it arms the barrier stream. */
+        {
+            uint32_t coll_num = coll_meta >> 16;
+            while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_READ_ADDR
+                   != value * coll_num) {}
+        }
+        /* Full-group parallel barrier (LsbAnd is n-ary): the slot is
+         * beat-aligned so bit 0 of the beat IS our bit - the machinery ANDs
+         * the whole beat's bit 0, never the strobed word (2026-08-31). */
+        *(volatile uint32_t *)(uintptr_t)OFFLOAD_BARRIER_ADDR = 1u;
+        __asm__ volatile("fence" ::: "memory");
+        }
     }
 #endif
 

@@ -189,6 +189,14 @@ dependencies:
     # runs before FlooGen; nothing else consumes it, and Bender.yml.mako emits only
     # git/rev/version, so it cannot leak into the manifest.
     validated_with: { floogen: "0.8.4" }
+    pre_build_cmds:
+      # QuestaSim's default optimizer mis-schedules floo_reduction_sync's filter
+      # and the collective transport wedges silently (Verilator runs the same
+      # source correctly at every level; FlooNoC's developers see it vanish on
+      # QuestaSim 2022, so it is a tool regression). The script rewrites the
+      # filter into one order-safe process - no functional change - and carries
+      # the full measurement matrix in its docstring.
+      - "$(PYTHON) {ollivander_dir}/scripts/patch_floo_reduction_sync.py {bender_work}"
   hci:
     git: "https://github.com/FondazioneChipsIT/hci.git"
     rev: "3e63936991569d0b1e315d6914478937b37bb338"

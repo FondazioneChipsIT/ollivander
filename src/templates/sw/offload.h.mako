@@ -328,10 +328,34 @@ static inline void ${t_name}_init_returns(uint32_t inst) {
  * accesses; only the GROUP's writes are stamped. */
 #define ${T}_OFFLOAD_COLLECT_ADDR  ${hex(t["base_addr"] + t["collect_offs"])}u
 #define ${T}_OFFLOAD_BARRIER_ADDR  ${hex(t["base_addr"] + t["barrier_offs"])}u
+#define ${T}_OFFLOAD_COLL_COL_ADDR(inst)  (${hex(t["base_addr"] + t["collect_col_offs"])}u + (inst) * ${hex(t["instance_stride"])}u)
+#define ${T}_OFFLOAD_COLL_META_ADDR(inst) (${hex(t["base_addr"] + t["coll_meta_offs"])}u + (inst) * ${hex(t["instance_stride"])}u)
+#define ${T}_OFFLOAD_COLL_Y_DIM    ${t["y_dim"]}u
 
+/* Zero every collective landing slot and hand each instance its collective
+ * meta word ({y_dim, is_head}): cluster hartids restart at zero per instance,
+ * so the payload cannot know its own place in the grid - the head election
+ * travels through plain memory, written before any instance wakes. Bases
+ * enumerate y-fastest, so instance n's row index is n % y_dim. */
 static inline void ${t_name}_init_collective(void) {
     *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR = 0;
     *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_BARRIER_ADDR = 0;
+    for (uint32_t n = 0; n < ${T}_OFFLOAD_NUM_INSTANCES; n++) {
+        *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLL_COL_ADDR(n) = 0;
+        *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLL_META_ADDR(n) =
+            (((n % ${T}_OFFLOAD_COLL_Y_DIM) == 0u) ? 1u : 0u)
+            | (${T}_OFFLOAD_COLL_Y_DIM << 1)
+            | (${T}_OFFLOAD_NUM_INSTANCES << 16);
+    }
+}
+
+/* Collectives OFF for the next run: a zero meta word makes every payload skip
+ * the whole collective block - used before the selective-power pass, where a
+ * lone instance's column store would wait forever for its parked peers. */
+static inline void ${t_name}_disable_collective(void) {
+    for (uint32_t n = 0; n < ${T}_OFFLOAD_NUM_INSTANCES; n++) {
+        *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLL_META_ADDR(n) = 0;
+    }
 }
 
 /* The reduced sum appears in one piece once the network has merged the whole

@@ -94,7 +94,21 @@ else:
         specific += [
             f'-DOFFLOAD_COLLECT_ADDR={hex(t["coll_alias_base"] + t["collect_offs"])}',
             f'-DOFFLOAD_BARRIER_ADDR={hex(t["coll_alias_base"] + t["barrier_offs"])}',
+            # Local (own-range) views: the head polls its own column landing and
+            # every core0 reads its meta without touching the network.
+            f'-DOFFLOAD_COLL_COL_LOCAL={hex(local_base + t["collect_col_offs"])}',
+            f'-DOFFLOAD_COLL_META_LOCAL={hex(local_base + t["coll_meta_offs"])}',
+            # REAL global address of the final slot, for the pre-barrier read
+            # poll: reads must NOT travel through the alias (the stamper only
+            # rewrites AW hits, and an aliased AR would reach the SAM undecoded).
+            f'-DOFFLOAD_COLLECT_READ_ADDR={hex(t["base_addr"] + t["collect_offs"])}',
         ]
+        if t.get("two_phase"):
+            # Only a real 2D grid gets the column window; a degenerate (1D)
+            # group reduces straight onto the final slot.
+            specific += [
+                f'-DOFFLOAD_COLLECT_COL_ADDR={hex(t["coll_alias_base"] + t["collect_col_offs"])}',
+            ]
 payload_defines = " ".join(common + specific)
 %>\
 # Target '${t_name}': ${t["isa"]}/${t["abi"]}, registers via the '${t["contract"]}' contract.

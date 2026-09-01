@@ -94,8 +94,22 @@ module cluster_subtile
   // that matters: a reduction's member mask only converts to coordinates
   // through the SAM rule of its DESTINATION, so the destination must live
   // inside the collective group's own address region.
-  localparam int unsigned OffloadCollectOffs = 'h0001_FFF8,
-  localparam int unsigned OffloadBarrierOffs = 'h0001_FFFC,
+  // ALL windowed collective slots must be aligned to the narrow channel's beat
+  // (8 bytes here): FlooNoC's collective machinery consumes the beat at channel
+  // width - LsbAnd ANDs data bit 0 of the WHOLE beat (floo_reduction_arbiter)
+  // and the integer ALU computes on the low word - so a 32-bit store at an
+  // unaligned-to-8 offset puts the value in the beat's HIGH half and the
+  // machinery silently reduces the unwritten low half. The barrier lived at
+  // 'h1_FFFC and never converged for exactly that reason; the generator now
+  // refuses unaligned slots at generation time.
+  localparam int unsigned OffloadCollectOffs    = 'h0001_FFF8,  // final (row) landing, instance 0
+  localparam int unsigned OffloadCollectColOffs = 'h0001_FFF0,  // column landing, one per column head
+  localparam int unsigned OffloadBarrierOffs    = 'h0001_FFE8,  // LsbAnd slot (moved from 'h1_FFFC)
+  // Plain-memory mailbox (no stamper window): the host writes each instance's
+  // collective meta ({y_dim, is_head}) here BEFORE waking it - cluster hartids
+  // restart at zero per instance, so the payload has no identity of its own
+  // and the head election must arrive from the side that knows the geometry.
+  localparam int unsigned OffloadCollMetaOffs   = 'h0001_FFE0,
   // The alias base the PAYLOAD writes the collective slots through. A member's
   // contribution must always leave its cluster - the destination instance's
   // router expects it back on the local port (expected_in_route_loopback) - but

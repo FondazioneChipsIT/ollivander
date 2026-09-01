@@ -62,13 +62,18 @@ module olli_collective_stamper #(
     logic                 hit;
   } stamp_t;
 
-  // A window may carry a member subgroup narrower than the whole array (the
-  // binary-merge constraint above): this instance is a member of window w when
-  // its base matches the window's group base under the member mask.
+  // A window carries TWO masks with distinct jobs. member_mask elects who may
+  // stamp: this instance is a member of window w when its base matches the
+  // window's group base under it (a ROW window's member_mask spans only the x
+  // bits, so the column heads pass and everyone else is deflected). coll_mask
+  // is the 1D reduction set stamped into the header - sequential reductions
+  // merge at most two contributions per node, so 2D groups reduce in two
+  // dimension-ordered phases and each window's set is a chain (reference
+  // behaviour: MAGIA's column-then-row software phases; verified 2026-08-31).
   logic [(NumWindows > 0 ? NumWindows : 1)-1:0] window_member;
   for (genvar w = 0; w < NumWindows; w++) begin : gen_window_membership
     assign window_member[w] =
-        ((instance_base_i ^ Windows[w].group_base) & ~Windows[w].mask) == '0;
+        ((instance_base_i ^ Windows[w].group_base) & ~Windows[w].member_mask) == '0;
   end
 
   // ---------------------------------------------------------------------------
@@ -89,8 +94,14 @@ module olli_collective_stamper #(
         // subgroup it is (not) part of.
         if (window_member[w]) begin
           aw_stamp.op   = Windows[w].op;
-          aw_stamp.mask = Windows[w].mask;
-          aw_stamp.dest = Windows[w].dest + (slv_req_i.aw.addr - Windows[w].base);
+          aw_stamp.mask = Windows[w].coll_mask;
+          // The destination is the writer's own CHAIN HEAD: clearing the
+          // collective-mask bits off this instance's base yields the group
+          // base under a full mask (yesterday's absolute-dest behaviour) and
+          // the head of the writer's own column under a 1D mask - the
+          // dimension-ordered two-phase pattern with no per-instance table.
+          aw_stamp.dest = (instance_base_i & ~Windows[w].coll_mask) + Windows[w].offs
+                          + (slv_req_i.aw.addr - Windows[w].base);
         end else begin
           aw_stamp.dest = instance_base_i + Windows[w].offs
                           + (slv_req_i.aw.addr - Windows[w].base);
@@ -105,21 +116,51 @@ module olli_collective_stamper #(
   // {mask, op, user} packed (mask on top), matching floogen's collective user
   // struct by construction.
   // ---------------------------------------------------------------------------
+  // FIELD BY FIELD, never a whole-channel assignment: the two sides' channel
+  // structs differ in USER width, and SystemVerilog assigns packed structs
+  // BIT-WISE, right-aligned - a blanket `mst.aw = slv.aw` shifts every field
+  // by the user-width difference (addr/user were fixed after, but size/len/
+  // id/burst stayed garbled: aw.size 4B arrived as 1B, and the W's data/strb
+  // shifted out of their lanes, feeding ZEROS to the reduction ALU - found
+  // 2026-08-31 on the first stamped W ever to leave a cluster; latent before
+  // because the standard test's cluster-originated narrow traffic never
+  // exits the tile). MAGIA's collective_gen is field-by-field for the same
+  // reason.
   always_comb begin
     mst_req_o = '0;
-    // AW: whole channel forwarded, user rebuilt with the matched stamp.
-    mst_req_o.aw        = slv_req_i.aw;
+    // AW: rebuilt field by field, user carries the matched stamp.
+    mst_req_o.aw.id     = slv_req_i.aw.id;
+    mst_req_o.aw.addr   = aw_stamp.hit ? aw_stamp.dest : slv_req_i.aw.addr;
+    mst_req_o.aw.len    = slv_req_i.aw.len;
+    mst_req_o.aw.size   = slv_req_i.aw.size;
+    mst_req_o.aw.burst  = slv_req_i.aw.burst;
+    mst_req_o.aw.lock   = slv_req_i.aw.lock;
+    mst_req_o.aw.cache  = slv_req_i.aw.cache;
+    mst_req_o.aw.prot   = slv_req_i.aw.prot;
+    mst_req_o.aw.qos    = slv_req_i.aw.qos;
+    mst_req_o.aw.region = slv_req_i.aw.region;
+    mst_req_o.aw.atop   = slv_req_i.aw.atop;
     mst_req_o.aw.user   = {aw_stamp.mask, aw_stamp.op, slv_req_i.aw.user[UserWidth-1:0]};
-    if (aw_stamp.hit) mst_req_o.aw.addr = aw_stamp.dest;
     mst_req_o.aw_valid  = slv_req_i.aw_valid;
-    // W: forwarded untouched but for the user widening - the chimney reads the
-    // collective fields from the AW only and carries them to the W beats itself.
-    mst_req_o.w         = slv_req_i.w;
+    // W: data/strb/last in their own lanes - the chimney reads the collective
+    // fields from the AW only and carries them to the W beats itself.
+    mst_req_o.w.data    = slv_req_i.w.data;
+    mst_req_o.w.strb    = slv_req_i.w.strb;
+    mst_req_o.w.last    = slv_req_i.w.last;
     mst_req_o.w.user    = {{(MaskWidth + OpWidth){1'b0}}, slv_req_i.w.user[UserWidth-1:0]};
     mst_req_o.w_valid   = slv_req_i.w_valid;
     // AR: reads never carry a collective stamp (the chimney hardwires the AR
     // channel's collective_op to zero - reductions are write-side by design).
-    mst_req_o.ar        = slv_req_i.ar;
+    mst_req_o.ar.id     = slv_req_i.ar.id;
+    mst_req_o.ar.addr   = slv_req_i.ar.addr;
+    mst_req_o.ar.len    = slv_req_i.ar.len;
+    mst_req_o.ar.size   = slv_req_i.ar.size;
+    mst_req_o.ar.burst  = slv_req_i.ar.burst;
+    mst_req_o.ar.lock   = slv_req_i.ar.lock;
+    mst_req_o.ar.cache  = slv_req_i.ar.cache;
+    mst_req_o.ar.prot   = slv_req_i.ar.prot;
+    mst_req_o.ar.qos    = slv_req_i.ar.qos;
+    mst_req_o.ar.region = slv_req_i.ar.region;
     mst_req_o.ar.user   = {{(MaskWidth + OpWidth){1'b0}}, slv_req_i.ar.user[UserWidth-1:0]};
     mst_req_o.ar_valid  = slv_req_i.ar_valid;
     // Response-side ready straight through.
@@ -130,15 +171,21 @@ module olli_collective_stamper #(
   // ---------------------------------------------------------------------------
   // Response path: pass-through, user narrowed back to the plain width.
   // ---------------------------------------------------------------------------
+  // Same field-by-field rule in reverse: a blanket narrower = wider struct
+  // assignment truncates the TOP bits, garbling id/resp instead of the user.
   always_comb begin
     slv_rsp_o          = '0;
     slv_rsp_o.aw_ready = mst_rsp_i.aw_ready;
     slv_rsp_o.w_ready  = mst_rsp_i.w_ready;
     slv_rsp_o.ar_ready = mst_rsp_i.ar_ready;
-    slv_rsp_o.b        = mst_rsp_i.b;
+    slv_rsp_o.b.id     = mst_rsp_i.b.id;
+    slv_rsp_o.b.resp   = mst_rsp_i.b.resp;
     slv_rsp_o.b.user   = mst_rsp_i.b.user[UserWidth-1:0];
     slv_rsp_o.b_valid  = mst_rsp_i.b_valid;
-    slv_rsp_o.r        = mst_rsp_i.r;
+    slv_rsp_o.r.id     = mst_rsp_i.r.id;
+    slv_rsp_o.r.data   = mst_rsp_i.r.data;
+    slv_rsp_o.r.resp   = mst_rsp_i.r.resp;
+    slv_rsp_o.r.last   = mst_rsp_i.r.last;
     slv_rsp_o.r.user   = mst_rsp_i.r.user[UserWidth-1:0];
     slv_rsp_o.r_valid  = mst_rsp_i.r_valid;
   end
