@@ -74,6 +74,11 @@
   route_cfg = "RouteCfg" if use_mcast else "RouteCfgNoMcast"
   colls = config.topology.noc_settings.collectives
   narrow_red_on = colls.narrow_reduction.enable
+  # The wide offload plumbing (red_wide_* types, router offload ports, the isle's
+  # offload interface) exists only when the SoC declares the wide reduction
+  # channel: FlooGen emits those types with it, and a project without the channel
+  # ties the isle's interface off instead (its adapter is not generated either).
+  wide_red_on = colls.wide_reduction.enable
 
   
   # Determine the underlying IP to instantiate (restoring the original _subtile or _isle suffix)
@@ -350,6 +355,9 @@
   # public parameter, and the top's overrides disappear on their own because they
   # are derived from the wrapper's declared parameters.
   for _p, _fill in (
+      # The wide offload types exist only with the channel declared (see wide_red_on).
+      *([('offload_wide_req_t', f"{noc_pkg}::red_wide_req_t"),
+         ('offload_wide_rsp_t', f"{noc_pkg}::red_wide_rsp_t")] if wide_red_on else []),
       ('sync_reg_out_req_t',  f"{soc_pkg}::soc_reg_req_t"),
       ('sync_reg_out_rsp_t',  f"{soc_pkg}::soc_reg_rsp_t"),
       ('async_reg_out_req_t', f"{soc_pkg}::soc_reg_req_t"),
@@ -404,6 +412,36 @@
       return str(p_val)
       
   has_offload = 'offload_wide_req_i' in known_ports
+
+  # Does this isle drive FlooNoC's collective layout on its own wide user? It says
+  # so (OffloadWideUserLayout = "floo_collective"): a declared semantic, not a width
+  # inferred by comparison - a wider-than-plain user could carry anything, and
+  # reading it as {mask, op} would put foreign bits into the opcode. The widths are
+  # then checked in elaboration on the real ports, next to the copies (the `$bits
+  # guards below), which is stricter than a literal and needs no number here.
+  _wide_layout = (isle_info or {}).get("fixed_params", {}).get("OffloadWideUserLayout")
+  wide_coll_user = str(_wide_layout or "").strip('"') == "floo_collective"
+
+  # INBOUND WIDE ADAPTER. With the wide collectives generated in, the cluster's
+  # SLAVE wide port carries the same {collective_mask, collective_op} user as its
+  # master one, while the network delivers the plain wide type: the two structs
+  # differ in width, and connecting them directly shifts every field (measured
+  # 2026-09-02: every wide write arriving at the group's instance 0 came in
+  # displaced, never completed, and fifteen isolation cells could not drain). The
+  # inbound direction never needs the collective fields - a collective is resolved
+  # in the routers and the destination receives an ordinary write - so the adapter
+  # copies field by field and ties the user to Unicast.
+  # isle_port_type() hands back the declaration's type text, which for these
+  # ports starts with 'wire': the adapter signals are driven from always_comb
+  # blocks, so they must be VARIABLES - strip the net kind.
+  def _var_type(t): return re.sub(r"^\s*wire\s+", "", t) if t else t
+  slv_wide_req_t = _var_type(isle_port_type("axi_wide_req_i")) if has_slave_wide else None
+  slv_wide_rsp_t = _var_type(isle_port_type("axi_wide_resp_o")) if has_slave_wide else None
+  slv_wide_adapt = bool(wide_coll_user and noc_mode == "dual" and has_slave_wide
+                        and slv_wide_req_t and slv_wide_rsp_t)
+  # In a macro build the network-side signal is the boundary one (input-typed,
+  # see the widening next to the chimney); otherwise it is the chimney output.
+  slv_wide_src = "border_wide" if macro_boundary_wide else "wide_out"
 
   # Collective-injection stamper (the narrow-reduction test): only the collective
   # group's own tiles inject - the reduction is write-side (members write, the
@@ -476,6 +514,19 @@
           # the machinery silently reduces the unwritten low half (the barrier
           # at 'h1_FFFC never converged for exactly this reason, 2026-08-31).
           _beat = getattr(config.topology.noc_settings.networks['narrow'], 'data_width', 64) // 8
+          # The wide landing is a full beat of the WIDE channel, so its alignment is
+          # that channel's beat (64 bytes at 512 bits), not the narrow one the
+          # slots above follow: a wide transfer at a sub-beat offset makes iDMA
+          # emit strobed narrow beats instead of one full one, and a wide
+          # reduction would then merge partial beats.
+          _woff = _fx.get("OffloadWideOffs")
+          _woff_i = int(str(_woff), 0) if _woff is not None else None
+          _wbeat = config.topology.noc_settings.networks['wide'].data_width // 8
+          if _woff_i is not None and _woff_i % _wbeat:
+              raise ValueError(
+                  f"[COLLECTIVE] '{comp.name}': OffloadWideOffs {hex(_woff_i)} is not aligned to the "
+                  f"wide beat ({_wbeat} bytes). The wide landing is a whole 512-bit beat written by the "
+                  f"cluster's DMA; an unaligned offset degrades into strobed narrow beats.")
           for _nm, _o in (("OffloadCollectOffs", _coff_i),
                           ("OffloadCollectColOffs", _ccoff_i),
                           ("OffloadBarrierOffs", _boff_i),
@@ -781,7 +832,7 @@ module ${p_name}_${c_type}
   ${noc_pkg}::floo_rsp_t  [Eject:North] router_floo_rsp_out, router_floo_rsp_in;
   ${noc_pkg}::floo_wide_t [Eject:North] router_floo_wide_in, router_floo_wide_out;
 
-% if has_offload:
+% if has_offload and wide_red_on:
   ${noc_pkg}::red_wide_req_t offload_wide_req_out;
   ${noc_pkg}::red_wide_rsp_t offload_wide_rsp_in;
 % endif
@@ -834,7 +885,7 @@ module ${p_name}_${c_type}
     .floo_req_t    ( ${noc_pkg}::floo_req_t ),
     .floo_rsp_t    ( ${noc_pkg}::floo_rsp_t ),
     .floo_wide_t   ( ${noc_pkg}::floo_wide_t ),
-% if has_offload:
+% if has_offload and wide_red_on:
     .red_wide_req_t( ${noc_pkg}::red_wide_req_t ),
     .red_wide_rsp_t( ${noc_pkg}::red_wide_rsp_t ),
 % endif
@@ -863,7 +914,7 @@ module ${p_name}_${c_type}
     .floo_rsp_i     ( router_floo_rsp_in )
     , .floo_wide_i  ( router_floo_wide_in )
     , .floo_wide_o  ( router_floo_wide_out )
-   % if has_offload:
+   % if has_offload and wide_red_on:
     , .offload_wide_req_o  ( offload_wide_req_out )
     , .offload_wide_rsp_i  ( offload_wide_rsp_in )
    % else:
@@ -1017,8 +1068,8 @@ module ${p_name}_${c_type}
     .mst_rsp_i ( narrow_in_rsp_coll )
   );
 % endif
-  ${noc_pkg}::axi_wide_in_req_t    wide_in_req;
-  ${noc_pkg}::axi_wide_in_rsp_t    wide_in_rsp;
+  ${noc_pkg}::${'collective_axi_wide_in_req_t' if wide_coll_user else 'axi_wide_in_req_t'}    wide_in_req;
+  ${noc_pkg}::${'collective_axi_wide_in_rsp_t' if wide_coll_user else 'axi_wide_in_rsp_t'}    wide_in_rsp;
   ${noc_pkg}::axi_wide_out_req_t   wide_out_req;
   ${noc_pkg}::axi_wide_out_rsp_t   wide_out_rsp;
 % if has_slave and (macro_boundary_narrow or macro_boundary_wide):
@@ -1041,6 +1092,62 @@ module ${p_name}_${c_type}
   `AXI_ASSIGN_RESP_STRUCT(wide_out_rsp, border_wide_rsp)
  % endif
 % endif
+% if slv_wide_adapt:
+
+  // Inbound wide adapter (see the note next to slv_wide_adapt in the header): the
+  // network-side plain wide request (the chimney output, or the boundary signal in a
+  // macro build) rebuilt, field by field, into the isle's own slave
+  // type - whose user carries the collective layout - with that user tied to
+  // Unicast, and the isle's response rebuilt back into the network's plain type.
+  ${slv_wide_req_t} isle_wide_slv_req;
+  ${slv_wide_rsp_t} isle_wide_slv_rsp;
+  always_comb begin
+    isle_wide_slv_req = '0;
+    isle_wide_slv_req.aw.id     = ${slv_wide_src}_req.aw.id;
+    isle_wide_slv_req.aw.addr   = ${slv_wide_src}_req.aw.addr;
+    isle_wide_slv_req.aw.len    = ${slv_wide_src}_req.aw.len;
+    isle_wide_slv_req.aw.size   = ${slv_wide_src}_req.aw.size;
+    isle_wide_slv_req.aw.burst  = ${slv_wide_src}_req.aw.burst;
+    isle_wide_slv_req.aw.lock   = ${slv_wide_src}_req.aw.lock;
+    isle_wide_slv_req.aw.cache  = ${slv_wide_src}_req.aw.cache;
+    isle_wide_slv_req.aw.prot   = ${slv_wide_src}_req.aw.prot;
+    isle_wide_slv_req.aw.qos    = ${slv_wide_src}_req.aw.qos;
+    isle_wide_slv_req.aw.region = ${slv_wide_src}_req.aw.region;
+    isle_wide_slv_req.aw.atop   = ${slv_wide_src}_req.aw.atop;
+    isle_wide_slv_req.aw_valid  = ${slv_wide_src}_req.aw_valid;
+    isle_wide_slv_req.w.data    = ${slv_wide_src}_req.w.data;
+    isle_wide_slv_req.w.strb    = ${slv_wide_src}_req.w.strb;
+    isle_wide_slv_req.w.last    = ${slv_wide_src}_req.w.last;
+    isle_wide_slv_req.w_valid   = ${slv_wide_src}_req.w_valid;
+    isle_wide_slv_req.ar.id     = ${slv_wide_src}_req.ar.id;
+    isle_wide_slv_req.ar.addr   = ${slv_wide_src}_req.ar.addr;
+    isle_wide_slv_req.ar.len    = ${slv_wide_src}_req.ar.len;
+    isle_wide_slv_req.ar.size   = ${slv_wide_src}_req.ar.size;
+    isle_wide_slv_req.ar.burst  = ${slv_wide_src}_req.ar.burst;
+    isle_wide_slv_req.ar.lock   = ${slv_wide_src}_req.ar.lock;
+    isle_wide_slv_req.ar.cache  = ${slv_wide_src}_req.ar.cache;
+    isle_wide_slv_req.ar.prot   = ${slv_wide_src}_req.ar.prot;
+    isle_wide_slv_req.ar.qos    = ${slv_wide_src}_req.ar.qos;
+    isle_wide_slv_req.ar.region = ${slv_wide_src}_req.ar.region;
+    isle_wide_slv_req.ar_valid  = ${slv_wide_src}_req.ar_valid;
+    isle_wide_slv_req.b_ready   = ${slv_wide_src}_req.b_ready;
+    isle_wide_slv_req.r_ready   = ${slv_wide_src}_req.r_ready;
+  end
+  always_comb begin
+    ${slv_wide_src}_rsp = '0;
+    ${slv_wide_src}_rsp.aw_ready = isle_wide_slv_rsp.aw_ready;
+    ${slv_wide_src}_rsp.w_ready  = isle_wide_slv_rsp.w_ready;
+    ${slv_wide_src}_rsp.ar_ready = isle_wide_slv_rsp.ar_ready;
+    ${slv_wide_src}_rsp.b.id     = isle_wide_slv_rsp.b.id;
+    ${slv_wide_src}_rsp.b.resp   = isle_wide_slv_rsp.b.resp;
+    ${slv_wide_src}_rsp.b_valid  = isle_wide_slv_rsp.b_valid;
+    ${slv_wide_src}_rsp.r.id     = isle_wide_slv_rsp.r.id;
+    ${slv_wide_src}_rsp.r.data   = isle_wide_slv_rsp.r.data;
+    ${slv_wide_src}_rsp.r.resp   = isle_wide_slv_rsp.r.resp;
+    ${slv_wide_src}_rsp.r.last   = isle_wide_slv_rsp.r.last;
+    ${slv_wide_src}_rsp.r_valid  = isle_wide_slv_rsp.r_valid;
+  end
+% endif
 % if iso_nets:
 
   // ISOLATION NETS, DECLARED HERE AND NOT WITH THEIR CELLS FURTHER DOWN. The conversion
@@ -1049,8 +1156,8 @@ module ${p_name}_${c_type}
   // the stubbed flist ("identifier used before its declaration"). Keeping the declarations
   // ahead of every consumer is the fix; the cells themselves stay next to their comment.
  % for net in iso_nets:
-  ${noc_pkg}::axi_${net}_in_req_t iso_${net}_req;
-  ${noc_pkg}::axi_${net}_in_rsp_t iso_${net}_rsp;
+  ${noc_pkg}::${'collective_axi_wide_in_req_t' if (net == 'wide' and wide_coll_user) else 'axi_' + net + '_in_req_t'} iso_${net}_req;
+  ${noc_pkg}::${'collective_axi_wide_in_rsp_t' if (net == 'wide' and wide_coll_user) else 'axi_' + net + '_in_rsp_t'} iso_${net}_rsp;
   logic iso_${net}_isolated;
  % endfor
 % endif
@@ -1062,8 +1169,32 @@ module ${p_name}_${c_type}
  % for net, req_t, rsp_t in mst_adapt:
   ${req_t} isle_${net}_req;
   ${rsp_t} isle_${net}_rsp;
-  `AXI_ASSIGN_REQ_STRUCT(${"iso_" + net + "_req" if net in iso_nets else net + "_in_req"}, isle_${net}_req)
-  `AXI_ASSIGN_RESP_STRUCT(isle_${net}_rsp, ${"iso_" + net + "_rsp" if net in iso_nets else net + "_in_rsp"})
+<% _dst = ("iso_" + net + "_req") if net in iso_nets else (net + "_in_req") %>\
+<% _src_rsp = ("iso_" + net + "_rsp") if net in iso_nets else (net + "_in_rsp") %>\
+%   if net == 'wide' and not wide_coll_user:
+  // No collective layout declared: the isle's wide user is copied into the
+  // network's plain one, which zero-extends a narrower user harmlessly but would
+  // TRUNCATE a wider one - and a wider user that is not the collective layout has
+  // no way to travel at all. Refused here rather than silently cut (2026-09-02).
+  if ($bits(isle_${net}_req.aw.user) > $bits(${_dst}.aw.user))
+    $fatal(1, "${c_type}: the isle's wide user (%0d bits) is wider than the network's plain wide user (%0d bits) and the isle declares no OffloadWideUserLayout - it cannot be carried.",
+           $bits(isle_${net}_req.aw.user), $bits(${_dst}.aw.user));
+%   endif
+%   if net == 'wide' and wide_coll_user:
+  // The isle drives {collective_mask, collective_op} on its wide user and the
+  // network's collective wide user is exactly that pair - by construction, since the
+  // network declares no plain user field on the wide channel (floogen_cfg.yml.mako).
+  // The layouts coincide, so the field-by-field macro below copies the user
+  // bit-exactly. The guard is what keeps that true: a user-to-user assignment
+  // between DIFFERENT widths does not fail, it shifts every collective field by the
+  // difference and loses the top of the mask in silence - which is exactly how it
+  // looked before the widths were aligned (2026-09-02).
+  if ($bits(isle_${net}_req.aw.user) != $bits(${_dst}.aw.user))
+    $fatal(1, "${c_type}: the isle's wide user (%0d bits) and the network's collective wide user (%0d bits) differ - a struct copy between them would misplace every collective field.",
+           $bits(isle_${net}_req.aw.user), $bits(${_dst}.aw.user));
+%   endif
+  `AXI_ASSIGN_REQ_STRUCT(${_dst}, isle_${net}_req)
+  `AXI_ASSIGN_RESP_STRUCT(isle_${net}_rsp, ${_src_rsp})
  % endfor
 % endif
 % if iso_nets:
@@ -1111,6 +1242,19 @@ module ${p_name}_${c_type}
 
  % for net in iso_nets:
 
+<% _iso_coll = (net == 'wide' and wide_coll_user) %>\
+%   if _iso_coll:
+  // The wide isolate carries the COLLECTIVE request/response types, because on the
+  // wide there is no stamper: the isle's {collective_mask, collective_op} user
+  // flows straight through this cell to the chimney. Parametrizing it with the
+  // plain types while its ports carry the collective ones does not fail - a packed
+  // struct connected across a width difference is shifted whole, so every field of
+  // every wide transaction leaving the cluster comes out displaced. Measured
+  // 2026-09-02: with a 53-bit user the cluster's wide crossbar reported an AR
+  // id-counter underflow (a response it could not match), with 52 bits the
+  // instruction fetches from L2 never returned and the cores never ran. Both were
+  // this cell, not the crossbar.
+%   endif
   axi_isolate #(
     .NumPending           ( floo_pkg::ChimneyDefaultCfg.MaxTxns ),
     .TerminateTransaction ( 1'b1 ),
@@ -1118,9 +1262,9 @@ module ${p_name}_${c_type}
     .AxiAddrWidth         ( ${noc_pkg}::AxiCfg${"N" if net == "narrow" else "W"}.AddrWidth ),
     .AxiDataWidth         ( ${noc_pkg}::AxiCfg${"N" if net == "narrow" else "W"}.DataWidth ),
     .AxiIdWidth           ( ${noc_pkg}::AxiCfg${"N" if net == "narrow" else "W"}.InIdWidth ),
-    .AxiUserWidth         ( ${noc_pkg}::AxiCfg${"N" if net == "narrow" else "W"}.UserWidth ),
-    .axi_req_t            ( ${noc_pkg}::axi_${net}_in_req_t ),
-    .axi_resp_t           ( ${noc_pkg}::axi_${net}_in_rsp_t )
+    .AxiUserWidth         ( ${"$bits(" + noc_pkg + "::collective_axi_wide_in_user_t)" if _iso_coll else noc_pkg + "::AxiCfg" + ("N" if net == "narrow" else "W") + ".UserWidth"} ),
+    .axi_req_t            ( ${noc_pkg}::${"collective_axi_wide_in_req_t" if _iso_coll else "axi_" + net + "_in_req_t"} ),
+    .axi_resp_t           ( ${noc_pkg}::${"collective_axi_wide_in_rsp_t" if _iso_coll else "axi_" + net + "_in_rsp_t"} )
   ) i_axi_${net}_out_isolate (
     .clk_i      ( noc_clk ),
     .rst_ni     ( noc_rst_n ),
@@ -1178,8 +1322,8 @@ module ${p_name}_${c_type}
 % endif
     .axi_narrow_out_req_t( ${noc_pkg}::axi_narrow_out_req_t ),
     .axi_narrow_out_rsp_t( ${noc_pkg}::axi_narrow_out_rsp_t ),
-    .axi_wide_in_req_t   ( ${noc_pkg}::axi_wide_in_req_t ),
-    .axi_wide_in_rsp_t   ( ${noc_pkg}::axi_wide_in_rsp_t ),
+    .axi_wide_in_req_t   ( ${noc_pkg}::${'collective_axi_wide_in_req_t' if wide_coll_user else 'axi_wide_in_req_t'} ),
+    .axi_wide_in_rsp_t   ( ${noc_pkg}::${'collective_axi_wide_in_rsp_t' if wide_coll_user else 'axi_wide_in_rsp_t'} ),
     .axi_wide_out_req_t  ( ${noc_pkg}::axi_wide_out_req_t ),
     .axi_wide_out_rsp_t  ( ${noc_pkg}::axi_wide_out_rsp_t ),
     .floo_req_t          ( ${noc_pkg}::floo_req_t ),
@@ -1461,9 +1605,14 @@ module ${p_name}_${c_type}
   if 'test_mode_i' in known_ports: isle_connections.append(".test_mode_i ( test_mode_i )")
   if 'id_i' in known_ports: isle_connections.append(".id_i ( id_i )")
   
-  if has_offload:
+  if has_offload and wide_red_on:
       isle_connections.append(".offload_wide_req_i ( offload_wide_req_out )")
       isle_connections.append(".offload_wide_rsp_o ( offload_wide_rsp_in )")
+  elif has_offload:
+      # No wide channel: the isle's offload interface is tied off (its adapter is
+      # not generated, its types stay at the parameter defaults).
+      isle_connections.append(".offload_wide_req_i ( '0 )")
+      isle_connections.append(".offload_wide_rsp_o ( )")
 
   if isle_ports:
       for p in isle_ports:
@@ -1529,7 +1678,7 @@ module ${p_name}_${c_type}
               isle_connections.append(f".axi_narrow_req_i  ( {nsig}_req )")
               isle_connections.append(f".axi_narrow_resp_o ( {nsig}_rsp )")
           if has_slave_wide:
-              wsig = "border_wide" if macro_boundary_wide else "wide_out"
+              wsig = "isle_wide_slv" if slv_wide_adapt else ("border_wide" if macro_boundary_wide else "wide_out")
               isle_connections.append(f".axi_wide_req_i  ( {wsig}_req )")
               isle_connections.append(f".axi_wide_resp_o ( {wsig}_rsp )")
       else:

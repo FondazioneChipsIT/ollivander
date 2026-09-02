@@ -66,3 +66,16 @@ A NoC parent nesting **two** macros: `crux_isle` (joined through a narrow/wide a
 ## Environment and reproducibility
 
 Each project's `<name>_env.yml` declares nothing beyond the project's own paths. The external IP revisions and the forced resolutions that make the build reproducible are the **dependency catalogue** shipped in `ollivander_config.yml`, shared by every example; a project may override an entry, and the override replaces the catalogue's entirely (see the [environment guide](../docs/env_configuration_guide.md)). `Bender.yml`, `Bender.lock` and `Bender.local` are local build state: never copy them between machines or working copies.
+
+## Collective witnesses (decided 2026-09-02)
+
+Each collective mechanism the generator supports has exactly one example that exercises it, so that a regression names its mechanism instead of hiding behind another project's coverage. The distribution is deliberate; do not merge the profiles back into one project.
+
+| example | reduction channel | collective phases exercised | mechanism |
+| --- | --- | --- | --- |
+| `noc` | wide (FP) | FpAdd wide (two dimension-ordered phases), multicast, barrier | the gwaihir-like profile: DMA-issued, `dmuser` sets `{mask, op}`, routers offload to the cores' FPUs through the DCA |
+| `noc_isle` | narrow (integer) | IntAdd two-phase, multicast, barrier | the stamper: address windows stamp op and mask on core stores |
+| `noc_subtile` | none | multicast, barrier | the collectives that need no reduction channel; also the macro `super_crossbar` nests |
+| `super_noc` | wide (FP) | as `noc`, inside a macro consumer | the DCA path across a nested boundary |
+
+The barrier and the multicast are network capabilities always present in the emission and follow the component's contract slots, so every project with `cluster_subtile` carries them; the reduction channels are what the SoC description distributes.

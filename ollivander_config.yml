@@ -376,7 +376,20 @@ dependencies:
         replace: "            name: \"ollivander_low_l2_spm\",\n            address: 0x20000000,\n            length: 0x20000000,\n            cacheable: true\n        },\n        {\n            name: \"ollivander_boot_and_l2\",\n            address: 0x60000000,\n            length: 0x20000000,\n            cacheable: true\n        },\n        {\n            name: \"dram\","
       - file: "{bender_work}/snitch_cluster/cfg/default.json"
         search: "        alias_region_enable: true,"
-        replace: "        alias_region_enable: true,\n        cluster_base_expose: true,"
+        replace: "        alias_region_enable: true,\n        cluster_base_expose: true,\n        enable_dca: true,\n        enable_wide_collectives: true,\n        collective_width: 4,"
+      # The Direct Compute Access is what makes a WIDE reduction computable: the
+      # router offloads the FP operation and the cluster forks the 512-bit beat
+      # into eight FP64 lanes, one per compute core's FPU. Without it the wrapper
+      # is generated with EnableDca(0) and the interface tied off, so the first
+      # wide offload would stall the router forever.
+      # enable_wide_collectives widens the DMA's AXI user from one bit to
+      # {collective_mask, collective_op}, which is how software issues a wide
+      # collective (the dmuser instruction, no stamping outside); collective_width
+      # pins the opcode to FlooNoC's 4-bit collect_op_e. The network's wide user is
+      # declared to match exactly (floogen_cfg.yml.mako). enable_narrow_collectives
+      # stays OFF on purpose: it turns the cluster's narrow crossbar into a multicast
+      # variant our narrow path (the stamper, outside the cluster) never needs, and
+      # with it on the return-slot stores stalled (measured 2026-09-02).
     bender_targets:
       - "snitch_cluster"
       - "snitch_cluster_wrapper"

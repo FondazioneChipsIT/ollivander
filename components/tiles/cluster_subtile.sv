@@ -22,6 +22,15 @@ module cluster_subtile
   import snitch_cluster_pkg::*;
 #(
   parameter bit UseHWPE = 1'b0,
+  // The wide offload interface's types. They exist in the NoC package only when
+  // the SoC declares a wide reduction channel (FlooGen emits them with it), so a
+  // project without that channel must still be able to instantiate this subtile:
+  // the tile passes the package types when the channel is declared and leaves
+  // these defaults - and the ports tied off - when it is not. The adapter below
+  // is generated only when the network's collective configuration enables an FP
+  // operation, so the defaults are never dereferenced.
+  parameter type offload_wide_req_t = logic,
+  parameter type offload_wide_rsp_t = logic,
   // -------------------------------------------------------------------------------
   // INSTANCE IDENTITY (see docs/hw/component_standardization.md, "Instance identity
   // parameters"). A subtile that decodes its own slave window declares this pair and
@@ -116,6 +125,25 @@ module cluster_subtile
   // offset (the destination chimney rebuilds the local address from the member
   // id). The host then reads all of them. Beat-aligned like the others.
   localparam int unsigned OffloadMcastOffs      = 'h0001_FFD8,
+  // Wide collective landing. Two things set it apart from the slots above: it
+  // is a full 512-bit BEAT, so it must be aligned to 64 bytes and not to 8 (a
+  // wide transfer at a sub-beat offset makes iDMA emit strobed narrow beats
+  // instead of one full one), and it is written by the cluster's DMA rather
+  // than by a core, since Snitch cores store 64 bits at a time. Placed below
+  // the narrow slots and above the return array (which ends at ReturnOffs +
+  // NumCores*4 = 'h1_FF24), so the 64 bytes from here to 'h1_FF7F are free.
+  localparam int unsigned OffloadWideOffs       = 'h0001_FF40,
+  // Source buffer of the wide contribution: the eight FP64 lanes the DMA sends
+  // into the reduction. Separate from the landing above because on the group's
+  // instance 0 source and destination would otherwise coincide. 64-byte aligned,
+  // in the free stretch below the narrow slots ('h1_FF80..'h1_FFBF).
+  localparam int unsigned OffloadWideSrcOffs    = 'h0001_FF80,
+  // Mailbox: the REAL address of this instance's column-head wide landing, written
+  // by the host (which knows every base) before the wake. The wide path has no
+  // stamper to rewrite an address, and a payload does not know its own base
+  // (hartids restart per instance), so the first phase of the dimension-ordered
+  // wide reduction reads its destination from here. 64-bit word, beat-aligned.
+  localparam int unsigned OffloadWideColDstOffs = 'h0001_FFC0,
   // The alias base the PAYLOAD writes the collective slots through. A member's
   // contribution must always leave its cluster - the destination instance's
   // router expects it back on the local port (expected_in_route_loopback) - but
@@ -126,6 +154,33 @@ module cluster_subtile
   // the NoC and the SoC map never learns it exists.
   localparam int unsigned OffloadCollAliasBase = 'h3800_0000,
   localparam int unsigned OffloadNumCores   = 9,
+  // WHICH HART CAN MOVE WIDE DATA. The Snitch cores store 64 bits; the only
+  // master on the 512-bit channel is the cluster iDMA, and it is driven by
+  // CUSTOM INSTRUCTIONS that exactly one hart may execute - on every other one
+  // they trap as illegal. Declared here rather than derived by the generator
+  // because "the DMA sits on the last hart" is a fact of THIS cluster's ISA
+  // configuration, not a law: another IP will state another number, and
+  // Ollivander must read it instead of knowing it. The elaboration check below
+  // keeps the literal honest against the package that actually defines it.
+  // WHAT THIS SUBTILE'S WIDE USER MEANS. With the wide collectives generated in,
+  // the cluster's DMA drives {collective_mask, collective_op} - FlooNoC's own layout,
+  // mask on top - on the AW user of every wide transfer, and its slave wide port
+  // expects the same layout: that is how software issues a wide collective with no
+  // stamping outside the cluster. Declared as a SEMANTIC, not as a width: the
+  // generator needs to know the layout to type the isolate, the chimney and the
+  // inbound adapter, and no number can say that. The width itself is not declared
+  // - the tile checks it in elaboration on the real port against the network's
+  // collective type, which is stricter than any literal typed here. A component
+  // whose wide user carries something else leaves this undeclared and must then be
+  // no wider than the network's plain wide user, or generation refuses it.
+  localparam string       OffloadWideUserLayout = "floo_collective",
+  localparam int unsigned OffloadDmaHart    = 8,
+  // WHICH HART CARRIES THE RESULT. Convention rather than hardware: exactly one
+  // core per instance must issue a collective, and this is the one that runs the
+  // workload and therefore holds the value to reduce (every other core returns
+  // the fixed secondary code). Declared for the same reason as above - so the
+  // software templates stop hardcoding an index that belongs to the component.
+  localparam int unsigned OffloadPrimaryHart = 0,
   // Snitch executes rv32imafd; the payload keeps the conservative integer subset.
   localparam string       OffloadIsa        = "rv32im_zicsr",
   localparam string       OffloadAbi        = "ilp32"
@@ -162,8 +217,8 @@ module cluster_subtile
   output snitch_cluster_pkg::wide_in_resp_t       axi_wide_resp_o,
 
   // Offload interface
-  input wire floo_ollivander_noc_pkg::red_wide_req_t  offload_wide_req_i,
-  output floo_ollivander_noc_pkg::red_wide_rsp_t  offload_wide_rsp_o
+  input wire offload_wide_req_t  offload_wide_req_i,
+  output offload_wide_rsp_t      offload_wide_rsp_o
 );
 
   // The address and data widths above are literals because that is what Ollivander can
@@ -190,6 +245,11 @@ module cluster_subtile
   if (AxiWideInIdWidth != snitch_cluster_pkg::WideIdWidthIn)
     $fatal(1, "cluster_subtile: AxiWideInIdWidth (%0d) contradicts snitch_cluster_pkg::WideIdWidthIn (%0d)",
            AxiWideInIdWidth, snitch_cluster_pkg::WideIdWidthIn);
+  if (OffloadDmaHart >= OffloadNumCores || !snitch_cluster_pkg::IsaCfg[OffloadDmaHart].Xdma)
+    $fatal(1, "cluster_subtile: OffloadDmaHart (%0d) is not the hart this cluster gives the DMA instructions to (its IsaCfg entry has Xdma = 0). Ollivander reads this literal to decide which core issues wide transfers, so a wrong value would surface as an illegal-instruction trap in simulation instead of failing here.", OffloadDmaHart);
+  if (OffloadPrimaryHart >= OffloadNumCores)
+    $fatal(1, "cluster_subtile: OffloadPrimaryHart (%0d) is outside the %0d cores of this cluster.",
+           OffloadPrimaryHart, OffloadNumCores);
   if (AxiWideOutIdWidth != snitch_cluster_pkg::WideIdWidthOut)
     $fatal(1, "cluster_subtile: AxiWideOutIdWidth (%0d) contradicts snitch_cluster_pkg::WideIdWidthOut (%0d)",
            AxiWideOutIdWidth, snitch_cluster_pkg::WideIdWidthOut);
@@ -288,8 +348,14 @@ module cluster_subtile
     generic_reqrsp_cut #(
       .req_chan_t(snitch_cluster_pkg::dca_req_chan_t),
       .rsp_chan_t(snitch_cluster_pkg::dca_rsp_chan_t),
-      .BypassReq (RouteCfg.CollectiveCfg.WideRedCfg.CutOffloadIntf),
-      .BypassRsp (RouteCfg.CollectiveCfg.WideRedCfg.CutOffloadIntf)
+      // CutOffloadIntf asks for a CUT; the cell's parameters ask whether to
+      // BYPASS one. Passing the flag straight through inverted the intent - the
+      // configuration requesting a cut built none, and the one declining it
+      // built one (found 2026-09-01 by reading, before the interface had ever
+      // carried a transaction). The FlooNoC router cuts its side under the same
+      // flag, so this keeps both ends of the offload interface consistent.
+      .BypassReq (!RouteCfg.CollectiveCfg.WideRedCfg.CutOffloadIntf),
+      .BypassRsp (!RouteCfg.CollectiveCfg.WideRedCfg.CutOffloadIntf)
     ) i_dca_router_cut (
       .clk_i    (clk_i),
       .rst_ni   (rst_ni),
@@ -304,11 +370,11 @@ module cluster_subtile
     assign offload_wide_rsp_o.rsp.result = offload_dca_rsp.p.result;
 
   end else begin : gen_no_wide_reduction
-    assign offload_dca_req_cut           = '0;
-    assign offload_dca_rsp               = '0;
-    assign offload_wide_rsp_o.ready      = '0;
-    assign offload_wide_rsp_o.rsp.result = '0;
-    assign offload_wide_rsp_o.valid      = '0;
+    // Whole-struct tie-off on purpose: with no wide channel declared the response
+    // type is the parameter's default, and a member access would not elaborate.
+    assign offload_dca_req_cut = '0;
+    assign offload_dca_rsp     = '0;
+    assign offload_wide_rsp_o  = '0;
   end
 
   snitch_cluster_wrapper i_cluster (

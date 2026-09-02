@@ -287,6 +287,16 @@ protocols:
       collective_mask: ${n_addr_w}
       collective_op: 4
       user: ${g_narrow_user_w}
+  ## The WIDE channel declares NO plain user field, only the collective pair - so
+  ## FlooGen emits the collective wide user as exactly {collective_mask, collective_op}
+  ## (52 bits at 48-bit addresses), which is bit-for-bit the user_dma_t a Snitch
+  ## cluster generated with enable_wide_collectives drives on its wide master: the
+  ## two connect with a plain struct copy and no re-layout. With a plain user bit
+  ## declared here the collective type grew to 53 bits with that bit at the BOTTOM,
+  ## every collective field sat one position off the cluster's, and the tile needed
+  ## an adapter the reference design (gwaihir) never had. The non-collective wide
+  ## user type is not lost: FlooGen fills it with a one-bit logic when no plain user
+  ## is declared, which is what resolve_noc_user_widths() reports for the wide.
   - name: "wide_in"
     type: "wide"
     protocol: "AXI4"
@@ -296,7 +306,6 @@ protocols:
     user_width:
       collective_mask: ${w_addr_w}
       collective_op: 4
-      user: ${g_wide_user_w}
   - name: "wide_out"
     type: "wide"
     protocol: "AXI4"
@@ -306,7 +315,6 @@ protocols:
     user_width:
       collective_mask: ${w_addr_w}
       collective_op: 4
-      user: ${g_wide_user_w}
 
 endpoints:
 % for ep in endpoints:

@@ -36,7 +36,10 @@ topology:
     # RedDefaultCfg. The narrow (integer) channel joins once the functional-test wave clears
     # it - enabling it is the subject of the collectives probe (wip 3.6.1).
     collectives:
-      narrow_reduction: { enable: true, rd_pipeline_depth: 5, cut_offload_intf: true }
+      # The gwaihir-like profile: FP reduction on the wide channel (DMA-issued,
+      # dmuser), multicast and barrier. The narrow stamper reduction lives in
+      # noc_isle; the reduction-free profile in noc_subtile. Distributed on
+      # purpose (2026-09-02) so that every collective mechanism has one witness.
       wide_reduction: { enable: true, rd_pipeline_depth: 5, cut_offload_intf: true }
 
 # ------------------------------------------------------------------------------

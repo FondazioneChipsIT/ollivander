@@ -1825,6 +1825,31 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
                 and contract.get("collect_col_offs") is not None)
             contract["collective_mcast"] = bool(
                 contract["collective_test"] and contract.get("mcast_offs") is not None)
+            # The wide reduction: FP64 lanes, DMA-issued, computed by the cores'
+            # FPUs behind the DCA. Needs the wide channel declared, the landing and
+            # source slots, and a hart the contract names for the DMA instructions.
+            contract["collective_wide"] = bool(
+                contract["collective_test"]
+                and noc is not None and noc.collectives.wide_reduction.enable
+                and contract.get("wide_offs") is not None
+                and contract.get("wide_src_offs") is not None
+                and contract.get("dma_hart") is not None)
+            # The group's member mask as FlooNoC wants it in the AXI user: the OR of
+            # every instance base XOR instance 0's - the address bits that vary
+            # across the group. The same value the tile stamps on the narrow.
+            _gm = 0
+            for _k in range(contract["num_instances"]):
+                _gm |= (contract["base_addr"] + _k * contract["instance_stride"]) ^ contract["base_addr"]
+            contract["group_mask"] = _gm
+            # Dimension-ordered decomposition, the same the tile computes for the
+            # narrow windows: the column mask spans the y_dim consecutive instances
+            # of one column (enumeration is column-fastest), the row mask is the rest.
+            # A sequential reduction merges at most TWO contributions per router, so a
+            # 2D mask cannot be reduced in one pass - narrow or wide alike.
+            _yd = contract.get("y_dim") or 1
+            _ym = ((contract["instance_stride"] * _yd - 1) & ~(contract["instance_stride"] - 1)) if _yd > 1 else 0
+            contract["y_mask"] = _ym
+            contract["x_mask"] = _gm & ~_ym
             # LIVE since 2026-08-31: the transport works under FlooNoC's 1D usage
             # contract - sequential reductions are dimension-ordered two-phase
             # windows (columns to their heads, then the head row) and every

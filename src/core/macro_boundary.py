@@ -148,16 +148,21 @@ def user_span(soc_config):
 
 def resolve_noc_user_widths(soc_config):
     """
-    Width of the AXI user field each network carries.
+    Width of the PLAIN AXI user field each network carries - the part with SoC
+    semantics, distinct from the collective fields FlooGen adds on top.
 
     The narrow network carries the span of the SoC user mapping that has defined
     semantics, up to the highest of the AMO reservation bits and the ECC error flag.
-    The wide network deliberately carries one bit: every endpoint reading user bits
-    sits behind a narrow/wide join and floo_pkg::axi_join_cfg takes UserWidth as the
-    maximum of the two, so widening the wide one gains nothing and costs a mismatch
-    against snitch_cluster's own one-bit user_dma_t. The reasoning is spelled out in
-    floogen_cfg.yml.mako, which renders these values; they live here so that the
-    boundary check below and the network configuration cannot disagree about them.
+    The wide network declares NO plain user field at all (floogen_cfg.yml.mako):
+    its collective user is then exactly {collective_mask, collective_op}, which is
+    bit-for-bit what a Snitch cluster generated with enable_wide_collectives drives
+    on its wide master, so cluster and network connect with a plain struct copy.
+    FlooGen still emits a NON-collective wide user type for endpoints that do not
+    speak collectives, and fills it with a one-bit logic when no plain user is
+    declared - that one bit is what this function reports for the wide, and it is
+    all the boundary check below and the tile need: a nested macro's meaningful
+    user span must fit in it, and an isle declaring a wider user than it is
+    recognised as driving collective fields there (universal_tile.sv.mako).
     """
     return {"narrow": user_span(soc_config), "wide": 1}
 

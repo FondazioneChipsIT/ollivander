@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+  <!-- Theme-neutral palette (matches tb_block_diagram.svg): GitHub's neutral gray reads on both light and dark. -->
+  <!-- Containment mirrors the source: everything sits INSIDE the tile frame because <type>_tile.sv instantiates it. -->
+  <defs>
+    <marker id="head" markerWidth="10" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,4.5 L0,9 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+
+  <!-- ============ outer frame: the generated tile ============ -->
+  <rect x="20" y="40" width="1140" height="836" rx="10" stroke="#8b949e" fill="rgba(139,148,158,0.04)" stroke-width="1.5"/>
+  <text x="38" y="66" fill="#8b949e" font-weight="600">&lt;type&gt;_tile.sv — generated per component type from universal_tile.sv.mako</text>
+
+  <!-- cardinal links on the frame edges -->
+  <g fill="#8b949e" font-size="11">
+    <text x="540" y="34">N: floo_req / floo_rsp / floo_wide</text>
+    <text x="1178" y="300" transform="rotate(90 1178 300)">E: floo_req / floo_rsp / floo_wide</text>
+    <text x="540" y="892">S: floo_req / floo_rsp / floo_wide</text>
+    <text x="14" y="300" transform="rotate(-90 14 300)">W: floo_req / floo_rsp / floo_wide</text>
+  </g>
+
+  <!-- ============ router ============ -->
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.10)" stroke-width="1.2">
+    <rect x="430" y="92" width="320" height="70" rx="6"/>
+  </g>
+  <text x="446" y="116" fill="#8b949e" font-weight="600">1 · floo_nw_router</text>
+  <text x="446" y="134" fill="#8b949e" font-size="11">5 ports: N E S W + local (eject) · XY routing · collective config</text>
+  <text x="446" y="150" fill="#8b949e" font-size="11">reduction unit offloads compute to the ports on the right</text>
+  <line x1="590" y1="40" x2="590" y2="92" stroke="#8b949e" stroke-width="1.2" marker-start="url(#head)" marker-end="url(#head)"/>
+  <line x1="430" y1="127" x2="20" y2="127" stroke="#8b949e" stroke-width="1.2" marker-start="url(#head)" marker-end="url(#head)"/>
+  <path d="M750,112 L776,112 L776,66 L1160,66" stroke="#8b949e" stroke-width="1.2" fill="none" marker-start="url(#head)" marker-end="url(#head)"/>
+
+  <!-- offload units (conditional) -->
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2" stroke-dasharray="5 4">
+    <rect x="800" y="86" width="330" height="40" rx="5"/>
+    <rect x="800" y="134" width="330" height="40" rx="5"/>
+  </g>
+  <text x="812" y="103" fill="#8b949e" font-size="12">1b · floo_alu_top — narrow integer reduction</text>
+  <text x="812" y="119" fill="#8b949e" font-size="10">[narrow_reduction declared]</text>
+  <text x="812" y="151" fill="#8b949e" font-size="12">wide offload → DCA adapter inside the isle (FP lanes)</text>
+  <text x="812" y="167" fill="#8b949e" font-size="10">[wide_reduction declared and the isle has the offload port]</text>
+  <line x1="750" y1="106" x2="800" y2="106" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="5 4" marker-start="url(#head)" marker-end="url(#head)"/>
+  <line x1="750" y1="154" x2="800" y2="154" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="5 4" marker-start="url(#head)" marker-end="url(#head)"/>
+
+  <!-- south link: routed down the free left margin, between the frame and the blocks -->
+  <path d="M440,162 L440,182 L40,182 L40,876" stroke="#8b949e" stroke-width="1.2" fill="none" marker-start="url(#head)" marker-end="url(#head)"/>
+  <text x="44" y="852" fill="#8b949e" font-size="10">S</text>
+  <!-- local port -->
+  <line x1="590" y1="162" x2="590" y2="226" stroke="#8b949e" stroke-width="1.2" marker-start="url(#head)" marker-end="url(#head)"/>
+  <text x="600" y="198" fill="#8b949e" font-size="11">local port (flits)</text>
+
+  <!-- ============ chimney ============ -->
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.10)" stroke-width="1.2">
+    <rect x="380" y="226" width="420" height="78" rx="6"/>
+  </g>
+  <text x="396" y="250" fill="#8b949e" font-weight="600">2 · floo_nw_chimney</text>
+  <text x="396" y="268" fill="#8b949e" font-size="11">AXI ⇄ flits · SAM (collective rules) · ID table · RoB</text>
+  <text x="396" y="284" fill="#8b949e" font-size="11">reads {collective_mask, collective_op} from the AXI user of AW and W</text>
+  <text x="396" y="298" fill="#8b949e" font-size="10">narrow in/out and wide in/out; multicast-capable only where the isle is a multicast target</text>
+
+  <!-- ============ two directions between chimney and isle ============ -->
+  <text x="60" y="346" fill="#8b949e" font-size="12" font-weight="600">isle → network (master side)</text>
+  <text x="700" y="346" fill="#8b949e" font-size="12" font-weight="600">network → isle (slave side)</text>
+  <text x="700" y="566" fill="#8b949e" font-size="10">no symmetric type adaptation here: network types are injected as isle parameters,</text>
+  <text x="700" y="580" fill="#8b949e" font-size="10">or connected directly where the isle keeps its own types ($bits guards on user and id)</text>
+
+  <!-- master side column -->
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2">
+    <rect x="60" y="360" width="440" height="48" rx="5"/>
+  </g>
+  <text x="74" y="380" fill="#8b949e" font-size="12">AXI isolation cells (outbound drain) — narrow and wide</text>
+  <text x="74" y="396" fill="#8b949e" font-size="10">typed like the signals they carry: collective wide types where the isle declares the layout</text>
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2" stroke-dasharray="5 4">
+    <rect x="60" y="424" width="440" height="60" rx="5"/>
+  </g>
+  <text x="74" y="444" fill="#8b949e" font-size="12">2a · olli_collective_stamper (narrow only)</text>
+  <text x="74" y="460" fill="#8b949e" font-size="10">address windows → {op, member mask} into the AXI user; field-by-field rebuild of every channel</text>
+  <text x="74" y="475" fill="#8b949e" font-size="10">[the isle declares collective contract slots]</text>
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2">
+    <rect x="60" y="500" width="440" height="48" rx="5"/>
+  </g>
+  <text x="74" y="520" fill="#8b949e" font-size="12">master type adaptation (isle's own AXI types → network types)</text>
+  <text x="74" y="536" fill="#8b949e" font-size="10">ID zero-extended on the way in; $bits guards where user layouts must coincide</text>
+  <!-- arrows master side: from isle up to chimney -->
+  <line x1="280" y1="600" x2="280" y2="548" stroke="#8b949e" stroke-width="1.2" marker-end="url(#head)"/>
+  <line x1="280" y1="500" x2="280" y2="484" stroke="#8b949e" stroke-width="1.2" marker-end="url(#head)"/>
+  <line x1="280" y1="424" x2="280" y2="408" stroke="#8b949e" stroke-width="1.2" marker-end="url(#head)"/>
+  <path d="M280,360 L280,330 L420,330 L420,304" stroke="#8b949e" stroke-width="1.2" fill="none" marker-end="url(#head)"/>
+
+  <!-- slave side column -->
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2" stroke-dasharray="5 4">
+    <rect x="700" y="360" width="440" height="48" rx="5"/>
+    <rect x="700" y="424" width="440" height="60" rx="5"/>
+    <rect x="700" y="500" width="440" height="48" rx="5"/>
+  </g>
+  <text x="714" y="380" fill="#8b949e" font-size="12">2b · floo_nw_join — narrow + wide into one AXI port</text>
+  <text x="714" y="396" fill="#8b949e" font-size="10">[the isle has one slave port in a joined topology]</text>
+  <text x="714" y="444" fill="#8b949e" font-size="12">inbound wide adapter — plain network type → isle's collective type</text>
+  <text x="714" y="460" fill="#8b949e" font-size="10">user tied to Unicast: a collective is resolved in the routers, the destination gets a plain write</text>
+  <text x="714" y="475" fill="#8b949e" font-size="10">[the isle declares the collective wide layout]</text>
+  <text x="714" y="520" fill="#8b949e" font-size="12">macro boundary — ID widened back to the input type</text>
+  <text x="714" y="536" fill="#8b949e" font-size="10">[build_mode: macro; addresses are rebased at the macro top]</text>
+  <!-- arrows slave side: from chimney down to isle -->
+  <path d="M760,304 L760,330 L920,330 L920,360" stroke="#8b949e" stroke-width="1.2" fill="none" marker-end="url(#head)"/>
+  <line x1="920" y1="408" x2="920" y2="424" stroke="#8b949e" stroke-width="1.2" marker-end="url(#head)"/>
+  <line x1="920" y1="484" x2="920" y2="500" stroke="#8b949e" stroke-width="1.2" marker-end="url(#head)"/>
+  <line x1="920" y1="548" x2="920" y2="600" stroke="#8b949e" stroke-width="1.2" marker-end="url(#head)"/>
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2">
+    <rect x="560" y="500" width="120" height="48" rx="5"/>
+  </g>
+  <text x="572" y="520" fill="#8b949e" font-size="11">error slaves</text>
+  <text x="572" y="536" fill="#8b949e" font-size="9">DECERR on terminated ports</text>
+
+  <!-- ============ isle ============ -->
+  <rect x="60" y="600" width="1080" height="180" rx="8" stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2"/>
+  <text x="76" y="624" fill="#8b949e" font-size="12" font-weight="600">3 · i_isle — the topology-agnostic component (cluster subtile, memory isle, host isle, ...) with its own AXI types</text>
+  <text x="76" y="644" fill="#8b949e" font-size="11">parameters filled from the parsed header: instance identity, package types, contract literals read by the generator</text>
+  <g stroke="#8b949e" fill="rgba(139,148,158,0.08)" stroke-width="1.2" stroke-dasharray="5 4">
+    <rect x="76" y="662" width="420" height="52" rx="5"/>
+    <rect x="520" y="662" width="300" height="52" rx="5"/>
+    <rect x="840" y="662" width="284" height="52" rx="5"/>
+  </g>
+  <text x="90" y="682" fill="#8b949e" font-size="11">DCA offload adapter — FlooNoC FP op → fpnew, 8 FP64 lanes</text>
+  <text x="90" y="698" fill="#8b949e" font-size="10">[cluster subtile with the wide channel declared]</text>
+  <text x="534" y="682" fill="#8b949e" font-size="11">component-specific I/Os and interrupts</text>
+  <text x="534" y="698" fill="#8b949e" font-size="10">extracted from the isle header, exported on the tile</text>
+  <text x="854" y="682" fill="#8b949e" font-size="11">isolation request / isolated status</text>
+  <text x="854" y="698" fill="#8b949e" font-size="10">owned by the isle or by this tile (see AXI isolation)</text>
+  <text x="76" y="748" fill="#8b949e" font-size="11">clock gating &amp; reset control (gated domains) · host tile only: register-bus flattening and the system controller</text>
+  <text x="76" y="768" fill="#8b949e" font-size="10">dashed = emitted only when the isle header, the SoC description or the topology asks for it</text>
+
+  <!-- footer -->
+  <text x="58" y="822" fill="#8b949e" font-size="11">Reading order of a generated tile: router → offload units → chimney → stamper / isolation / adapters → error slaves / join → isle instantiation.</text>
+  <text x="58" y="840" fill="#8b949e" font-size="11">Every decision (which blocks, which types) is taken once in the template's Python header from the parsed isle header and the SoC description.</text>
+  <text x="58" y="858" fill="#8b949e" font-size="11">The dummy tile (no isle) keeps only the router, configured for collective TRANSIT: multicast and barrier, no arithmetic reduction.</text>
+</svg>

@@ -333,6 +333,28 @@ static inline void ${t_name}_init_returns(uint32_t inst) {
 #define ${T}_OFFLOAD_COLLECT_ADDR  ${hex(t["base_addr"] + t["collect_offs"])}u
 #define ${T}_OFFLOAD_COLL_COL_ADDR(inst)  (${hex(t["base_addr"] + t["collect_col_offs"])}u + (inst) * ${hex(t["instance_stride"])}u)
 % endif
+% if t.get("collective_wide"):
+<%
+import struct
+_exp = [struct.unpack('<Q', struct.pack('<d', float(t["num_instances"]) * (k + 1)))[0] for k in range(8)]
+%>\
+/* Wide reduction landing (instance 0): eight FP64 lanes, each the sum over the
+ * group of (k+1).0 - compared as BIT PATTERNS the generator computed, so the host
+ * does no floating point either and the check is exact. */
+#define ${T}_OFFLOAD_WIDE_ADDR     ${hex(t["base_addr"] + t["wide_offs"])}u
+#define ${T}_OFFLOAD_WIDE_GO_ADDR(inst)   (${hex(t["base_addr"] + t["coll_meta_offs"] + 4)}u + (inst) * ${hex(t["instance_stride"])}u)
+#define ${T}_OFFLOAD_WIDE_DONE_ADDR(inst) (${hex(t["base_addr"] + t["mcast_offs"] + 4)}u + (inst) * ${hex(t["instance_stride"])}u)
+#define ${T}_OFFLOAD_WIDE_LANDING(inst)   (${hex(t["base_addr"] + t["wide_offs"])}u + (inst) * ${hex(t["instance_stride"])}u)
+#define ${T}_OFFLOAD_WIDE_COLDST(inst)    (${hex(t["base_addr"] + t["wide_col_dst_offs"])}u + (inst) * ${hex(t["instance_stride"])}u)
+/* Column head of an instance: its base with the column bits cleared. */
+#define ${T}_OFFLOAD_WIDE_COL_HEAD_LANDING(inst) \
+    (((${hex(t["base_addr"])}u + (inst) * ${hex(t["instance_stride"])}u) & ~${hex(t["y_mask"])}u) + ${hex(t["wide_offs"])}u)
+static const uint64_t ${t_name}_wide_expected[8] = {
+% for v in _exp:
+    ${hex(v)}ull,
+% endfor
+};
+% endif
 % if t.get("collective_mcast"):
 /* Multicast landing: one member issues, the network replicates, and each
  * member lands the value at ITS OWN copy of the slot - so verification reads
@@ -348,6 +370,10 @@ static inline void ${t_name}_init_returns(uint32_t inst) {
  * enumerate y-fastest, so instance n's row index is n % y_dim. */
 static inline void ${t_name}_init_collective(void) {
     *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_BARRIER_ADDR = 0;
+% if t.get("collective_wide"):
+    for (uint32_t k = 0; k < 8u; k++)
+        *(volatile uint64_t *)(uintptr_t)(${T}_OFFLOAD_WIDE_ADDR + 8u * k) = 0ull;
+% endif
 % if t.get("collective_reduce"):
     *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR = 0;
 % endif
@@ -357,6 +383,15 @@ static inline void ${t_name}_init_collective(void) {
 % endif
 % if t.get("collective_mcast"):
         *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_MCAST_ADDR(n) = 0;
+% endif
+% if t.get("collective_wide"):
+        *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_WIDE_GO_ADDR(n) = 0;
+        *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_WIDE_DONE_ADDR(n) = 0;
+        /* Every landing zeroed (heads receive column sums), and each instance told
+         * where its column head's landing is - the payload cannot compute it. */
+        for (uint32_t k = 0; k < 8u; k++)
+            *(volatile uint64_t *)(uintptr_t)(${T}_OFFLOAD_WIDE_LANDING(n) + 8u * k) = 0ull;
+        *(volatile uint64_t *)(uintptr_t)${T}_OFFLOAD_WIDE_COLDST(n) = (uint64_t)${T}_OFFLOAD_WIDE_COL_HEAD_LANDING(n);
 % endif
         /* meta = {num_instances[31:16], y_dim[15:2], is_mcast_issuer[1],
          * is_column_head[0]}. Exactly ONE instance issues the multicast:
@@ -389,6 +424,14 @@ static inline int ${t_name}_wait_collective(uint32_t exp_sum) {
         if (*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR != exp_sum) continue;
 % endif
         if (*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_BARRIER_ADDR != 1u) continue;
+% if t.get("collective_wide"):
+        {
+            uint32_t ok = 0;
+            for (uint32_t k = 0; k < 8u; k++)
+                if (*(volatile uint64_t *)(uintptr_t)(${T}_OFFLOAD_WIDE_ADDR + 8u * k) == ${t_name}_wide_expected[k]) ok++;
+            if (ok != 8u) continue;
+        }
+% endif
 % if t.get("collective_mcast"):
         /* Every member must hold the multicast value in its own slot: this is
          * what distinguishes a replication from a single write that landed. */

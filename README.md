@@ -102,7 +102,7 @@ The set also spreads the **boot roads** so that every one of them has a witness:
 
 ## 3. The Generation Flow
 
-The generation engine (`ollivander.py`) combines Python and Mako templates in a rigorous 10-Phase pipeline:
+The generation engine (`ollivander.py`) combines Python and Mako templates in a rigorous 11-Phase pipeline:
 
 ```mermaid
 %%{init: {"flowchart": {"rankSpacing": 18, "nodeSpacing": 30}}}%%
@@ -118,7 +118,8 @@ flowchart TB
     P7 --> P8["8 · Chip Wrapper (core + padframe + CDC)"]
     P8 --> P9["9 · RTL Formatting (Verible)"]
     P9 --> P10["10 · IP-XACT Export (+ schema validation)"]
-    P10 --> OUT["generated/ (hw · tb · sw · reg · cfg · doc)"]
+    P10 --> P11["11 · Self-Elaboration of the generated RTL (slang)"]
+    P11 --> OUT["generated/ (hw · tb · sw · reg · cfg · doc)"]
 ```
 
 ### Phase 1: Dynamic Isles Generation
@@ -272,4 +273,4 @@ The [documentation portal](docs/README.md) organizes every guide by reading path
 | :--- | :--- |
 | **Use** Ollivander to build an SoC | [Getting Started](docs/getting_started.md), then the [SoC](docs/soc_configuration_guide.md), [Environment](docs/env_configuration_guide.md) and [Padframe](docs/padframe_configuration_guide.md) configuration guides |
 | **Wrap an IP** so the generator can instantiate it | The [component standardization contract](docs/hw/component_standardization.md), plus [Clocking, Reset & CDC](docs/hw/clocking_reset_cdc_requirements.md) |
-| **Develop** Ollivander itself | The [SV-IR architecture](docs/developer/intermediate_representation.md) and the planned work in [`docs/developer/wip/`](docs/developer/wip/future_evolution_tasks.md) |
+| **Develop** Ollivander itself | The [SV-IR architecture](docs/developer/intermediate_representation.md), the [universal tile template](docs/developer/universal_tile.md) that wraps every isle into a NoC tile, and the planned work in [`docs/developer/wip/`](docs/developer/wip/future_evolution_tasks.md) |

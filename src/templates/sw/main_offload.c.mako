@@ -288,6 +288,13 @@ int main(void) {
             print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_BARRIER_ADDR);
             print_str(" (expected 0x1)");
 % if t.get("collective_mcast"):
+% if t.get("collective_wide"):
+            print_str(" wide:");
+            for (uint32_t k = 0; k < 8u; k++) {
+                print_str(" ");
+                print_hex((uint32_t)(*(volatile uint64_t *)(uintptr_t)(${t_name.upper()}_OFFLOAD_WIDE_ADDR + 8u * k) >> 32));
+            }
+% endif
             print_str(" mcast:");
             for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
                 print_str(" ");
@@ -300,6 +307,7 @@ int main(void) {
         print_str("[COLLECTIVE] ${t_name} ${" + ".join(
             (["IntAdd sum"] if t.get("collective_reduce") else [])
             + ["LsbAnd barrier"]
+            + (["FpAdd wide"] if t.get("collective_wide") else [])
             + (["Multicast"] if t.get("collective_mcast") else []))} PASS\n");
 % endif
         print_str("[OFFLOAD] ${t_name} PASS (");

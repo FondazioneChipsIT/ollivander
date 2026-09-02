@@ -5,6 +5,7 @@ ${license(prefix='#')}\
 # ==============================================================================
 
 <%
+import struct
 sw_cfg = config.get("software_stack", {})
 toolchain = sw_cfg.get("toolchain", "riscv64-unknown-elf-")
 app_name = sw_cfg.get("test_app", {}).get("name", "hello_world")
@@ -115,6 +116,59 @@ else:
                 specific += [
                     f'-DOFFLOAD_COLLECT_COL_ADDR={hex(t["coll_alias_base"] + t["collect_col_offs"])}',
                 ]
+        if t.get("collective_wide"):
+            # The wide reduction, in TWO dimension-ordered phases like the narrow
+            # one (a sequential reduction merges at most two contributions per
+            # router): every member sends its lanes to its column head's landing
+            # with the COLUMN mask, then the heads send the column sums to
+            # instance 0 with the ROW mask, a barrier in between. No alias on this
+            # channel: a write whose user carries a non-zero mask leaves the
+            # cluster through the SoC port whatever its address, so the DMA
+            # targets REAL landings and instance 0's own contribution enters the
+            # network too. The column head's address comes from a host-written
+            # mailbox, the payload knowing neither its base nor its column.
+            _two = t.get("two_phase") and t.get("y_mask")
+            _user_col = ((t["y_mask"] if _two else t["group_mask"]) << 4) | 0x3   # {mask, FpAdd}
+            _user_row = (t["x_mask"] << 4) | 0x3
+            _lane_hi = [struct.unpack('<II', struct.pack('<d', float(k + 1)))[1] for k in range(8)]
+            _ydim = t.get("y_dim") or 1
+            _exp_col0_hi = struct.unpack('<II', struct.pack('<d', float(_ydim if _two else t["num_instances"])))[1]
+            _exp0_hi = struct.unpack('<II', struct.pack('<d', float(t["num_instances"])))[1]
+            specific += [
+                '-DOFFLOAD_WIDE_RED=1',
+                f'-DOFFLOAD_DMA_HART={t["dma_hart"]}',
+                f'-DOFFLOAD_WIDE_SRC_LOCAL={hex(local_base + t["wide_src_offs"])}',
+                f'-DOFFLOAD_WIDE_LANDING_LOCAL={hex(local_base + t["wide_offs"])}',
+                f'-DOFFLOAD_WIDE_COLDST_LOCAL={hex(local_base + t["wide_col_dst_offs"])}',
+                f'-DOFFLOAD_WIDE_DST_ADDR={hex(t["base_addr"] + t["wide_offs"])}',
+                '-DOFFLOAD_WIDE_BYTES=64',
+                f'-DOFFLOAD_WIDE_USER_COL_LO={hex(_user_col & 0xFFFFFFFF)}',
+                f'-DOFFLOAD_WIDE_USER_COL_HI={hex(_user_col >> 32)}',
+                f'-DOFFLOAD_WIDE_USER_ROW_LO={hex(_user_row & 0xFFFFFFFF)}',
+                f'-DOFFLOAD_WIDE_USER_ROW_HI={hex(_user_row >> 32)}',
+                # Handshake words: the upper halves of the meta and multicast beats,
+                # otherwise unwritten (they were the source of the dcache X reads).
+                f'-DOFFLOAD_WIDE_GO_LOCAL={hex(local_base + t["coll_meta_offs"] + 4)}',
+                f'-DOFFLOAD_WIDE_DONE_LOCAL={hex(local_base + t["mcast_offs"] + 4)}',
+                f'-DOFFLOAD_WIDE_EXP_COL0_HI={hex(_exp_col0_hi)}',
+                f'-DOFFLOAD_WIDE_EXP0_HI={hex(_exp0_hi)}',
+            ] + [f'-DOFFLOAD_WIDE_LANE_HI_{k}={hex(v)}' for k, v in enumerate(_lane_hi)]
+            if _two:
+                specific += ['-DOFFLOAD_WIDE_TWO_PHASE=1']
+        elif t.get("dma_hart") is not None:
+            # B1 probe: a bare 512-bit burst, no collective. Both ends are the
+            # contract's wide slot - the cluster's own copy through the alias
+            # (every instance sees itself there) and instance 0's through its
+            # window - so the transfer stays inside memory the contract owns and
+            # both ends are 64-byte aligned, which is what makes iDMA emit one
+            # full wide beat instead of strobed narrow ones.
+            specific += [
+                f'-DOFFLOAD_WIDE_PROBE=1',
+                f'-DOFFLOAD_DMA_HART={t["dma_hart"]}',
+                f'-DOFFLOAD_WIDE_SRC_LOCAL={hex(local_base + t["wide_offs"])}',
+                f'-DOFFLOAD_WIDE_DST_ADDR={hex(t["base_addr"] + t["wide_offs"])}',
+                '-DOFFLOAD_WIDE_BYTES=64',
+            ]
         if t.get("collective_mcast"):
             specific += [
                 f'-DOFFLOAD_MCAST_ADDR={hex(t["coll_alias_base"] + t["mcast_offs"])}',

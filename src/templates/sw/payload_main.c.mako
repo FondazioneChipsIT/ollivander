@@ -80,7 +80,108 @@ int main(void) {
     /* One store closes the protocol: result in the upper bits, done in bit 0. */
     slots[idx] = (value << 1) | 1u;
 
+#ifdef OFFLOAD_WIDE_PROBE
+    /* WIDE BURST PROBE (no collective involved). The Snitch cores store 64
+     * bits, so the only master that can put a 512-bit beat on the wide channel
+     * is the cluster iDMA - and it is driven by CUSTOM INSTRUCTIONS that only
+     * one hart may execute (the contract names it; on any other hart they trap
+     * as illegal). The mnemonics live in the Snitch LLVM only, so they are
+     * emitted through `.insn r` on opcode 0x2b, which plain rv32im assembles:
+     *   funct7 0x00 dmsrc  rs1=lo rs2=hi     source address
+     *   funct7 0x01 dmdst  rs1=lo rs2=hi     destination address
+     *   funct7 0x02 dmcpyi rd=txid rs1=size  rs2 field is an IMMEDIATE: bits
+     *                                        [21:20] config (0 = 1D), [24:22] channel
+     *   funct7 0x04 dmstati rd=status        rs2 immediate: [21:20] 2 = busy
+     * The size must be a MULTIPLE OF 64 BYTES or iDMA emits strobed narrow
+     * beats instead of full wide ones - which would make this probe pass while
+     * proving nothing. */
+    if (idx == (uint32_t)OFFLOAD_DMA_HART) {
+        register uint32_t slo = (uint32_t)OFFLOAD_WIDE_SRC_LOCAL;
+        register uint32_t dlo = (uint32_t)OFFLOAD_WIDE_DST_ADDR;
+        register uint32_t zero_hi = 0u;
+        register uint32_t size = (uint32_t)OFFLOAD_WIDE_BYTES;
+        register uint32_t txid, busy;
+        /* dmuser (funct7 0x08): the AXI user the transfers will carry. There is no
+         * separate user register in the frontend - the instruction writes the user
+         * field of the request being built - so it is set EXPLICITLY to zero
+         * (Unicast, empty mask) before a plain transfer, never left to whatever the
+         * request register held: with the wide collectives generated in, the
+         * chimney READS this field. The reduction step will set {mask, op} here. */
+        __asm__ volatile(".insn r 0x2b, 0, 0x08, x0, %[ulo], %[uhi]" ::
+                         [ulo] "r"(zero_hi), [uhi] "r"(zero_hi));
+        __asm__ volatile(".insn r 0x2b, 0, 0x00, x0, %[slo], %[shi]" ::
+                         [slo] "r"(slo), [shi] "r"(zero_hi));
+        __asm__ volatile(".insn r 0x2b, 0, 0x01, x0, %[dlo], %[dhi]" ::
+                         [dlo] "r"(dlo), [dhi] "r"(zero_hi));
+        __asm__ volatile(".insn r 0x2b, 0, 0x02, %[txid], %[size], x0"
+                         : [txid] "=r"(txid) : [size] "r"(size));
+        do {
+            __asm__ volatile(".insn r 0x2b, 0, 0x04, %[busy], x0, x2" : [busy] "=r"(busy));
+        } while (busy != 0u);
+        (void)txid;
+    }
+#endif
 #ifdef OFFLOAD_COLLECTIVE_PHASE
+    /* Every core reads the meta word: core 0 to run the phases, the DMA hart to
+     * know whether a wide phase happens this run, the other cores to know how
+     * long they must stay awake (see the end of this function). */
+    uint32_t coll_meta = *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLL_META_LOCAL;
+#ifdef OFFLOAD_WIDE_RED
+    /* WIDE REDUCTION, DMA HART - two dimension-ordered phases, like the narrow
+     * one: a sequential reduction merges at most TWO contributions per router, so
+     * a 2D mask cannot be reduced in one pass (measured 2026-09-02: a monolithic
+     * mask fired ReductionFrom2MoreInputs on every junction router). Phase 1:
+     * every member sends its eight FP64 lanes to its COLUMN head's landing (the
+     * host wrote that address in a mailbox - the payload knows neither its base
+     * nor its column) with the column mask. Core 0 then runs a barrier across the
+     * group, so no column is still merging when a row stream enters the routers.
+     * Phase 2: the heads send their column sum to instance 0 with the row mask.
+     * No alias on the wide: a write with a non-zero collective mask leaves the
+     * cluster through the SoC port whatever its address. Every drain is observed
+     * the only way a participant can - a plain remote READ of the landing, which
+     * does not reduce - before a flag releases the next step. */
+    if (idx == (uint32_t)OFFLOAD_DMA_HART && coll_meta != 0u) {
+        register uint32_t zero = 0u, size = (uint32_t)OFFLOAD_WIDE_BYTES, txid, busy;
+        uint32_t dst_lo = *(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_COLDST_LOCAL;
+        uint32_t dst_hi = *(volatile uint32_t *)(uintptr_t)(OFFLOAD_WIDE_COLDST_LOCAL + 4u);
+        /* Phase 1: own lanes -> column head's landing, column mask. */
+        while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_GO_LOCAL != 1u) {}
+        {
+            register uint32_t ulo = (uint32_t)OFFLOAD_WIDE_USER_COL_LO, uhi = (uint32_t)OFFLOAD_WIDE_USER_COL_HI;
+            register uint32_t slo = (uint32_t)OFFLOAD_WIDE_SRC_LOCAL, dlo = dst_lo, dhi = dst_hi;
+            __asm__ volatile(".insn r 0x2b, 0, 0x08, x0, %[a], %[b]" :: [a] "r"(ulo), [b] "r"(uhi));
+            __asm__ volatile(".insn r 0x2b, 0, 0x00, x0, %[a], %[b]" :: [a] "r"(slo), [b] "r"(zero));
+            __asm__ volatile(".insn r 0x2b, 0, 0x01, x0, %[a], %[b]" :: [a] "r"(dlo), [b] "r"(dhi));
+            __asm__ volatile(".insn r 0x2b, 0, 0x02, %[t], %[n], x0" : [t] "=r"(txid) : [n] "r"(size));
+            do { __asm__ volatile(".insn r 0x2b, 0, 0x04, %[b], x0, x2" : [b] "=r"(busy)); } while (busy != 0u);
+        }
+        /* The column has merged when the head's landing lane 0 holds y_dim * 1.0
+         * (num_instances * 1.0 for a degenerate 1D group): remote plain read. */
+        while (*(volatile uint32_t *)(uintptr_t)(dst_lo + 4u) != (uint32_t)OFFLOAD_WIDE_EXP_COL0_HI) {}
+        *(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_DONE_LOCAL = 1u;
+        __asm__ volatile("fence" ::: "memory");
+#ifdef OFFLOAD_WIDE_TWO_PHASE
+        /* Phase 2, heads only: own landing (the column sum) -> instance 0, row mask. */
+        while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_GO_LOCAL != 2u) {}
+        if (coll_meta & 1u) {
+            register uint32_t ulo = (uint32_t)OFFLOAD_WIDE_USER_ROW_LO, uhi = (uint32_t)OFFLOAD_WIDE_USER_ROW_HI;
+            register uint32_t slo = (uint32_t)OFFLOAD_WIDE_LANDING_LOCAL, dlo = (uint32_t)OFFLOAD_WIDE_DST_ADDR;
+            __asm__ volatile(".insn r 0x2b, 0, 0x08, x0, %[a], %[b]" :: [a] "r"(ulo), [b] "r"(uhi));
+            __asm__ volatile(".insn r 0x2b, 0, 0x00, x0, %[a], %[b]" :: [a] "r"(slo), [b] "r"(zero));
+            __asm__ volatile(".insn r 0x2b, 0, 0x01, x0, %[a], %[b]" :: [a] "r"(dlo), [b] "r"(zero));
+            __asm__ volatile(".insn r 0x2b, 0, 0x02, %[t], %[n], x0" : [t] "=r"(txid) : [n] "r"(size));
+            do { __asm__ volatile(".insn r 0x2b, 0, 0x04, %[b], x0, x2" : [b] "=r"(busy)); } while (busy != 0u);
+        }
+        /* Everyone observes the final landing before releasing the cluster. */
+        while (*(volatile uint32_t *)(uintptr_t)(OFFLOAD_WIDE_DST_ADDR + 4u) != (uint32_t)OFFLOAD_WIDE_EXP0_HI) {}
+        *(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_DONE_LOCAL = 2u;
+        __asm__ volatile("fence" ::: "memory");
+#endif
+        /* Back to a plain user: dmuser persists across transfers. */
+        __asm__ volatile(".insn r 0x2b, 0, 0x08, x0, %[a], %[b]" :: [a] "r"(zero), [b] "r"(zero));
+        (void)txid;
+    }
+#endif
     /* COLLECTIVE PHASES. All of them come AFTER the slot store above, so the
      * per-core verification never depends on the collective machinery.
      *
@@ -103,7 +204,6 @@ int main(void) {
      * Measured 2026-09-01: with the multicast immediately before the barrier,
      * the barrier-only profile wedged exactly this way. */
     if (idx == 0) {
-        uint32_t coll_meta = *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLL_META_LOCAL;
         /* meta == 0 means "collectives off for this run": the host parks the
          * phase in runs where the group is not whole (the selective-power
          * pass wakes ONE instance - a collective store there would wait
@@ -144,6 +244,33 @@ int main(void) {
                    != value * coll_num) {}
         }
 #endif
+#ifdef OFFLOAD_WIDE_RED
+        /* 2b. Wide reduction: fill the eight FP64 lanes of this instance's
+         * contribution (lane k = (k+1).0, as bit patterns - the payload does no
+         * floating point), release the DMA hart, and wait for its completion flag,
+         * which it raises only after observing the merged landing. Its drain is
+         * therefore observable by everyone, which is what lets it sit before the
+         * multicast. Lanes are little-endian doubles: low word first. */
+        {
+            volatile uint32_t *lanes = (volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_SRC_LOCAL;
+            const uint32_t lane_hi[8] = {
+                OFFLOAD_WIDE_LANE_HI_0, OFFLOAD_WIDE_LANE_HI_1, OFFLOAD_WIDE_LANE_HI_2, OFFLOAD_WIDE_LANE_HI_3,
+                OFFLOAD_WIDE_LANE_HI_4, OFFLOAD_WIDE_LANE_HI_5, OFFLOAD_WIDE_LANE_HI_6, OFFLOAD_WIDE_LANE_HI_7 };
+            for (uint32_t k = 0; k < 8u; k++) { lanes[2u * k] = 0u; lanes[2u * k + 1u] = lane_hi[k]; }
+            __asm__ volatile("fence" ::: "memory");
+            *(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_GO_LOCAL = 1u;
+            while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_DONE_LOCAL != 1u) {}
+#ifdef OFFLOAD_WIDE_TWO_PHASE
+            /* Barrier between the two wide phases (self-draining: this store
+             * returns only once the whole group has written), so no column is
+             * still merging when a row stream enters the routers. Then phase 2. */
+            *(volatile uint32_t *)(uintptr_t)OFFLOAD_BARRIER_ADDR = 1u;
+            __asm__ volatile("fence" ::: "memory");
+            *(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_GO_LOCAL = 2u;
+            while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_DONE_LOCAL != 2u) {}
+#endif
+        }
+#endif
 #ifdef OFFLOAD_MCAST_ADDR
         /* 3. Multicast: exactly one member (the meta word elects it) writes
          * once into the stamped window; the network replicates the beat to
@@ -156,6 +283,18 @@ int main(void) {
         while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_MCAST_LOCAL != OFFLOAD_MCAST_VALUE) {}
 #endif
         }
+    }
+#endif
+#if defined(OFFLOAD_COLLECTIVE_PHASE) && defined(OFFLOAD_WIDE_RED)
+    /* The DCA computes the wide reduction on THE CORES' FPUs, one lane each: a
+     * core parked in WFI is a lane that never answers and a router that never
+     * drains. Every core stays spinning until the wide phase has completed. */
+    if (coll_meta != 0u) {
+#ifdef OFFLOAD_WIDE_TWO_PHASE
+        while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_DONE_LOCAL != 2u) {}
+#else
+        while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_WIDE_DONE_LOCAL != 1u) {}
+#endif
     }
 #endif
 

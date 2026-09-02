@@ -46,7 +46,9 @@ topology:
     # RedDefaultCfg. The narrow (integer) channel joins once the functional-test wave clears
     # it - enabling it is the subject of the collectives probe (wip 3.6.1).
     collectives:
-      wide_reduction: { enable: true, rd_pipeline_depth: 5, cut_offload_intf: true }
+      # The narrow, stamper-based integer reduction (dimension-ordered, two phases)
+      # has its witness here; the wide FP one lives in noc (see there).
+      narrow_reduction: { enable: true, rd_pipeline_depth: 5, cut_offload_intf: true }
 
 # ------------------------------------------------------------------------------
 # 2. SYSTEM MICROARCHITECTURE SETTINGS

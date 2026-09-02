@@ -59,7 +59,9 @@ topology:
     # RedDefaultCfg. The narrow (integer) channel joins once the functional-test wave clears
     # it - enabling it is the subject of the collectives probe (wip 3.6.1).
     collectives:
-      wide_reduction: { enable: true, rd_pipeline_depth: 5, cut_offload_intf: true }
+      # No reduction channel: this project is the witness of the collectives that
+      # need none - barrier and multicast - and the macro super_crossbar nests.
+      wide_reduction: { enable: false }
 
 # ------------------------------------------------------------------------------
 # 2. SYSTEM MICROARCHITECTURE SETTINGS
