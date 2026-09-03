@@ -73,7 +73,7 @@
   <g stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2" stroke-dasharray="5 4">
     <rect x="60" y="424" width="440" height="60" rx="5"/>
   </g>
-  <text x="74" y="444" fill="#8b949e" font-size="12">2a · olli_collective_stamper (narrow only)</text>
+  <text x="74" y="444" fill="#8b949e" font-size="12">2a · olli_collective_stamper (narrow only · op from collective_ctrl)</text>
   <text x="74" y="460" fill="#8b949e" font-size="10">address windows → {op, member mask} into the AXI user; field-by-field rebuild of every channel</text>
   <text x="74" y="475" fill="#8b949e" font-size="10">[the isle declares collective contract slots]</text>
   <g stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2">

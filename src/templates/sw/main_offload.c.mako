@@ -107,6 +107,15 @@ void print_str(const char *str) {
         UART_BASE[UART_RXTX] = *str++;
     }
 }
+
+/* One control byte per phase transition (0x10 + code). The testbench's UART agent
+ * prints it with the simulation time as a [PROGRESS] line: a byte costs 5 us of
+ * simulated time where a printed line costs ~200, so every phase can be marked
+ * without slowing the run. Codes are named in vip_ollivander_soc.sv. */
+static void progress(unsigned code) {
+    while (!(UART_BASE[UART_LSR] & 0x20));
+    UART_BASE[UART_RXTX] = (uint32_t)(0x10u + code);
+}
 % else:
 void print_str(const char *str) {
     // No UART detected in SoC YAML.
@@ -114,6 +123,8 @@ void print_str(const char *str) {
     volatile const char *ptr = str;
     (void)ptr;
 }
+/* No UART: the phase markers have nowhere to go. */
+static void progress(unsigned code) { (void)code; }
 % endif
 
 /* Hex printer for the collected return values (no libc in this firmware). */
@@ -147,14 +158,22 @@ int main(void) {
     /* The resolved target list, recorded on the UART so every simulation log
      * documents what this firmware was actually generated to test. */
     print_str("[OFFLOAD] Targets: ${", ".join(offload_targets.keys())}\n");
+    progress(0);
 
 % if offload_payload_ctrl_group:
     /* The payload memory powers on gated: bring its control group up before
      * the first payload write (helper rationale in the offload header). */
     offload_payload_mem_enable();
+    progress(1);
 
 % endif
 % for t_name, t in offload_targets.items():
+<%
+  # The power-cycle counter exists only when the loop below is emitted; a bench
+  # without it runs cycle 0 alone, so the second-cycle paths (the runtime
+  # reduction opcode) read a constant zero there and compile away.
+  _cyc = f"{t_name}_cycle" if (t["sys_ctrl_group"] and offload_power_cycles) else "0u"
+%>\
     /* ------------------------------------------------------------------
      * Target '${t_name}' ('${t["contract"]}' contract)
      * ------------------------------------------------------------------ */
@@ -174,8 +193,10 @@ int main(void) {
 % endif
 % if t["sys_isolate"]:
     if (${t_name}_deisolate() != 0) offload_fail("${t_name}", "de-isolation timed out");
+    progress(2);
 % endif
     ${t_name}_load_payload(payload_${t_name}_image, PAYLOAD_${t_name.upper()}_SIZE_WORDS);
+    progress(3);
 % if t["contract"] == "control_wire":
     ${t_name}_set_bootaddress(OFFLOAD_PAYLOAD_BASE);
     ${t_name}_start();
@@ -212,6 +233,14 @@ int main(void) {
     for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
         ${t_name}_init_returns(n);
 % if t.get("collective_test"):
+% if t.get("collective_reduce"):
+        /* THE RUNTIME OPCODE PATH, exercised by the second power cycle: the row
+         * window reduces with IntMaxS instead of IntAdd - the expected value
+         * changes from the group sum to the maximum of the column sums, which
+         * the generator computed as well. Cycle 0 keeps the reset default. */
+        if (n == 0 && ${_cyc} == 1u)
+            OFFLOAD_SYS_REGS->collective_ctrl.f.${t_name}_coll_row_op = 0xBu; /* IntMaxS */
+% endif
         if (n == 0) ${t_name}_init_collective();
 % endif
         ${t_name}_set_entry(n, OFFLOAD_PAYLOAD_BASE);
@@ -219,6 +248,7 @@ int main(void) {
     for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
         ${t_name}_start(n);
     }
+    progress(4);
     if (${t_name}_wait_done() != 0) {
         /* Dump the slots before parking: which instances/cores never reported
          * localizes the failure (none woke / one hung / a broken write path). */
@@ -269,20 +299,33 @@ int main(void) {
   # The reduced sum, derived INDEPENDENTLY of the payload from the same two
   # constants it is compiled with - the collective twin of 'expected' above.
   exp_sum = (t["num_instances"] * expected) & 0xFFFFFFFF
+  # The second power cycle reprograms the row window to IntMaxS: every column
+  # still adds y_dim identical values, and the maximum over identical column
+  # sums is that sum (the sign of a signed max is irrelevant between equals).
+  # Derived from 'expected', not from the 32-bit-wrapped exp_sum.
+  _rows = t.get("y_dim") if (t.get("two_phase") and t.get("collective_reduce")) else 1
+  exp_max = ((_rows or 1) * expected) & 0xFFFFFFFF
+  if t["coll_empty"] in (exp_sum, exp_max):
+      raise ValueError(f"[COLLECTIVE] {t_name}: an expected result equals the EMPTY sentinel "
+                       f"{t['coll_empty']:#x}; pick another workload value")
 %>\
-        /* Collective phase: the group's core-0 stores were stamped IntAdd and
-         * LsbAnd by the tile windows; the network merged them into instance
+        /* Collective phase: the group's core-0 stores were stamped LsbAnd and
+         * the reduction opcode (IntAdd at reset, IntMaxS in the second power
+         * cycle) by the tile windows; the network merged them into instance
          * 0's slots. Sum and barrier are checked against generator-derived
          * values, so a lost member, a ghost member or a wrong merge can never
          * pass by accident. */
-        if (${t_name}_wait_collective(${hex(exp_sum)}u) != 0) {
+        progress(6);
+        if (${t_name}_wait_collective(${_cyc} == 1u ? ${hex(exp_max)}u : ${hex(exp_sum)}u) != 0) {
             /* Dump every slot the run was supposed to fill: which phase is
              * short localizes the failure without a second run. */
             print_str("[COLLECTIVE] ${t_name}");
 % if t.get("collective_reduce"):
             print_str(" collect=");
             print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_COLLECT_ADDR);
-            print_str(" (expected ${hex(exp_sum)})");
+            print_str(" (expected ");
+            print_hex(${_cyc} == 1u ? ${hex(exp_max)}u : ${hex(exp_sum)}u);
+            print_str(")");
 % endif
             print_str(" barrier=");
             print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_BARRIER_ADDR);
@@ -304,13 +347,19 @@ int main(void) {
             print_str("\n");
             offload_fail("${t_name}", "collective phase");
         }
-        print_str("[COLLECTIVE] ${t_name} ${" + ".join(
-            (["IntAdd sum"] if t.get("collective_reduce") else [])
-            + ["LsbAnd barrier"]
+        progress(7);
+        print_str("[COLLECTIVE] ${t_name} ");
+% if t.get("collective_reduce"):
+        /* The reduction label names the opcode the cycle actually ran with. */
+        print_str(${_cyc} == 1u ? "IntMaxS max (collective_ctrl) + " : "IntAdd sum + ");
+% endif
+        print_str("${" + ".join(
+            ["LsbAnd barrier"]
             + (["FpAdd wide"] if t.get("collective_wide") else [])
             + (["Multicast"] if t.get("collective_mcast") else []))} PASS\n");
 % endif
-        print_str("[OFFLOAD] ${t_name} PASS (");
+        progress(5);
+    print_str("[OFFLOAD] ${t_name} PASS (");
         print_hex(${t_name.upper()}_OFFLOAD_NUM_INSTANCES);
         print_str(" instances, ret=");
         print_hex(${t_name}_get_return(0, 0));
@@ -325,6 +374,7 @@ int main(void) {
     ${t_name}_disable();
 % if offload_power_cycles:
     }
+    progress(8);
     print_str("[OFFLOAD] ${t_name} POWER-CYCLE PASS (2 cycles)\n");
 % endif
 % if t["num_instances"] > 1 and offload_power_cycles:
@@ -395,12 +445,14 @@ int main(void) {
         offload_fail("${t_name}", "instance 0 stalled with the last instance parked - the "
                                   "control group's bit indices may alias");
     }
+    progress(9);
     print_str("[OFFLOAD] ${t_name} SELECTIVE-POWER PASS (last parked, first ran)\n");
     ${t_name}_disable();
 % endif
 % endif
 
 % endfor
+    progress(10);
     print_str("[OFFLOAD] All targets passed.\n\x03");
 
     return 0;

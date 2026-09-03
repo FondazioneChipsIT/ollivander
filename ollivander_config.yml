@@ -448,6 +448,12 @@ dependencies:
       # repeating the same file test; the host-prerequisite diagnostics live with
       # it too (scripts/host_tools.py). It REWRITES src/generated/bootrom.sv, so
       # it must stay ahead of the patch scripts below.
+      # The IP's spatz_cluster Makefile evaluates its software defines (MEM_DRAM_*,
+      # SNRT_*) with `python3 -c "import jstyleson ..."` at parse time; without the
+      # module every $(shell) yields an empty define and a traceback in the log
+      # (seen 2026-09-02). The prep script prepends the venv to PATH for that
+      # step, so the module belongs in the venv - the same route snitch's json5 uses.
+      - "$(PYTHON) -m pip install -q jstyleson"
       - "$(PYTHON) {ollivander_dir}/scripts/prep_spatz_bootrom.py {bender_work}"
       - "$(PYTHON) {ollivander_dir}/scripts/patch_spatz.py {bender_work}"
       - "$(PYTHON) {ollivander_dir}/scripts/patch_spatz_snitch.py {bender_work}"

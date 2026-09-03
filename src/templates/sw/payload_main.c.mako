@@ -217,32 +217,31 @@ int main(void) {
 #ifdef OFFLOAD_COLLECT_COL_ADDR
         /* 2. Dimension-ordered reduction (FlooNoC's sequential engine merges at
          * most TWO contributions per node, so 2D groups reduce as 1D chains,
-         * columns first): every instance adds into its own column head; the
+         * columns first): every instance reduces into its own column head; the
          * heads - elected by the host through the meta word, since hartids
-         * restart per instance - then add the column sums along their row
-         * onto the final slot the host polls. */
+         * restart per instance - then reduce the column results along their
+         * row onto the final slot the host polls. The operations are whatever
+         * the collective_ctrl register holds: the payload never assumes one. */
         *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_COL_ADDR = value;
         if (coll_meta & 1u) {
-            /* Column head: wait for the whole column to land LOCALLY (any
-             * partial state reads as the initial zero, so the exact match is
-             * race-free), then carry the column sum into the row phase. An
-             * absent column parks this poll - the host's bounded
-             * wait_collective is the failure detector, by design. */
-            uint32_t coll_ydim = (coll_meta >> 2) & 0x3FFFu;
-            while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_COLL_COL_LOCAL
-                   != value * coll_ydim) {}
-            *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_ADDR = value * coll_ydim;
+            /* Column head: wait for the column result to land LOCALLY. The
+             * network writes it in one piece, so "no longer the EMPTY sentinel
+             * the host filled" is race-free and needs no expected value; then
+             * carry WHAT LANDED into the row phase. An absent column parks this
+             * poll - the host's bounded wait_collective is the failure
+             * detector, by design. */
+            while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_COLL_COL_LOCAL == OFFLOAD_COLL_EMPTY) {}
+            *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_ADDR =
+                *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLL_COL_LOCAL;
         }
 #elif defined(OFFLOAD_COLLECT_ADDR)
         /* Degenerate 1D group: single phase, straight onto the final slot. */
         *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_ADDR = value;
 #endif
 #ifdef OFFLOAD_COLLECT_READ_ADDR
-        {
-            uint32_t coll_num = coll_meta >> 16;
-            while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_READ_ADDR
-                   != value * coll_num) {}
-        }
+        /* Everyone waits for the final landing (op-agnostic, as above) before
+         * the next phase: the observable drain the phase order rests on. */
+        while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_READ_ADDR == OFFLOAD_COLL_EMPTY) {}
 #endif
 #ifdef OFFLOAD_WIDE_RED
         /* 2b. Wide reduction: fill the eight FP64 lanes of this instance's

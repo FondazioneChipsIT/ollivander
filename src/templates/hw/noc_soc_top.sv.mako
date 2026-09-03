@@ -273,6 +273,31 @@ ${clock_and_reset_tree(config, p_name)}
   ${npkg}::floo_rsp_t  [${max_x}:0][${max_y}:0][West:North] tile_rsp_o, tile_rsp_i;
   ${npkg}::floo_wide_t [${max_x}:0][${max_y}:0][West:North] tile_wide_o, tile_wide_i;
 
+`ifndef SYNTHESIS
+  // SIMULATION-ONLY LINK ACTIVITY COUNTERS, one pair per tile: request and wide
+  // flit handshakes on the tile's four cardinal links, both directions. Kept in
+  // the top - which is not a hierarchical block on Verilator - as concurrent
+  // logic, so that the testbench's progress monitor (+progress) reads a handful
+  // of words once per heartbeat instead of scanning 320 hierarchical references
+  // on every clock (measured: that made QuestaSim three to four times slower).
+  // Free-running; the testbench prints deltas. Sampled on the top clock, which
+  // is the NoC clock of every tile in the generated designs.
+  int unsigned mon_req_cnt  [${max_x}:0][${max_y}:0];
+  int unsigned mon_wide_cnt [${max_x}:0][${max_y}:0];
+  for (genvar mx = 0; mx <= ${max_x}; mx++) begin : gen_mon_x
+    for (genvar my = 0; my <= ${max_y}; my++) begin : gen_mon_y
+      always_ff @(posedge clk_i) begin
+        for (int md = 0; md < 4; md++) begin
+          if (tile_req_o[mx][my][md].valid  && tile_req_i[mx][my][md].ready)  mon_req_cnt[mx][my]  <= mon_req_cnt[mx][my]  + 1;
+          if (tile_req_i[mx][my][md].valid  && tile_req_o[mx][my][md].ready)  mon_req_cnt[mx][my]  <= mon_req_cnt[mx][my]  + 1;
+          if (tile_wide_o[mx][my][md].valid && tile_wide_i[mx][my][md].ready) mon_wide_cnt[mx][my] <= mon_wide_cnt[mx][my] + 1;
+          if (tile_wide_i[mx][my][md].valid && tile_wide_o[mx][my][md].ready) mon_wide_cnt[mx][my] <= mon_wide_cnt[mx][my] + 1;
+        end
+      end
+    end
+  end
+`endif
+
   // MESH WIRING GENERATION
   // Generates the bidirectional links connecting adjacent routers. Edge ports 
   // at the chip boundaries are safely tied off to zero to prevent floating inputs.

@@ -457,6 +457,7 @@
   # narrow channel being declared.
   stamper_on = False
   stamper_windows = []
+  coll_csr = False
   if use_mcast and has_offload and isle_info:
       _fx = isle_info.get("fixed_params", {})
       _coff = _fx.get("OffloadCollectOffs")
@@ -585,18 +586,18 @@
           if narrow_red_on and _coff_i is not None and _ccoff_i is not None:
               if _two_phase:
                   stamper_windows += [
-                      ("IntAdd", _alias + _ccoff_i, _alias + _ccoff_i + 3, _c0, _mask,   _y_mask, _ccoff_i),
-                      ("IntAdd", _alias + _coff_i,  _alias + _coff_i + 3,  _c0, _x_mask, _x_mask, _coff_i),
+                      ("IntAdd", _alias + _ccoff_i, _alias + _ccoff_i + 3, _c0, _mask,   _y_mask, _ccoff_i, "col"),
+                      ("IntAdd", _alias + _coff_i,  _alias + _coff_i + 3,  _c0, _x_mask, _x_mask, _coff_i, "row"),
                   ]
               else:
                   # One dimension is degenerate: the whole group already is a 1D
                   # chain, one window onto the final slot suffices.
                   stamper_windows += [
-                      ("IntAdd", _alias + _coff_i, _alias + _coff_i + 3, _c0, _mask, _mask, _coff_i),
+                      ("IntAdd", _alias + _coff_i, _alias + _coff_i + 3, _c0, _mask, _mask, _coff_i, "row"),
                   ]
           # Barrier: parallel (n-ary) op, full group mask, always available.
           stamper_windows.append(
-              ("LsbAnd", _alias + _boff_i, _alias + _boff_i + 3, _c0, _mask, _mask, _boff_i))
+              ("LsbAnd", _alias + _boff_i, _alias + _boff_i + 3, _c0, _mask, _mask, _boff_i, "barrier"))
           # Multicast: one member writes, the network replicates to the whole
           # group and each destination lands it at its OWN copy of the slot. The
           # destination the stamp carries is the group's minimum corner, which is
@@ -604,8 +605,10 @@
           # (base & ~mask) the other windows compute.
           if _mcoff_i is not None:
               stamper_windows.append(
-                  ("Multicast", _alias + _mcoff_i, _alias + _mcoff_i + 3, _c0, _mask, _mask, _mcoff_i))
+                  ("Multicast", _alias + _mcoff_i, _alias + _mcoff_i + 3, _c0, _mask, _mask, _mcoff_i, "mcast"))
           stamper_on = True
+  # Reduction windows take their opcode from the system controller (see coll_csr).
+  coll_csr = bool(stamper_on and any(w[7] in ("col", "row") for w in stamper_windows))
   # The plain (SoC-wide) user width, to rebuild {mask, op, user} at the chimney.
   _um = config.system_settings.user_mapping
   plain_user_w = max(_um.amo_msb, _um.ecc_err_bit) + 1
@@ -685,6 +688,14 @@ module ${p_name}_${c_type}
   input  logic clk_i,
   input  logic rst_ni,
   input  logic test_mode_i,
+% if coll_csr:
+  // COLLECTIVE OPCODES, from the system controller's collective_ctrl register:
+  // what operation the column and the row reduction windows stamp. Runtime
+  // values (reset: IntAdd), so software can change the reduction without
+  // regenerating hardware; the masks stay generated.
+  input  logic [3:0] coll_op_col_i,
+  input  logic [3:0] coll_op_row_i,
+% endif
 
   // Chimney Logical Coordinates (X, Y mapped to a flat ID)
   input wire ${noc_pkg}::id_t  id_i,
@@ -1034,7 +1045,7 @@ module ${p_name}_${c_type}
   } coll_win_t;
 
   localparam coll_win_t [${len(stamper_windows) - 1}:0] CollWindows = '{
-% for op, base, last, gbase, mmask, cmask, offs in list(reversed(stamper_windows)):
+% for op, base, last, gbase, mmask, cmask, offs, kind in list(reversed(stamper_windows)):
     '{base: ${narrow_addr_w}'h${f"{base:012x}"}, last: ${narrow_addr_w}'h${f"{last:012x}"},
       group_base: ${narrow_addr_w}'h${f"{gbase:012x}"}, member_mask: ${narrow_addr_w}'h${f"{mmask:012x}"},
       coll_mask: ${narrow_addr_w}'h${f"{cmask:012x}"}, offs: ${narrow_addr_w}'h${f"{offs:012x}"},
@@ -1044,6 +1055,21 @@ module ${p_name}_${c_type}
 
   ${noc_pkg}::collective_axi_narrow_in_req_t narrow_in_req_coll;
   ${noc_pkg}::collective_axi_narrow_in_rsp_t narrow_in_rsp_coll;
+
+  // One opcode per window, same index order as CollWindows: the reduction windows
+  // follow the system controller's registers, the barrier and the multicast are
+  // what they are by nature.
+  logic [${len(stamper_windows) - 1}:0][3:0] coll_win_op;
+% for op, base, last, gbase, mmask, cmask, offs, kind in list(reversed(stamper_windows)):
+<% _w = len(stamper_windows) - 1 - loop.index %>\
+%   if kind == "col" and coll_csr:
+  assign coll_win_op[${_w}] = coll_op_col_i;
+%   elif kind == "row" and coll_csr:
+  assign coll_win_op[${_w}] = coll_op_row_i;
+%   else:
+  assign coll_win_op[${_w}] = floo_pkg::${op};
+%   endif
+% endfor
 
   ${require_file("olli_collective_stamper.sv")}
   olli_collective_stamper #(
@@ -1062,6 +1088,7 @@ module ${p_name}_${c_type}
     .clk_i           ( noc_clk ),
     .rst_ni          ( noc_rst_n ),
     .instance_base_i ( instance_base_addr_i[${narrow_addr_w - 1}:0] ),
+    .win_op_i        ( coll_win_op ),
     .slv_req_i ( narrow_in_req ),
     .slv_rsp_o ( narrow_in_rsp ),
     .mst_req_o ( narrow_in_req_coll ),
@@ -1668,6 +1695,30 @@ module ${p_name}_${c_type}
               isle_connections.append(f".axi_req_o  ( {mst_req_sig} )")
               isle_connections.append(f".axi_resp_i ( {mst_rsp_sig} )")
       
+  # SLAVE-SIDE WIDTH GUARDS. The slave side has no counterpart of the master
+  # adaptation: where the isle keeps its own AXI types, the network signal is
+  # connected to its port DIRECTLY, which is correct only while the two packed
+  # structs have identical widths - a struct connected across a width difference
+  # is shifted whole, every field displaced, and nothing reports it. So every
+  # direct slave connection gets a generate-time check of the whole request and
+  # response struct widths (which covers the user and id fields, the ones that
+  # differ between an isle's own types and the network's), failing elaboration
+  # with both widths in the message. An isle that takes the network's types as
+  # parameters needs none: the types are the same by construction.
+  slv_guards = []
+  def _slv_guard(net, req_port, rsp_port, net_req_t, net_rsp_t):
+      _ireq, _irsp = isle_port_type(req_port), isle_port_type(rsp_port)
+      if not _ireq or not _irsp:
+          return
+      _ireq, _irsp = _var_type(_ireq), _var_type(_irsp)
+      if _ireq == net_req_t and _irsp == net_rsp_t:
+          return
+      # A bare name is one of the isle's own 'parameter type's - a macro wrapper's,
+      # for instance - which the tile fills with the network's types: identical by
+      # construction, and unresolvable as a type at tile scope anyway.
+      if "::" not in _ireq or "::" not in _irsp:
+          return
+      slv_guards.append((net, _ireq, net_req_t, _irsp, net_rsp_t))
   if has_slave:
       if noc_mode == "dual":
           # A macro boundary takes the input-typed signals, see the widening next to
@@ -1677,10 +1728,17 @@ module ${p_name}_${c_type}
               nsig = "border_narrow" if macro_boundary_narrow else "narrow_out"
               isle_connections.append(f".axi_narrow_req_i  ( {nsig}_req )")
               isle_connections.append(f".axi_narrow_resp_o ( {nsig}_rsp )")
+              _slv_guard("narrow", "axi_narrow_req_i", "axi_narrow_resp_o",
+                         f"{noc_pkg}::axi_narrow_{'in' if macro_boundary_narrow else 'out'}_req_t",
+                         f"{noc_pkg}::axi_narrow_{'in' if macro_boundary_narrow else 'out'}_rsp_t")
           if has_slave_wide:
               wsig = "isle_wide_slv" if slv_wide_adapt else ("border_wide" if macro_boundary_wide else "wide_out")
               isle_connections.append(f".axi_wide_req_i  ( {wsig}_req )")
               isle_connections.append(f".axi_wide_resp_o ( {wsig}_rsp )")
+              if not slv_wide_adapt:
+                  _slv_guard("wide", "axi_wide_req_i", "axi_wide_resp_o",
+                             f"{noc_pkg}::axi_wide_{'in' if macro_boundary_wide else 'out'}_req_t",
+                             f"{noc_pkg}::axi_wide_{'in' if macro_boundary_wide else 'out'}_rsp_t")
       else:
           req_sig = "join_req" if use_join else ("wide_out_req" if has_slave_wide else "narrow_out_req")
           rsp_sig = "join_rsp" if use_join else ("wide_out_rsp" if has_slave_wide else "narrow_out_rsp")
@@ -1714,6 +1772,16 @@ module ${p_name}_${c_type}
 ## their struct-member parameter defaults until a probe separated the two.
 
   // =======================================================================
+% for net, ireq, nreq, irsp, nrsp in slv_guards:
+  // Direct ${net} slave connection: the isle keeps its own AXI types, so the widths
+  // must coincide exactly - see the note on slave-side guards in the header.
+  if ($bits(${ireq}) != $bits(${nreq}))
+    $fatal(1, "${c_type}: ${net} slave request - the isle's ${ireq} (%0d bits) and the network's ${nreq} (%0d bits) differ; a direct connection would displace every field.",
+           $bits(${ireq}), $bits(${nreq}));
+  if ($bits(${irsp}) != $bits(${nrsp}))
+    $fatal(1, "${c_type}: ${net} slave response - the isle's ${irsp} (%0d bits) and the network's ${nrsp} (%0d bits) differ; a direct connection would displace every field.",
+           $bits(${irsp}), $bits(${nrsp}));
+% endfor
   // 3. ISLE INSTANTIATION (${isle_name})
   // =======================================================================
   // Instantiates the actual core hardware IP (the Isle). 

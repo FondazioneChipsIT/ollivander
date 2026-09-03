@@ -557,6 +557,17 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                         "axi_isolated_o",
                         f"sys_regs_hwif_in.isolate_status.{c.name}_isolated.next{iso_sel}"))
 
+                # COLLECTIVE OPCODE PORTS: the tile declares coll_op_col_i/coll_op_row_i
+                # when its stamper has reduction windows (universal_tile.sv.mako,
+                # coll_csr), and tile_ports here IS the generated tile's header - so the
+                # tile's own decision is followed rather than re-derived. The register
+                # exists whenever the tile can have those windows: it is emitted for
+                # every multicast target of a SoC with the narrow reduction channel.
+                if "coll_op_col_i" in tile_ports and "coll_op_row_i" in tile_ports:
+                    inst.connections.append(PortConnection(
+                        "coll_op_col_i", f"sys_regs_hwif_out.collective_ctrl.{c.name}_coll_col_op.value"))
+                    inst.connections.append(PortConnection(
+                        "coll_op_row_i", f"sys_regs_hwif_out.collective_ctrl.{c.name}_coll_row_op.value"))
                 base_is_port = "instance_base_addr_i" in tile_ports
                 wants_base = base_is_port or "InstanceBaseAddr" in supported
                 wants_size = "InstanceWindowSize" in supported

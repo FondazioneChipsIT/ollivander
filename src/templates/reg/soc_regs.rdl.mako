@@ -113,6 +113,25 @@ addrmap ${top_level_module_name}_sys_regs {
         % endfor
     } isolate_status;
     % endif
+<%
+  # COLLECTIVE OPCODES, one register for the whole SoC, two 4-bit fields per
+  # multicast-target component: the operation its column and row reduction
+  # windows stamp (FlooNoC collect_op_e; reset IntAdd = 7). Emitted when the SoC
+  # declares the narrow reduction channel; a component that turns out to have no
+  # reduction windows leaves its fields unused. The tile takes them as ports.
+  _nr = (config.topology.type == "noc" and config.topology.noc_settings.collectives.narrow_reduction.enable)
+  coll_comps = [_c for _c in components if _nr and (_c.get('features') or {}).get('multicast_target')]
+%>\
+    % if coll_comps:
+    reg {
+        name = "Collective Opcodes";
+        desc = "Operation stamped by each group's column and row reduction windows (FlooNoC collect_op_e: 7 IntAdd, 8 IntMul, 9 IntMinS, 10 IntMinU, 11 IntMaxS, 12 IntMaxU)";
+        % for _c in coll_comps:
+        field { hw = r; sw = rw; } ${_c['name']}_coll_col_op[${loop.index * 8 + 3}:${loop.index * 8}] = 4'h7;
+        field { hw = r; sw = rw; } ${_c['name']}_coll_row_op[${loop.index * 8 + 7}:${loop.index * 8 + 4}] = 4'h7;
+        % endfor
+    } collective_ctrl;
+    % endif
 
     // ---------------------------------------------------------------------
     // Fetch Enable

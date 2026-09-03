@@ -109,6 +109,9 @@ else:
                 # poll: reads must NOT travel through the alias (the stamper only
                 # rewrites AW hits, and an aliased AR would reach the SAM undecoded).
                 f'-DOFFLOAD_COLLECT_READ_ADDR={hex(t["base_addr"] + t["collect_offs"])}',
+                # The landings' initial value: the payload waits for a landing to
+                # leave it, whatever operation the collective_ctrl register holds.
+                f'-DOFFLOAD_COLL_EMPTY={hex(t["coll_empty"])}u',
             ]
             if t.get("two_phase"):
                 # Only a real 2D grid gets the column window; a degenerate (1D)

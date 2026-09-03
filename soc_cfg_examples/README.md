@@ -74,7 +74,7 @@ Each collective mechanism the generator supports has exactly one example that ex
 | example | reduction channel | collective phases exercised | mechanism |
 | --- | --- | --- | --- |
 | `noc` | wide (FP) | FpAdd wide (two dimension-ordered phases), multicast, barrier | the gwaihir-like profile: DMA-issued, `dmuser` sets `{mask, op}`, routers offload to the cores' FPUs through the DCA |
-| `noc_isle` | narrow (integer) | IntAdd two-phase, multicast, barrier | the stamper: address windows stamp op and mask on core stores |
+| `noc_isle` | narrow (integer) | IntAdd two-phase, then IntMaxS programmed at runtime (second power cycle), multicast, barrier | the stamper: address windows stamp the mask on core stores, `collective_ctrl` supplies the op |
 | `noc_subtile` | none | multicast, barrier | the collectives that need no reduction channel; also the macro `super_crossbar` nests |
 | `super_noc` | wide (FP) | as `noc`, inside a macro consumer | the DCA path across a nested boundary |
 

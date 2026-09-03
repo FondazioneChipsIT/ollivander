@@ -1823,6 +1823,14 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: List[Path] =
                 and noc is not None and noc.collectives.narrow_reduction.enable
                 and contract.get("collect_offs") is not None
                 and contract.get("collect_col_offs") is not None)
+            # The narrow landings start at this sentinel, not at zero: the payload
+            # waits for a landing to CHANGE (the network writes the merged result
+            # in one piece), so it never has to know which operation the
+            # collective_ctrl register selected - the host, which programmed it,
+            # checks the value. A result equal to the sentinel would read as
+            # unwritten, so the generated expectations are kept away from it
+            # (main_offload.c.mako).
+            contract["coll_empty"] = 0xFFFFFFFF
             contract["collective_mcast"] = bool(
                 contract["collective_test"] and contract.get("mcast_offs") is not None)
             # The wide reduction: FP64 lanes, DMA-issued, computed by the cores'

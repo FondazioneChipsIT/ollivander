@@ -245,6 +245,31 @@ module vip_ollivander_soc #(
         $fflush(32'h8000_0001); // Flush stdout to see character immediately
         rx_string = "";
         rx_char_num = 0;
+      end else if (rx_char >= 8'h10 && rx_char <= 8'h1F) begin
+        // PROGRESS CODE: one control byte per firmware phase transition, printed
+        // with the time. A single byte costs 5 us of simulated time at the
+        // configured 2 Mbaud, against ~200 us for a printed line, so the
+        // firmware can mark every phase without paying for it; and it rides the
+        // only channel silicon has, with no path into the design hierarchy
+        // (Verilator's hierarchical blocks forbid one). Codes 0x10-0x1F: DLE..US,
+        // never used by the uart debug protocol (0x04) nor by the test verdict
+        // (0x03), and never part of console text. The names below are the
+        // generated offload application's phases (main_offload.c.mako).
+        case (rx_char)
+          8'h10: $display("[PROGRESS] %0t  host: offload targets announced", $realtime);
+          8'h11: $display("[PROGRESS] %0t  host: payload memory enabled", $realtime);
+          8'h12: $display("[PROGRESS] %0t  host: target enabled and de-isolated", $realtime);
+          8'h13: $display("[PROGRESS] %0t  host: payload loaded", $realtime);
+          8'h14: $display("[PROGRESS] %0t  host: instances started, waiting for return slots", $realtime);
+          8'h15: $display("[PROGRESS] %0t  host: return slots complete", $realtime);
+          8'h16: $display("[PROGRESS] %0t  host: waiting for the collective phases", $realtime);
+          8'h17: $display("[PROGRESS] %0t  host: collective phases complete", $realtime);
+          8'h18: $display("[PROGRESS] %0t  host: target disabled (power cycle)", $realtime);
+          8'h19: $display("[PROGRESS] %0t  host: selective-power pass", $realtime);
+          8'h1A: $display("[PROGRESS] %0t  host: all targets done, ending the test", $realtime);
+          default: $display("[PROGRESS] %0t  host: phase code 0x%02h", $realtime, rx_char);
+        endcase
+        $fflush(32'h8000_0001);
       end else if (rx_char >= 32 && rx_char <= 126) begin // Printable ASCII
         rx_string = {rx_string, rx_char};
         rx_char_num = rx_char_num + 1;

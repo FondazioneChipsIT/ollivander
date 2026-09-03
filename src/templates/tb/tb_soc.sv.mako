@@ -1512,9 +1512,50 @@ ${group_displays_str}
 % endif
 
   // Periodic time progress display block for simulation monitoring
+% if config.topology.type == "noc":
+  // ---------------------------------------------------------------------------
+  // PROGRESS MONITOR (+progress): per-tile link activity between two heartbeats.
+  // The top keeps simulation-only counters of the request and wide flit
+  // handshakes on every tile's four cardinal links (both directions); this block
+  // reads them once per heartbeat and prints the deltas, one mesh row per line,
+  // "req/wide" per tile. Top-level signals only: never a tile's inside, which is
+  // a hierarchical block under Verilator, one a dotted path may not enter. Silent unless
+  // the run is started with +progress, so the suite's transcript does not change.
+  // A tile at zero beat after beat while its neighbours move is where a wedge
+  // lives; a whole grid at zero with the host still printing is a run that has
+  // left the NoC behind.
+  // ---------------------------------------------------------------------------
+  int unsigned MonX, MonY;
+  int unsigned mon_req_prev [16][16];
+  int unsigned mon_wide_prev[16][16];
+  bit          mon_on;
+  initial begin
+    mon_on = $test$plusargs("progress");
+    MonX   = $size(dut.mon_req_cnt, 1);
+    MonY   = $size(dut.mon_req_cnt, 2);
+    if (mon_on && (MonX > 16 || MonY > 16))
+      $fatal(1, "progress monitor: mesh %0dx%0d exceeds the monitor's 16x16 capacity", MonX, MonY);
+  end
+  always begin
+    #100000; // Print every 100 us (100,000 ns = 100 us)
+    $display("[TB_TIME] Simulation time: %0t", $realtime);
+    if (mon_on) begin
+      for (int y = int'(MonY) - 1; y >= 0; y--) begin
+        $write("[PROGRESS]   y=%0d |", y);
+        for (int x = 0; x < MonX; x++) begin
+          $write(" %4d/%-4d", dut.mon_req_cnt[x][y] - mon_req_prev[x][y], dut.mon_wide_cnt[x][y] - mon_wide_prev[x][y]);
+          mon_req_prev[x][y]  = dut.mon_req_cnt[x][y];
+          mon_wide_prev[x][y] = dut.mon_wide_cnt[x][y];
+        end
+        $write("\n");
+      end
+    end
+  end
+% else:
   always begin
     #100000; // Print every 100 us (100,000 ns = 100 us)
     $display("[TB_TIME] Simulation time: %0t", $realtime);
   end
+% endif
 
 endmodule

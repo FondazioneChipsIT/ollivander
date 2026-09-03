@@ -331,6 +331,10 @@ static inline void ${t_name}_init_returns(uint32_t inst) {
 #define ${T}_OFFLOAD_COLL_Y_DIM    ${t["y_dim"]}u
 % if t.get("collective_reduce"):
 #define ${T}_OFFLOAD_COLLECT_ADDR  ${hex(t["base_addr"] + t["collect_offs"])}u
+/* What a reduction landing holds before the network writes it (see
+ * init_collective / wait_collective): the payload polls for a CHANGE from
+ * this, never for a value, so it stays ignorant of the operation selected. */
+#define ${T}_OFFLOAD_COLL_EMPTY    ${hex(t["coll_empty"])}u
 #define ${T}_OFFLOAD_COLL_COL_ADDR(inst)  (${hex(t["base_addr"] + t["collect_col_offs"])}u + (inst) * ${hex(t["instance_stride"])}u)
 % endif
 % if t.get("collective_wide"):
@@ -363,7 +367,8 @@ static const uint64_t ${t_name}_wide_expected[8] = {
 #define ${T}_OFFLOAD_MCAST_VALUE   0x5A11ED00u
 % endif
 
-/* Zero every collective landing slot and hand each instance its collective
+/* Reset every collective landing slot (the reduction ones to the EMPTY
+ * sentinel, the rest to zero) and hand each instance its collective
  * meta word ({y_dim, is_head}): cluster hartids restart at zero per instance,
  * so the payload cannot know its own place in the grid - the head election
  * travels through plain memory, written before any instance wakes. Bases
@@ -375,11 +380,11 @@ static inline void ${t_name}_init_collective(void) {
         *(volatile uint64_t *)(uintptr_t)(${T}_OFFLOAD_WIDE_ADDR + 8u * k) = 0ull;
 % endif
 % if t.get("collective_reduce"):
-    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR = 0;
+    *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR = ${T}_OFFLOAD_COLL_EMPTY;
 % endif
     for (uint32_t n = 0; n < ${T}_OFFLOAD_NUM_INSTANCES; n++) {
 % if t.get("collective_reduce"):
-        *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLL_COL_ADDR(n) = 0;
+        *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLL_COL_ADDR(n) = ${T}_OFFLOAD_COLL_EMPTY;
 % endif
 % if t.get("collective_mcast"):
         *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_MCAST_ADDR(n) = 0;
@@ -413,15 +418,21 @@ static inline void ${t_name}_disable_collective(void) {
     }
 }
 
-/* The reduced sum appears in one piece once the network has merged the whole
- * group, so polling for the exact expected value is race-free: any partial
- * state reads as the initial zero. The barrier lands as the LsbAnd of the
- * group's ones. */
-static inline int ${t_name}_wait_collective(uint32_t exp_sum) {
-    (void)exp_sum;
+/* The reduction result appears in one piece once the network has merged the
+ * whole group: the landing goes from the EMPTY sentinel to the final value in
+ * a single write, so "no longer EMPTY" is race-free, and a landed value that
+ * is not the expected one is a verdict, not a transient - it is reported at
+ * once instead of after the poll limit (an exact-value poll turned a wrong
+ * result into a wedge). The barrier lands as the LsbAnd of the group's ones. */
+static inline int ${t_name}_wait_collective(uint32_t exp_red) {
+    (void)exp_red;
     for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
 % if t.get("collective_reduce"):
-        if (*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR != exp_sum) continue;
+        {
+            uint32_t red = *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_COLLECT_ADDR;
+            if (red == ${T}_OFFLOAD_COLL_EMPTY) continue;
+            if (red != exp_red) return -1;
+        }
 % endif
         if (*(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_BARRIER_ADDR != 1u) continue;
 % if t.get("collective_wide"):

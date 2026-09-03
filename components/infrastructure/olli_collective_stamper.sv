@@ -66,6 +66,14 @@ module olli_collective_stamper #(
   /// one payload image serves every instance - but their write is rewritten to
   /// their OWN slot (a harmless local loopback) instead of being stamped.
   input  logic [AddrWidth-1:0] instance_base_i,
+  /// The opcode each window stamps, one per window, from OUTSIDE: a register the
+  /// software writes (the system controller's collective_ctrl) for the reduction
+  /// windows, a constant for the barrier and the multicast. The address still
+  /// says "this is a collective, of this group"; what operation it is became a
+  /// runtime value, as in MAGIA's tile CSRs - the mask stays generated, because
+  /// a mask that ignores the dimension-ordered decomposition would violate the
+  /// two-inputs-per-router contract of the sequential engine.
+  input  logic [(NumWindows == 0 ? 1 : NumWindows)-1:0][OpWidth-1:0] win_op_i,
   input  slv_req_t             slv_req_i,
   output slv_rsp_t             slv_rsp_o,
   output mst_req_t             mst_req_o,
@@ -110,7 +118,7 @@ module olli_collective_stamper #(
         // router and lands locally, so the payload never needs to know the
         // subgroup it is (not) part of.
         if (window_member[w]) begin
-          aw_stamp.op   = Windows[w].op;
+          aw_stamp.op   = win_op_i[w];
           aw_stamp.mask = Windows[w].coll_mask;
           // The destination is the writer's own CHAIN HEAD: clearing the
           // collective-mask bits off this instance's base yields the group
