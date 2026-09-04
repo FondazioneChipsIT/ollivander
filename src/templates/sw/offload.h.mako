@@ -29,6 +29,13 @@ sys_regs_type = f"{top_level_module_name}_sys_regs_t"
 %>\
 /* The System Controller, through its PeakRDL struct overlay. */
 #define OFFLOAD_SYS_REGS ((volatile ${sys_regs_type} *)(uintptr_t)${sys_ctrl_base_macro})
+/* The test-progress mailbox as a WORD address. The generated register structs are
+ * packed, so any access through them is compiled as byte stores with a
+ * read-modify-write each (four AXI writes per register): harmless for control
+ * bits, fatal for a mailbox whose {seq, code} pair must land in ONE write -
+ * measured: every phase reported twice, code first, seq 0.55 us later. */
+#include <stddef.h>
+#define OFFLOAD_TB_PHASE_ADDR ((uintptr_t)${sys_ctrl_base_macro} + offsetof(${sys_regs_type}, tb_phase))
 
 /* Payload region, shared by every target (loaded once, fetched by all): either
  * the second quarter of the boot memory (default carve) or the window of the

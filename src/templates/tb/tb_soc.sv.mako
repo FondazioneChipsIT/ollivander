@@ -664,6 +664,8 @@ if not uart_base:
   // OLLIVANDER: require="vip_ollivander_soc.sv"
   vip_ollivander_soc #(
     .DbgIdCode        (32'h${f"{jtag_idcode:08x}"}),
+    .OffloadTargets   ("${",".join(offload_targets.keys()) if offload_targets else ""}"),
+    .HasPhaseMailbox  (1'b${1 if config.system_controller else 0}),
     .MainClkPeriodNs  (10.0),
     .NumGenClocks     (${config.clock_tree.generators}),
     .GenPeriodsNs     (${gen_periods_lit}),
@@ -1541,7 +1543,7 @@ ${group_displays_str}
     $display("[TB_TIME] Simulation time: %0t", $realtime);
     if (mon_on) begin
       for (int y = int'(MonY) - 1; y >= 0; y--) begin
-        $write("[PROGRESS]   y=%0d |", y);
+        $write("[TB_ACTIVITY]   y=%0d |", y);
         for (int x = 0; x < MonX; x++) begin
           $write(" %4d/%-4d", dut.mon_req_cnt[x][y] - mon_req_prev[x][y], dut.mon_wide_cnt[x][y] - mon_wide_prev[x][y]);
           mon_req_prev[x][y]  = dut.mon_req_cnt[x][y];
@@ -1551,10 +1553,74 @@ ${group_displays_str}
       end
     end
   end
+% endif
+% if config.system_controller:
+  // ---------------------------------------------------------------------------
+  // TEST-PROGRESS MAILBOX: the System Controller's tb_phase register, written by
+  // the test firmware at every phase transition ({seq, code}) and visible here
+  // through the top's sys_regs_hwif_out on both topologies - a top-level signal,
+  // no path into a hierarchical block. Reported at the instant of the write; the
+  // UART control bytes stay the silicon-visible path (+uart_phase decodes them).
+  // seq starts at zero after reset, so the reset value never reports. The block
+  // reports a CHANGE of {seq, code}, not a wake-up: a sensitivity on struct
+  // fields can fire on unrelated activity of the register file (measured on
+  // crossbar: every phase printed twice, 0.55 us apart), so the last value seen
+  // is kept and compared.
+  // ---------------------------------------------------------------------------
+  logic [15:0] tb_phase_seen = '0;
+  always @(dut.sys_regs_hwif_out.tb_phase.seq.value or dut.sys_regs_hwif_out.tb_phase.code.value) begin
+    automatic logic [15:0] tb_phase_cur = {dut.sys_regs_hwif_out.tb_phase.seq.value, dut.sys_regs_hwif_out.tb_phase.code.value};
+    if (tb_phase_cur != tb_phase_seen && tb_phase_cur[15:8] != 8'h0) begin
+      tb_phase_seen = tb_phase_cur;
+      i_vip.report_phase(tb_phase_cur[7:0]);
+    end
+  end
+% endif
+% if config.topology.type == "noc":
+  // (the mesh grid above)
 % else:
+  // ---------------------------------------------------------------------------
+  // PROGRESS MONITOR (+progress), crossbar twin of the mesh grid: the top keeps
+  // simulation-only counters of the AW/AR/W handshakes on every crossbar port
+  // (package enumeration order); this block prints the deltas between two
+  // heartbeats, one line for the slave ports (host -> components) and one for the
+  // master ports (components -> host), each port named from the package's enum.
+  // Top-level signals only, silent unless the run is started with +progress.
+  // ---------------------------------------------------------------------------
+  int unsigned mon_slv_prev [${config.project.soc_pkg_name}::NumAxiSlaves  > 0 ? ${config.project.soc_pkg_name}::NumAxiSlaves  : 1];
+  int unsigned mon_mst_prev [${config.project.soc_pkg_name}::NumAxiMasters > 0 ? ${config.project.soc_pkg_name}::NumAxiMasters : 1];
+  bit          mon_on;
+  // Enum variables for the port names: a method call on a cast expression
+  // (`axi_slv_idx_e'(i).name()`) is not parsed by QuestaSim, a named variable is.
+  ${config.project.soc_pkg_name}::axi_slv_idx_e mon_slv_e;
+  ${config.project.soc_pkg_name}::axi_mst_idx_e mon_mst_e;
+  initial mon_on = $test$plusargs("progress");
+  // The enum member names carry an AxiSlvIdx_/AxiMstIdx_ prefix; the list shows
+  // what follows it.
+  // A port beyond the enum's members (a macro build's external master, indexed
+  // NumAxiMastersSync-1 without a name) prints as port<i>.
+  function automatic string mon_port_name(input string full, input int i);
+    if (full.len() > 10) return full.substr(10, full.len() - 1);
+    return $sformatf("port%0d", i);
+  endfunction
   always begin
     #100000; // Print every 100 us (100,000 ns = 100 us)
     $display("[TB_TIME] Simulation time: %0t", $realtime);
+    if (mon_on) begin
+      $write("[TB_ACTIVITY]   slv |");
+      for (int i = 0; i < ${config.project.soc_pkg_name}::NumAxiSlaves; i++) begin
+        mon_slv_e = ${config.project.soc_pkg_name}::axi_slv_idx_e'(i);
+        $write(" %s=%0d", mon_port_name(mon_slv_e.name(), i), dut.mon_slv_cnt[i] - mon_slv_prev[i]);
+        mon_slv_prev[i] = dut.mon_slv_cnt[i];
+      end
+      $write("\n[TB_ACTIVITY]   mst |");
+      for (int i = 0; i < ${config.project.soc_pkg_name}::NumAxiMasters; i++) begin
+        mon_mst_e = ${config.project.soc_pkg_name}::axi_mst_idx_e'(i);
+        $write(" %s=%0d", mon_port_name(mon_mst_e.name(), i), dut.mon_mst_cnt[i] - mon_mst_prev[i]);
+        mon_mst_prev[i] = dut.mon_mst_cnt[i];
+      end
+      $write("\n");
+    end
   end
 % endif
 

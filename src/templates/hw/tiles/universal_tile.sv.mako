@@ -355,9 +355,16 @@
   # public parameter, and the top's overrides disappear on their own because they
   # are derived from the wrapper's declared parameters.
   for _p, _fill in (
-      # The wide offload types exist only with the channel declared (see wide_red_on).
+      # The wide offload types take the network's types with the channel declared
+      # (see wide_red_on) and plain 'logic' without it - the isle's own default, its
+      # gen_no_wide_reduction ties the port off. They must be resolved EITHER WAY:
+      # left in the tile's header as 'parameter type ... = logic' they made the
+      # compute tile of every narrow-only project (noc_isle) ineligible as a
+      # hier_block, so Verilator inlined it into the top sixteen times - 7.2 GB
+      # of C++ and an hour of build against 0.6 GB and seven minutes (2026-09-03).
       *([('offload_wide_req_t', f"{noc_pkg}::red_wide_req_t"),
-         ('offload_wide_rsp_t', f"{noc_pkg}::red_wide_rsp_t")] if wide_red_on else []),
+         ('offload_wide_rsp_t', f"{noc_pkg}::red_wide_rsp_t")] if wide_red_on else
+        [('offload_wide_req_t', 'logic'), ('offload_wide_rsp_t', 'logic')]),
       ('sync_reg_out_req_t',  f"{soc_pkg}::soc_reg_req_t"),
       ('sync_reg_out_rsp_t',  f"{soc_pkg}::soc_reg_rsp_t"),
       ('async_reg_out_req_t', f"{soc_pkg}::soc_reg_req_t"),
@@ -1782,6 +1789,88 @@ module ${p_name}_${c_type}
     $fatal(1, "${c_type}: ${net} slave response - the isle's ${irsp} (%0d bits) and the network's ${nrsp} (%0d bits) differ; a direct connection would displace every field.",
            $bits(${irsp}), $bits(${nrsp}));
 % endfor
+<%
+  # COLLECTIVE TRACE: the contract slots this tile's landings are recognised by,
+  # as (name, offset) pairs from the isle header, only where a stamper exists
+  # (the instance base is then a port, and the slots are declared).
+  coll_slots = []
+  ct_woff = None
+  if stamper_on and isle_info:
+      _cfx = isle_info.get("fixed_params", {})
+      for _nm, _key in (("collect", "OffloadCollectOffs"), ("collect_col", "OffloadCollectColOffs"),
+                        ("barrier", "OffloadBarrierOffs"), ("mcast", "OffloadMcastOffs")):
+          _v = _cfx.get(_key)
+          if _v is not None:
+              coll_slots.append((_nm, int(str(_v), 0)))
+      _wv = _cfx.get("OffloadWideOffs")
+      ct_woff = int(str(_wv), 0) if _wv is not None else None
+%>\
+% if narrow_red_on or (has_offload and wide_red_on) or coll_slots:
+`ifndef SYNTHESIS
+  // =======================================================================
+  // COLLECTIVE TRACE (+collective_trace): the collective events of this tile,
+  // printed from inside it - the reduction steps its offload units perform and
+  // the landings of collective writes on the isle's slave side, recognised by
+  // the contract slots. The tile is a hierarchical block under Verilator, so
+  // no testbench path may look in: each tile reads the plusarg itself, prints
+  // with %m, and stays silent by default. The stamper prints its own injections.
+  // =======================================================================
+  bit coll_trace;
+  initial coll_trace = $test$plusargs("collective_trace");
+% if narrow_red_on:
+  always_ff @(posedge noc_clk) begin
+    if (coll_trace && offload_narrow_req_out.valid && offload_narrow_rsp_in.ready) begin
+      automatic floo_pkg::collect_op_e ct_nop = floo_pkg::collect_op_e'(offload_narrow_req_out.req.op);
+      $display("[COLL_TRACE] %0t %m: narrow reduce step %s a=0x%h b=0x%h", $realtime,
+               ct_nop.name(), offload_narrow_req_out.req.operand1, offload_narrow_req_out.req.operand2);
+    end
+  end
+% endif
+% if has_offload and wide_red_on:
+  always_ff @(posedge noc_clk) begin
+    if (coll_trace && offload_wide_req_out.valid && offload_wide_rsp_in.ready) begin
+      automatic floo_pkg::collect_op_e ct_wop = floo_pkg::collect_op_e'(offload_wide_req_out.req.op);
+      $display("[COLL_TRACE] %0t %m: wide reduce step %s", $realtime, ct_wop.name());
+    end
+  end
+% endif
+% if coll_slots:
+  // Landings: the AW names the slot (beat-aligned compare against the instance
+  // base), the W beats that follow carry the word. AXI keeps W in AW order but
+  // lets several AWs precede their data (the host's slot initialisation does
+  // exactly that), so EVERY accepted AW enters a queue - slot name, or empty for
+  // an ordinary write - and each burst's last W beat pops one: the first form,
+  // a single pending name, labelled one write with the next write's data.
+  localparam int unsigned CtBeatB = $bits(narrow_out_req.w.data) / 8;
+  string ct_q[$];
+  always_ff @(posedge noc_clk) begin
+    if (coll_trace && narrow_out_req.aw_valid && narrow_out_rsp.aw_ready) begin
+      automatic logic [63:0] ct_off = 64'(narrow_out_req.aw.addr) - instance_base_addr_i;
+      automatic string ct_name = "";
+% for _nm, _offs in coll_slots:
+      if ((ct_off & ~64'(CtBeatB - 1)) == (64'd${_offs} & ~64'(CtBeatB - 1))) ct_name = "${_nm}";
+% endfor
+      ct_q.push_back(ct_name);
+    end
+    if (coll_trace && narrow_out_req.w_valid && narrow_out_rsp.w_ready && narrow_out_req.w.last && ct_q.size() > 0) begin
+      automatic string ct_head = ct_q.pop_front();
+% for _nm, _offs in coll_slots:
+      if (ct_head == "${_nm}")
+        $display("[COLL_TRACE] %0t %m: landing ${_nm} = 0x%h", $realtime, narrow_out_req.w.data[8 * (${_offs} % CtBeatB) +: 32]);
+% endfor
+    end
+  end
+% endif
+% if coll_slots and ct_woff is not None:
+  always_ff @(posedge noc_clk) begin
+    if (coll_trace && wide_out_req.aw_valid && wide_out_rsp.aw_ready &&
+        ((64'(wide_out_req.aw.addr) - instance_base_addr_i) & ~64'h3F) == (64'd${ct_woff} & ~64'h3F))
+      $display("[COLL_TRACE] %0t %m: wide landing at 0x%h", $realtime, wide_out_req.aw.addr);
+  end
+% endif
+`endif
+% endif
+
   // 3. ISLE INSTANTIATION (${isle_name})
   // =======================================================================
   // Instantiates the actual core hardware IP (the Isle). 

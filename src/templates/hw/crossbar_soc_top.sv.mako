@@ -429,6 +429,59 @@ ${clock_and_reset_tree(config, p_name)}
   ${pkg}::soc_axi_req_t  [`IOMSB(${pkg}::NumAxiMastersSync):0] xbar_sync_mst_req;
   ${pkg}::soc_axi_resp_t [`IOMSB(${pkg}::NumAxiMastersSync):0] xbar_sync_mst_rsp;
 
+`ifndef SYNTHESIS
+  // PROGRESS MONITOR COUNTERS (simulation only, read by the testbench under
+  // +progress): one free-running count of AW, AR and W handshakes per crossbar
+  // port, in the package's enumeration order (axi_slv_idx_e / axi_mst_idx_e:
+  // asynchronous ports first, then synchronous). The crossbar twin of the mesh
+  // top's per-tile link counters: with them a port polling at full rate while the
+  // others sit at zero reads as a wait that will not end, a whole list at zero as
+  // a stall. Sync ports count valid & ready; async ports count the steps of the
+  // CDC write pointers, one per item pushed, which is the same thing seen from the
+  // top. Every increment of a cycle is summed in ONE assignment: separate
+  // non-blocking increments would keep only the last one.
+  int unsigned mon_slv_cnt [`IOMSB(${pkg}::NumAxiSlaves):0];
+  int unsigned mon_mst_cnt [`IOMSB(${pkg}::NumAxiMasters):0];
+  for (genvar i = 0; i < ${pkg}::NumAxiSlavesAsync; i++) begin : gen_mon_slv_async
+    logic [LogDepth:0] aw_q, ar_q, w_q;
+    always_ff @(posedge host_clk) begin
+      aw_q <= xbar_slv_aw_wptr[i];
+      ar_q <= xbar_slv_ar_wptr[i];
+      w_q  <= xbar_slv_w_wptr[i];
+      mon_slv_cnt[i] <= mon_slv_cnt[i] + 32'(xbar_slv_aw_wptr[i] != aw_q)
+                                       + 32'(xbar_slv_ar_wptr[i] != ar_q)
+                                       + 32'(xbar_slv_w_wptr[i]  != w_q);
+    end
+  end
+  for (genvar i = 0; i < ${pkg}::NumAxiSlavesSync; i++) begin : gen_mon_slv_sync
+    always_ff @(posedge host_clk) begin
+      mon_slv_cnt[${pkg}::NumAxiSlavesAsync + i] <= mon_slv_cnt[${pkg}::NumAxiSlavesAsync + i]
+          + 32'(xbar_sync_slv_req[i].aw_valid && xbar_sync_slv_rsp[i].aw_ready)
+          + 32'(xbar_sync_slv_req[i].ar_valid && xbar_sync_slv_rsp[i].ar_ready)
+          + 32'(xbar_sync_slv_req[i].w_valid  && xbar_sync_slv_rsp[i].w_ready);
+    end
+  end
+  for (genvar i = 0; i < ${pkg}::NumAxiMastersAsync; i++) begin : gen_mon_mst_async
+    logic [LogDepth:0] aw_q, ar_q, w_q;
+    always_ff @(posedge host_clk) begin
+      aw_q <= xbar_mst_aw_wptr[i];
+      ar_q <= xbar_mst_ar_wptr[i];
+      w_q  <= xbar_mst_w_wptr[i];
+      mon_mst_cnt[i] <= mon_mst_cnt[i] + 32'(xbar_mst_aw_wptr[i] != aw_q)
+                                       + 32'(xbar_mst_ar_wptr[i] != ar_q)
+                                       + 32'(xbar_mst_w_wptr[i]  != w_q);
+    end
+  end
+  for (genvar i = 0; i < ${pkg}::NumAxiMastersSync; i++) begin : gen_mon_mst_sync
+    always_ff @(posedge host_clk) begin
+      mon_mst_cnt[${pkg}::NumAxiMastersAsync + i] <= mon_mst_cnt[${pkg}::NumAxiMastersAsync + i]
+          + 32'(xbar_sync_mst_req[i].aw_valid && xbar_sync_mst_rsp[i].aw_ready)
+          + 32'(xbar_sync_mst_req[i].ar_valid && xbar_sync_mst_rsp[i].ar_ready)
+          + 32'(xbar_sync_mst_req[i].w_valid  && xbar_sync_mst_rsp[i].w_ready);
+    end
+  end
+`endif
+
   // Dedicated LLC Wires (Host <-> LLC Peripheral)
 % for sig, slv_w, mst_w in channels:
 <%

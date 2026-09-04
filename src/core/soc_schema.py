@@ -1198,7 +1198,7 @@ _ROOT_BLOCK_SPEC = {
     "software_stack": {"toolchain": str, "boot_memory": str,
                        "test_app": {"name": str, "auto_generate_c": bool, "baudrate": int,
                                     "offload_targets": [str], "payload_memory": str,
-                                    "collective_test": bool}},
+                                    "collective_test": bool, "verbose": bool}},
 }
 
 

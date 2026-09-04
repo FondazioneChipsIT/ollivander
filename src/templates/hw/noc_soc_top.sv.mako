@@ -286,13 +286,19 @@ ${clock_and_reset_tree(config, p_name)}
   int unsigned mon_wide_cnt [${max_x}:0][${max_y}:0];
   for (genvar mx = 0; mx <= ${max_x}; mx++) begin : gen_mon_x
     for (genvar my = 0; my <= ${max_y}; my++) begin : gen_mon_y
+      // All handshakes of one cycle are summed into ONE assignment: separate
+      // non-blocking increments would keep only the last one and undercount a
+      // tile with several links moving at once (the first form did exactly that).
       always_ff @(posedge clk_i) begin
+        automatic int unsigned req_n = 0, wide_n = 0;
         for (int md = 0; md < 4; md++) begin
-          if (tile_req_o[mx][my][md].valid  && tile_req_i[mx][my][md].ready)  mon_req_cnt[mx][my]  <= mon_req_cnt[mx][my]  + 1;
-          if (tile_req_i[mx][my][md].valid  && tile_req_o[mx][my][md].ready)  mon_req_cnt[mx][my]  <= mon_req_cnt[mx][my]  + 1;
-          if (tile_wide_o[mx][my][md].valid && tile_wide_i[mx][my][md].ready) mon_wide_cnt[mx][my] <= mon_wide_cnt[mx][my] + 1;
-          if (tile_wide_i[mx][my][md].valid && tile_wide_o[mx][my][md].ready) mon_wide_cnt[mx][my] <= mon_wide_cnt[mx][my] + 1;
+          req_n  += 32'(tile_req_o[mx][my][md].valid  && tile_req_i[mx][my][md].ready);
+          req_n  += 32'(tile_req_i[mx][my][md].valid  && tile_req_o[mx][my][md].ready);
+          wide_n += 32'(tile_wide_o[mx][my][md].valid && tile_wide_i[mx][my][md].ready);
+          wide_n += 32'(tile_wide_i[mx][my][md].valid && tile_wide_o[mx][my][md].ready);
         end
+        mon_req_cnt[mx][my]  <= mon_req_cnt[mx][my]  + req_n;
+        mon_wide_cnt[mx][my] <= mon_wide_cnt[mx][my] + wide_n;
       end
     end
   end

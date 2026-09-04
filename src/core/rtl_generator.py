@@ -1294,6 +1294,13 @@ class RTLGenerator:
             # payload re-load hangs the interconnect for a full watchdog
             # window with no error printed.
             "offload_power_cycles": (self.soc_config.testbench or {}).get("boot_mode") in ("jtag", "slink", "uart"),
+            # QUIET UART BY DEFAULT: at the simulation-fast 2 Mbaud a character costs
+            # ~5 us of simulated time and the host prints blocking, so the console
+            # verdicts of the offload test sat on the critical path (half of a short
+            # run). The generated test now prints the greeting, one final verdict line
+            # and the EOT; every intermediate verdict travels as a 5 us phase code the
+            # VIP renders with its time. 'test_app.verbose: true' restores the lines.
+            "offload_verbose": bool((self.soc_config.software_stack or {}).get("test_app", {}).get("verbose", False)),
             # The distinctive code every SECONDARY core of a memory_mapped cluster
             # returns (gwaihir's exact-accounting practice): zero
             # would be indistinguishable from a wrong code path that stores zero, so
@@ -1865,8 +1872,12 @@ class RTLGenerator:
             elif re.search(r"^\s*localparam\s+type\s", text, re.M):
                 reason = "a body 'localparam type'"
             if reason:
-                print(f"  -> vlt: skipping {module} ({reason}: Verilator cannot rebuild "
-                      f"a type in a hier_block's parameterization)")
+                # A WARNING, not a note: a skipped tile is inlined into the top once per
+                # instance, and on noc_isle that was 7.2 GB of C++ and an hour of build
+                # against 0.6 GB and seven minutes - it sat in the log for weeks (2026-09-03).
+                print(f"  [WARNING] vlt: skipping {module} as a hier_block ({reason}: Verilator cannot rebuild "
+                      f"a type in a hier_block's parameterization) - it will be inlined into the top per "
+                      f"instance, and build and run times pay for it")
                 return False
             return True
 

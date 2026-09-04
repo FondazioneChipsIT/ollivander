@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 918" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
   <!-- Theme-neutral palette (matches tb_block_diagram.svg): GitHub's neutral gray reads on both light and dark. -->
   <!-- Containment mirrors the source: everything sits INSIDE the tile frame because <type>_tile.sv instantiates it. -->
   <defs>
@@ -8,14 +8,14 @@
   </defs>
 
   <!-- ============ outer frame: the generated tile ============ -->
-  <rect x="20" y="40" width="1140" height="836" rx="10" stroke="#8b949e" fill="rgba(139,148,158,0.04)" stroke-width="1.5"/>
+  <rect x="20" y="40" width="1140" height="854" rx="10" stroke="#8b949e" fill="rgba(139,148,158,0.04)" stroke-width="1.5"/>
   <text x="38" y="66" fill="#8b949e" font-weight="600">&lt;type&gt;_tile.sv — generated per component type from universal_tile.sv.mako</text>
 
   <!-- cardinal links on the frame edges -->
   <g fill="#8b949e" font-size="11">
     <text x="540" y="34">N: floo_req / floo_rsp / floo_wide</text>
     <text x="1178" y="300" transform="rotate(90 1178 300)">E: floo_req / floo_rsp / floo_wide</text>
-    <text x="540" y="892">S: floo_req / floo_rsp / floo_wide</text>
+    <text x="540" y="910">S: floo_req / floo_rsp / floo_wide</text>
     <text x="14" y="300" transform="rotate(-90 14 300)">W: floo_req / floo_rsp / floo_wide</text>
   </g>
 
@@ -43,8 +43,8 @@
   <line x1="750" y1="154" x2="800" y2="154" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="5 4" marker-start="url(#head)" marker-end="url(#head)"/>
 
   <!-- south link: routed down the free left margin, between the frame and the blocks -->
-  <path d="M440,162 L440,182 L40,182 L40,876" stroke="#8b949e" stroke-width="1.2" fill="none" marker-start="url(#head)" marker-end="url(#head)"/>
-  <text x="44" y="852" fill="#8b949e" font-size="10">S</text>
+  <path d="M440,162 L440,182 L40,182 L40,894" stroke="#8b949e" stroke-width="1.2" fill="none" marker-start="url(#head)" marker-end="url(#head)"/>
+  <text x="44" y="870" fill="#8b949e" font-size="10">S</text>
   <!-- local port -->
   <line x1="590" y1="162" x2="590" y2="226" stroke="#8b949e" stroke-width="1.2" marker-start="url(#head)" marker-end="url(#head)"/>
   <text x="600" y="198" fill="#8b949e" font-size="11">local port (flits)</text>
@@ -133,4 +133,5 @@
   <text x="58" y="822" fill="#8b949e" font-size="11">Reading order of a generated tile: router → offload units → chimney → stamper / isolation / adapters → error slaves / join → isle instantiation.</text>
   <text x="58" y="840" fill="#8b949e" font-size="11">Every decision (which blocks, which types) is taken once in the template's Python header from the parsed isle header and the SoC description.</text>
   <text x="58" y="858" fill="#8b949e" font-size="11">The dummy tile (no isle) keeps only the router, configured for collective TRANSIT: multicast and barrier, no arithmetic reduction.</text>
+  <text x="58" y="876" fill="#8b949e" font-size="11">Simulation only (+collective_trace): the stamper prints its injections, the offload interfaces their reduction steps, the slave side the landings at the contract slots — [COLL_TRACE], from inside the tile, no path crosses it.</text>
 </svg>

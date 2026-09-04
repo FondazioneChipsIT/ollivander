@@ -72,6 +72,17 @@ module vip_ollivander_soc #(
   // nominal baud by percents at high speed - enough to mis-sample a frame).
   parameter bit HasUart = 1'b0,
   parameter real UartBitPeriodNs = 8680.0,
+  /// The offload test's resolved target names, comma-separated, in the order the
+  /// host firmware runs them: the per-target verdicts travel as phase codes, and
+  /// the agent names the target from this list (code 0x1F = "next target").
+  /// Empty when the project runs another test.
+  parameter string OffloadTargets = "",
+  /// The SoC has the System Controller's test-progress mailbox (tb_phase): the
+  /// testbench then reports the phases from the register, at the write itself,
+  /// and the UART control bytes are decoded only on request (+uart_phase), so a
+  /// phase is never printed twice. Without the mailbox the UART bytes are the
+  /// channel and print by default.
+  parameter bit HasPhaseMailbox = 1'b0,
   // UART debug-boot agent: the external agent the bootrom's own
   // serial debug server expects - the poorest agent silicon can count on, no
   // debugger and no link partner. The protocol runs at the baudrate BAKED
@@ -119,6 +130,10 @@ module vip_ollivander_soc #(
   input  logic [slink_reg_pkg::NumChannels-1:0][slink_reg_pkg::NumLanes-1:0] slink_i,
   output logic [slink_reg_pkg::NumChannels-1:0][slink_reg_pkg::NumLanes-1:0] slink_o
 );
+  // Margin on every transfer-duration indication ("about X ms"): declared here,
+  // at the top of the body, because the uart-boot agent below uses it before
+  // the load helpers that follow are declared (slang: used before declaration).
+  localparam real XferMargin = 1.10;
 
 
   // --------------------------------------------------------------------------
@@ -205,6 +220,69 @@ module vip_ollivander_soc #(
   // faster) divisor the firmware programs; the agent flips this around EXEC.
   real uart_rx_period = UartBitPeriodNs;
 
+  // --------------------------------------------------------------------------
+  // TEST-PROGRESS REPORTING, shared by the two phase channels: the System
+  // Controller's tb_phase mailbox (the testbench calls report_phase at every
+  // write it observes) and the UART control bytes (decoded below). The offload
+  // targets are split out of OffloadTargets at time zero; tgt_idx is the one the
+  // host is currently running (-1: none yet), advanced by code 0x1F.
+  // --------------------------------------------------------------------------
+  string tgt_names[$];
+  int    tgt_idx = -1;
+  bit    uart_phase_on;
+
+  function automatic string tgt_name();
+    if (tgt_idx >= 0 && tgt_idx < tgt_names.size()) return tgt_names[tgt_idx];
+    return "target ?";
+  endfunction
+
+  initial begin
+    // Declared without an initialiser: in a static context a declaration with
+    // one is implicitly static and QuestaSim warns (vopt-2244).
+    string acc;
+    acc = "";
+    uart_phase_on = $test$plusargs("uart_phase");
+    for (int i = 0; i < OffloadTargets.len(); i++) begin
+      if (OffloadTargets.getc(i) == ",") begin
+        tgt_names.push_back(acc);
+        acc = "";
+      end else begin
+        acc = {acc, OffloadTargets.getc(i)};
+      end
+    end
+    if (acc.len() > 0) tgt_names.push_back(acc);
+  end
+
+  // One line per phase code, with the time. Codes 0x10-0x1F on the UART, 0-15
+  // in the mailbox: the same table (main_offload.c.mako emits them). `via`
+  // names the channel only when both are printed (+uart_phase).
+  task automatic report_phase(input logic [7:0] code, input string via = "");
+    automatic string txt;
+    case (code)
+      8'd0:  txt = "offload targets announced";
+      8'd1:  txt = "payload memory enabled";
+      8'd2:  txt = "target enabled and de-isolated";
+      8'd3:  txt = "payload loaded";
+      8'd4:  txt = "instances started, waiting for return slots";
+      8'd5:  txt = "return slots complete";
+      8'd6:  txt = "waiting for the collective phases";
+      8'd7:  txt = "collective phases complete";
+      8'd8:  txt = "target disabled (power cycle)";
+      8'd9:  txt = "selective-power pass";
+      8'd10: txt = "all targets done, ending the test";
+      // Per-target verdicts (the quiet UART default sends these instead of
+      // printing a line) and the target selector that names them.
+      8'd11: txt = {tgt_name(), ": collective phase PASS"};
+      8'd12: txt = {tgt_name(), ": offload PASS"};
+      8'd13: txt = {tgt_name(), ": power-cycle PASS (2 cycles)"};
+      8'd14: txt = {tgt_name(), ": selective-power PASS (last parked, first ran)"};
+      8'd15: begin tgt_idx++; txt = {"target ", tgt_name(), " begins"}; end
+      default: txt = $sformatf("phase code %0d", code);
+    endcase
+    $display("[TEST_PROGRESS] %0t  host: %s%s", $realtime, txt, via);
+    $fflush(32'h8000_0001);
+  endtask
+
   if (HasUart) begin : gen_uart_rx
     logic [7:0] rx_char;
     string rx_string;
@@ -246,30 +324,21 @@ module vip_ollivander_soc #(
         rx_string = "";
         rx_char_num = 0;
       end else if (rx_char >= 8'h10 && rx_char <= 8'h1F) begin
-        // PROGRESS CODE: one control byte per firmware phase transition, printed
-        // with the time. A single byte costs 5 us of simulated time at the
-        // configured 2 Mbaud, against ~200 us for a printed line, so the
-        // firmware can mark every phase without paying for it; and it rides the
-        // only channel silicon has, with no path into the design hierarchy
-        // (Verilator's hierarchical blocks forbid one). Codes 0x10-0x1F: DLE..US,
-        // never used by the uart debug protocol (0x04) nor by the test verdict
-        // (0x03), and never part of console text. The names below are the
-        // generated offload application's phases (main_offload.c.mako).
-        case (rx_char)
-          8'h10: $display("[PROGRESS] %0t  host: offload targets announced", $realtime);
-          8'h11: $display("[PROGRESS] %0t  host: payload memory enabled", $realtime);
-          8'h12: $display("[PROGRESS] %0t  host: target enabled and de-isolated", $realtime);
-          8'h13: $display("[PROGRESS] %0t  host: payload loaded", $realtime);
-          8'h14: $display("[PROGRESS] %0t  host: instances started, waiting for return slots", $realtime);
-          8'h15: $display("[PROGRESS] %0t  host: return slots complete", $realtime);
-          8'h16: $display("[PROGRESS] %0t  host: waiting for the collective phases", $realtime);
-          8'h17: $display("[PROGRESS] %0t  host: collective phases complete", $realtime);
-          8'h18: $display("[PROGRESS] %0t  host: target disabled (power cycle)", $realtime);
-          8'h19: $display("[PROGRESS] %0t  host: selective-power pass", $realtime);
-          8'h1A: $display("[PROGRESS] %0t  host: all targets done, ending the test", $realtime);
-          default: $display("[PROGRESS] %0t  host: phase code 0x%02h", $realtime, rx_char);
-        endcase
-        $fflush(32'h8000_0001);
+        // TEST-PROGRESS CODE on the UART: one control byte per firmware phase
+        // transition (5 us of simulated time at the configured 2 Mbaud, against
+        // ~200 us for a printed line), the path silicon has. Codes 0x10-0x1F:
+        // DLE..US, never used by the uart debug protocol (0x04) nor by the test
+        // verdict (0x03), never part of console text. With the mailbox present
+        // the same phase is reported at the register write, so the byte is
+        // decoded only on request (+uart_phase), tagged "(uart)"; without a
+        // mailbox this is the channel. Code 0x1F advances the target index in
+        // report_phase, so it is consumed exactly once: when both channels print
+        // it, only the mailbox advances (the uart copy uses the plain text).
+        if (!HasPhaseMailbox) report_phase(rx_char - 8'h10);
+        else if (uart_phase_on) begin
+          if (rx_char == 8'h1F) $display("[TEST_PROGRESS] %0t  host: target %s begins (uart)", $realtime, tgt_name());
+          else report_phase(rx_char - 8'h10, " (uart)");
+        end
       end else if (rx_char >= 32 && rx_char <= 126) begin // Printable ASCII
         rx_string = {rx_string, rx_char};
         rx_char_num = rx_char_num + 1;
@@ -363,18 +432,28 @@ module vip_ollivander_soc #(
                              input int unsigned num_words);
       automatic byte q [$];
       automatic logic [63:0] addr = base;
-      automatic int unsigned sent = 0;
+      automatic int unsigned sent = 0, last_tenth = 0;
+      automatic realtime t_start = $realtime;
+      // Every byte on the wire is 10 bit slots at the protocol's period: the
+      // payload, plus per burst the protocol's 17-byte write command (opcode, 8
+      // address, 8 length bytes) and the two bytes the server answers (ACK, EOT).
+      // Deterministic parts only; the server's own processing is in the "about".
+      $display("[VIP-UART] load: %0d bytes at 0x%h in %0d bursts - about %0.2f ms at %0.0f ns per bit",
+               4 * num_words, base, (4 * num_words + UartBurstBytes - 1) / UartBurstBytes,
+               XferMargin * ((4.0 * num_words + 19.0 * ((4 * num_words + UartBurstBytes - 1) / UartBurstBytes)) * 10.0 * UartBootBitPeriodNs) / 1.0e6,
+               UartBootBitPeriodNs);
       for (int unsigned w = 0; w < num_words; w++) begin
         for (int b = 0; b < 4; b++) q.push_back(byte'(image[w][8*b +: 8]));
         if (q.size() == UartBurstBytes || w == num_words - 1) begin
           uart_write_burst(addr, q);
           sent += q.size();
-          $display("[VIP-UART] burst done (EOT received), %0d/%0d bytes", sent, 4*num_words);
+          xfer_tick("[VIP-UART] load", last_tenth, sent, 4 * num_words, t_start);
           addr = base + sent;
           q.delete();
         end
       end
-      $display("[VIP-UART] load complete: %0d words at 0x%h", num_words, base);
+      $display("[VIP-UART] load complete: %0d words at 0x%h in %0.2f ms", num_words, base,
+               ($realtime - t_start) / 1ms);
     endtask
 
     // Challenge the debug server (it answers the ACK byte with an ACK) and
@@ -716,6 +795,37 @@ module vip_ollivander_soc #(
   // the intended use is one verifying configuration in the regression fleet,
   // the fast path everywhere else - the same split astral's CI applies to
   // its one JTAG-preload entry.
+  // TRANSFER PROGRESS. One line per TENTH of a testbench-driven transfer, with
+  // the simulated time elapsed and the time left projected from the measured
+  // rate. The longest silent stretch of a jtag-preloaded run was the SBA load
+  // (5.2 of noc's 9.6 ms, 2026-09-03) with nothing printed between "SBA load:"
+  // and "SBA load complete": a wedge and a slow load read the same. At most ten
+  // lines per load whatever the image size, and zero cost in simulated time -
+  // the agent prints, the design never waits for it.
+  // The estimates are an INDICATION for the reader ("about X ms"), never a
+  // pass/fail criterion and never tuned to one project or host: the formula
+  // keeps what is parametrised and deterministic (bit periods, DMI costs, the
+  // protocol's bytes) and the rest - the target's own latencies, whatever
+  // residual randomness - is absorbed by the word "about" and a +10% margin.
+  // The time left is the caller's phase model when it has one (t_left >= 0): a
+  // load made of phases with different costs - the SBA's writes at ~1.1 us and
+  // reads at ~2 us - is misjudged by the average rate until the slow phase has
+  // begun. With no model the average rate is used.
+  task automatic xfer_tick(input string tag, ref int unsigned last_tenth,
+                           input int unsigned done, input int unsigned total,
+                           input realtime t_start, input realtime t_left = -1ns);
+    automatic int unsigned tenth;
+    automatic realtime elapsed;
+    if (total == 0 || done == 0) return;
+    tenth = (10 * done) / total;
+    if (tenth > last_tenth && tenth < 10) begin
+      last_tenth = tenth;
+      elapsed = $realtime - t_start;
+      $display("%s %0d%%: %0d/%0d, %0.2f ms elapsed, about %0.2f ms left", tag, 10 * tenth, done, total,
+               elapsed / 1ms, XferMargin * (t_left >= 0ns ? t_left : (elapsed * (total - done) / done)) / 1ms);
+    end
+  endtask
+
   task automatic sba_load(input logic [63:0] base,
                           input logic [31:0] image[],
                           input int unsigned num_words,
@@ -723,17 +833,41 @@ module vip_ollivander_soc #(
     automatic dm::sbcs_t sbcs;
     automatic int unsigned w = 0;
     automatic bit use64;
+    // Progress and estimate bookkeeping: the load is counted in 32-bit words
+    // written (plus words verified), and the DMI costs are MEASURED on the
+    // setup accesses below rather than derived from TCK counts, so the estimate
+    // follows the TCK period, the DMI width and the idle windows automatically.
+    automatic realtime t_start, t_op, t_read, t_write, t_est;
+    automatic int unsigned done = 0, total, last_tenth = 0, n_writes, n_reads;
+    t_start = $realtime;
     // Capability probe: 64-bit beats only if the hardware declares them.
+    t_op = $realtime;
     drv_read_dmi_exp_backoff(dm::SBCS, sbcs);
+    t_read = $realtime - t_op;                     // one streamed DMI read, landed
     use64 = sbcs.sbaccess64 && !base[2];  // 64-bit needs an 8-byte-aligned base
     sbcs = '{sbautoincrement: 1'b1, sbaccess: use64 ? 3'h3 : 3'h2, default: '0};
+    t_op = $realtime;
     write_dmi_safe(dm::SBCS, sbcs);
+    t_write = $realtime - t_op;                    // one DMI write, landed
     write_dmi_safe(dm::SBAddress1, base[63:32]);
     write_dmi_safe(dm::SBAddress0, base[31:0]);
+    // One DMI write per 32-bit word in both beat widths (SBData1+SBData0 per
+    // double word), plus the address pair and the tail's SBCS; the verify is one
+    // streamed read per word plus its drain and status reads.
+    n_writes = num_words + 3;
+    n_reads  = verify ? num_words + 4 : 2;
+    t_est    = n_writes * t_write + n_reads * t_read;
+    total    = verify ? 2 * num_words : num_words;
+    $display("[VIP-JTAG] SBA load: %0d words at 0x%h as %s beats%s - about %0.2f ms",
+             num_words, base, use64 ? "64-bit" : "32-bit", verify ? ", then verified" : "",
+             XferMargin * t_est / 1ms);
     if (use64) begin
       for (; w + 1 < num_words; w += 2) begin
         write_dmi_safe(dm::SBData1, image[w+1]);
         write_dmi_safe(dm::SBData0, image[w]);
+        done += 2;
+        xfer_tick("[VIP-JTAG] SBA load", last_tenth, done, total, t_start,
+                  (num_words - done) * t_write + (verify ? num_words * t_read : 0ns));
       end
       if (w < num_words) begin
         // Odd tail: one last 32-bit beat at the already-incremented address.
@@ -741,9 +875,15 @@ module vip_ollivander_soc #(
         write_dmi_safe(dm::SBCS, sbcs);
         write_dmi_safe(dm::SBData0, image[w]);
         w++;
+        done++;
       end
     end else begin
-      for (; w < num_words; w++) write_dmi_safe(dm::SBData0, image[w]);
+      for (; w < num_words; w++) begin
+        write_dmi_safe(dm::SBData0, image[w]);
+        done++;
+        xfer_tick("[VIP-JTAG] SBA load", last_tenth, done, total, t_start,
+                  (num_words - done) * t_write + (verify ? num_words * t_read : 0ns));
+      end
     end
     // Drain, then the one sticky-error check for the whole stream.
     do drv_read_dmi_exp_backoff(dm::SBCS, sbcs);
@@ -771,6 +911,9 @@ module vip_ollivander_soc #(
         if (rdata !== image[w])
           $fatal(1, "[VIP-JTAG] SBA VERIFY MISMATCH at 0x%h: wrote 0x%h, read 0x%h",
                  base + 64'(w) * 4, image[w], rdata);
+        done++;
+        xfer_tick("[VIP-JTAG] SBA load", last_tenth, done, total, t_start,
+                  (total - done) * t_read);
       end
       // Last word: drop sbreadondata BEFORE consuming it, or the final SBData0
       // read would fire a bus read beyond the image - possibly into unmapped
@@ -794,9 +937,9 @@ module vip_ollivander_soc #(
     // Restore the write-mode SBCS every other task assumes (no autoincrement).
     sbcs = '{sbaccess: 3'h2, default: '0};
     write_dmi_safe(dm::SBCS, sbcs);
-    $display("[VIP-JTAG] SBA load complete: %0d words at 0x%h (%s beats%s)",
+    $display("[VIP-JTAG] SBA load complete: %0d words at 0x%h (%s beats%s) in %0.2f ms",
              num_words, base, use64 ? "64-bit" : "32-bit",
-             verify ? ", verified" : "");
+             verify ? ", verified" : "", ($realtime - t_start) / 1ms);
   endtask
 
   // ==========================================================================
@@ -1022,10 +1165,16 @@ module vip_ollivander_soc #(
                               input int unsigned num_words);
       automatic slink_data_t beats [$];
       automatic logic [63:0] addr = base;
-      automatic int unsigned w = 0;
+      automatic int unsigned w = 0, last_tenth = 0;
       automatic slink_strb_t tail_strb;
+      automatic realtime t_start = $realtime;
+      automatic bit first = 1'b1;
       if (base[2:0] != 3'b000)
         $fatal(1, "[VIP-SLINK] base 0x%h is not 8-byte aligned", base);
+      // The link's throughput is the DUT's (lanes, DDR clock, credits), not a
+      // parameter of this agent: the estimate is taken from the FIRST burst and
+      // printed right after it, the later tenths refine it.
+      $display("[VIP-SLINK] load: %0d words at 0x%h - estimate after the first burst", num_words, base);
       while (w < num_words) begin
         automatic int unsigned page_left  = (13'h1000 - addr[11:0]) >> 3;
         automatic int unsigned words_left = (num_words - w + 1) >> 1;
@@ -1047,12 +1196,18 @@ module vip_ollivander_soc #(
           beats.push_back(beat);
           w += 2;
         end
-        $display("[VIP-SLINK] burst: %0d beats at 0x%h...", n_beats, addr);
         slink_write_beats(addr, beats, tail_strb);
-        $display("[VIP-SLINK] burst done (B received), %0d/%0d words", w, num_words);
+        if (first) begin
+          first = 1'b0;
+          $display("[VIP-SLINK] load: first burst of %0d beats in %0.2f ms - about %0.2f ms in total",
+                   n_beats, ($realtime - t_start) / 1ms,
+                   XferMargin * (($realtime - t_start) * num_words / (w > num_words ? num_words : w)) / 1ms);
+        end
+        xfer_tick("[VIP-SLINK] load", last_tenth, (w > num_words ? num_words : w), num_words, t_start);
         addr += n_beats * 8;
       end
-      $display("[VIP-SLINK] load complete: %0d words at 0x%h", num_words, base);
+      $display("[VIP-SLINK] load complete: %0d words at 0x%h in %0.2f ms", num_words, base,
+               ($realtime - t_start) / 1ms);
     endtask
 
   end else begin : gen_no_slink

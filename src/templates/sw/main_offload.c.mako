@@ -108,14 +108,6 @@ void print_str(const char *str) {
     }
 }
 
-/* One control byte per phase transition (0x10 + code). The testbench's UART agent
- * prints it with the simulation time as a [PROGRESS] line: a byte costs 5 us of
- * simulated time where a printed line costs ~200, so every phase can be marked
- * without slowing the run. Codes are named in vip_ollivander_soc.sv. */
-static void progress(unsigned code) {
-    while (!(UART_BASE[UART_LSR] & 0x20));
-    UART_BASE[UART_RXTX] = (uint32_t)(0x10u + code);
-}
 % else:
 void print_str(const char *str) {
     // No UART detected in SoC YAML.
@@ -123,9 +115,32 @@ void print_str(const char *str) {
     volatile const char *ptr = str;
     (void)ptr;
 }
-/* No UART: the phase markers have nowhere to go. */
-static void progress(unsigned code) { (void)code; }
 % endif
+
+/* PHASE MARKERS. Every phase transition is written to the System Controller's
+ * test-progress mailbox ({seq, code}, one store, no wait): the testbench watches
+ * that register at the top and prints [TEST_PROGRESS] with the time of the write,
+ * on every project, UART or not. Where a UART exists the same code also goes out
+ * as a control byte (0x10 + code, 5 us on the wire), the path silicon has; the
+ * testbench decodes it on request (+uart_phase). Codes 11-14 carry the per-target
+ * VERDICTS (collective phase, offload cycle, power cycle, selective power) that
+ * the quiet default no longer prints as text, and 15 says "next target" so the
+ * testbench can name it from the generated list. Names: vip_ollivander_soc.sv. */
+static unsigned progress_seq = 0u;
+static void progress(unsigned code) {
+#ifdef OFFLOAD_TB_PHASE_ADDR
+    /* One aligned 32-bit store, on purpose (offload.h: the register structs are
+     * packed and a field access would become four byte writes). */
+    progress_seq = (progress_seq + 1u) & 0xFFu;
+    *(volatile uint32_t *)OFFLOAD_TB_PHASE_ADDR = (progress_seq << 8) | (code & 0xFFu);
+#endif
+% if uart_base:
+    while (!(UART_BASE[UART_LSR] & 0x20));
+    UART_BASE[UART_RXTX] = (uint32_t)(0x10u + code);
+% else:
+    (void)code;
+% endif
+}
 
 /* Hex printer for the collected return values (no libc in this firmware). */
 void print_hex(uint32_t v) {
@@ -155,9 +170,12 @@ int main(void) {
 % endif
     print_str("Just take it and give it a wave...\n");
 
+% if offload_verbose:
     /* The resolved target list, recorded on the UART so every simulation log
-     * documents what this firmware was actually generated to test. */
+     * documents what this firmware was actually generated to test. In the quiet
+     * default the VIP prints it from its own copy of the list, per target. */
     print_str("[OFFLOAD] Targets: ${", ".join(offload_targets.keys())}\n");
+% endif
     progress(0);
 
 % if offload_payload_ctrl_group:
@@ -177,6 +195,7 @@ int main(void) {
     /* ------------------------------------------------------------------
      * Target '${t_name}' ('${t["contract"]}' contract)
      * ------------------------------------------------------------------ */
+    progress(15);   /* next target: the VIP names it from the generated list */
 % if t["sys_ctrl_group"] and offload_power_cycles:
     /* POWER-CYCLE REGRESSION: the whole phase runs TWICE.
      * Cycle 0 proves the function; cycle 1 proves the domain comes back from
@@ -223,9 +242,12 @@ int main(void) {
             print_str(", expected ${hex(expected)}\n");
             offload_fail("${t_name}", "wrong return value");
         }
+        progress(12);
+% if offload_verbose:
         print_str("[OFFLOAD] ${t_name} PASS (ret=");
         print_hex(ret);
         print_str(")\n");
+% endif
     }
 % else:
     /* Parallel launch: configure and wake EVERY instance before polling any,
@@ -348,6 +370,8 @@ int main(void) {
             offload_fail("${t_name}", "collective phase");
         }
         progress(7);
+        progress(11);   /* collective phase PASS, as a code */
+% if offload_verbose:
         print_str("[COLLECTIVE] ${t_name} ");
 % if t.get("collective_reduce"):
         /* The reduction label names the opcode the cycle actually ran with. */
@@ -358,12 +382,16 @@ int main(void) {
             + (["FpAdd wide"] if t.get("collective_wide") else [])
             + (["Multicast"] if t.get("collective_mcast") else []))} PASS\n");
 % endif
+% endif
         progress(5);
+        progress(12);   /* offload PASS for this cycle, as a code */
+% if offload_verbose:
     print_str("[OFFLOAD] ${t_name} PASS (");
         print_hex(${t_name.upper()}_OFFLOAD_NUM_INSTANCES);
         print_str(" instances, ret=");
         print_hex(${t_name}_get_return(0, 0));
         print_str(")\n");
+% endif
     }
 % endif
 % if t["sys_ctrl_group"]:
@@ -375,7 +403,10 @@ int main(void) {
 % if offload_power_cycles:
     }
     progress(8);
+    progress(13);   /* power-cycle PASS, as a code */
+% if offload_verbose:
     print_str("[OFFLOAD] ${t_name} POWER-CYCLE PASS (2 cycles)\n");
+% endif
 % endif
 % if t["num_instances"] > 1 and offload_power_cycles:
 
@@ -446,7 +477,10 @@ int main(void) {
                                   "control group's bit indices may alias");
     }
     progress(9);
+    progress(14);   /* selective-power PASS, as a code */
+% if offload_verbose:
     print_str("[OFFLOAD] ${t_name} SELECTIVE-POWER PASS (last parked, first ran)\n");
+% endif
     ${t_name}_disable();
 % endif
 % endif

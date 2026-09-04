@@ -134,6 +134,22 @@ addrmap ${top_level_module_name}_sys_regs {
     % endif
 
     // ---------------------------------------------------------------------
+    // Test-progress mailbox
+    // ---------------------------------------------------------------------
+    // The phase word the generated test firmware writes at every phase
+    // transition, {seq, code}: the testbench watches it at the top through
+    // sys_regs_hwif_out and prints [TEST_PROGRESS] at the instant of the write.
+    // The default phase channel of every project, with or without a UART (the
+    // UART control bytes remain the path visible from silicon); one store, no
+    // wait, on the firmware's side. seq makes every write a change.
+    reg {
+        name = "Test Progress Mailbox";
+        desc = "Phase word written by the test firmware: code[7:0] = phase (named in vip_ollivander_soc.sv), seq[15:8] = write sequence number";
+        field { hw = r; sw = rw; } code[7:0] = 8'h0;
+        field { hw = r; sw = rw; } seq[15:8] = 8'h0;
+    } tb_phase;
+
+    // ---------------------------------------------------------------------
     // Fetch Enable
     // ---------------------------------------------------------------------
     // Allows the host software to hold compute clusters in a halted state 

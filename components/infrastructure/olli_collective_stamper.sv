@@ -106,6 +106,25 @@ module olli_collective_stamper #(
   // generator emits disjoint windows, so priority never decides anything).
   // ---------------------------------------------------------------------------
   stamp_t aw_stamp;
+
+`ifndef SYNTHESIS
+  // COLLECTIVE TRACE (+collective_trace): one line per stamped injection, printed
+  // from inside the component that knows the window. The tile is a hierarchical
+  // block under Verilator and nothing outside may look in, so every instance
+  // reads the plusarg itself and names its place with %m. Silent by default.
+  bit coll_trace;
+  initial coll_trace = $test$plusargs("collective_trace");
+  always_ff @(posedge clk_i) begin
+    if (coll_trace && mst_req_o.aw_valid && mst_rsp_i.aw_ready && aw_stamp.hit) begin
+      // The op is FlooNoC's collect_op_e; named through a variable, since a
+      // method call on a cast expression is not parsed by QuestaSim.
+      automatic floo_pkg::collect_op_e ct_op = floo_pkg::collect_op_e'(aw_stamp.op);
+      $display("[COLL_TRACE] %0t %m: inject %s mask=0x%h dest=0x%h (store to 0x%h)",
+               $realtime, ct_op.name(), aw_stamp.mask, aw_stamp.dest, slv_req_i.aw.addr);
+    end
+  end
+`endif
+
   always_comb begin
     aw_stamp = '0;  // Unicast, empty mask: the stamp of every ordinary write
     for (int unsigned w = 0; w < NumWindows; w++) begin
