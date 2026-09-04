@@ -33,7 +33,7 @@ from core import rtl_checker
 from core.reporter import print_generation_report
 from core.rtl_generator import RTLGenerator
 from core.ipxact_generator import generate_ipxact
-from core.noc_placement_checker import run_noc_placement_check
+from core.noc_placement_checker import run_noc_placement_check, write_noc_placement_report
 
 def run_generated_rtl_check(env, outdir_path, use_stubs=False):
     """Phase 11: elaborate the generated RTL and report only what we own.
@@ -517,9 +517,9 @@ def main():
         validate_soc_components(soc_config, search_paths, exclude_dir, generator.original_isle_types)
         warn_boot_memory_gated(soc_config, generator.original_isle_types)
         if soc_config.topology.type == "noc":
-            print("[*] Running NoC Placement Checker (NPC) and Latency Estimator...")
+            print("[*] Running NoC Placement Checker (NPC)...")
             run_noc_placement_check(soc_config, env)
-            print("  [SUCCESS] NoC placement validated. Report generated successfully.")
+            print("  [SUCCESS] NoC placement validated (no coordinate collision).")
     except ValueError as e:
         print("\n[ERROR] SoC Hardware Validation Failed!")
         print("=" * 70)
@@ -544,6 +544,11 @@ def main():
     # contract from comp_info, and before rendering so a bad map never reaches RTL.
     check_boot_memory_executable(soc_config, comp_info)
     generator.render_top_level(comp_info, wiring_matrix, global_defines)
+    # The placement report reads the generator's truth - the staged isle headers in
+    # comp_info and the resolved offload targets - so it is written only now.
+    if soc_config.topology.type == "noc":
+        write_noc_placement_report(soc_config, env, comp_info, getattr(generator, "offload_targets", {}), generator.original_isle_types)
+        print("  -> NoC placement report written (generated/doc/noc_placement_report.md).")
             
     # =========================================================================
     # INJECT BENDER OVERRIDES

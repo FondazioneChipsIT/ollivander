@@ -465,155 +465,34 @@
   stamper_on = False
   stamper_windows = []
   coll_csr = False
-  if use_mcast and has_offload and isle_info:
-      _fx = isle_info.get("fixed_params", {})
-      _coff = _fx.get("OffloadCollectOffs")
-      _ccoff = _fx.get("OffloadCollectColOffs")
-      _boff = _fx.get("OffloadBarrierOffs")
-      _mcoff = _fx.get("OffloadMcastOffs")
-      # placement boxes: needed for the per-instance bases (scalar form) AND for
-      # the dimension decomposition below, so they are parsed for both forms.
-      _pl = comp.placement if isinstance(comp.placement, dict) else {}
-      _logical = _pl.get("logical")
-      _items = _logical if isinstance(_logical, list) else ([_logical] if _logical else [])
-      _slv = (comp.interfaces or {}).get("axi_slave")
-      _slv = _slv[0] if isinstance(_slv, list) else _slv
-      _bases = _slv.get("base_addr") if _slv else None
-      # Per-instance bases come in both schema forms: an explicit list, or a
-      # scalar base plus size_per_instance repeated over the placement box.
-      _bi = None
-      if isinstance(_bases, list):
-          _bi = [int(str(_b), 0) for _b in _bases]
-      elif _bases is not None and _slv.get("size_per_instance"):
-          # placement boxes parsed above; one instance per grid cell.
-          _n = 0
-          for _it in _items:
-              _bx = _it.get("box") if isinstance(_it, dict) else None
-              if _bx:
-                  _n += (_bx["x_end"] - _bx["x_start"] + 1) * (_bx["y_end"] - _bx["y_start"] + 1)
-          if _n > 1:
-              _b0 = int(str(_bases), 0)
-              _stride = int(str(_slv["size_per_instance"]), 0)
-              _bi = [_b0 + _i * _stride for _i in range(_n)]
-      if _boff is not None and _bi is not None and len(_bi) > 1:
-          _mask = 0
-          for _b in _bi:
-              _mask |= _b ^ _bi[0]
-          # FlooNoC's collective mask is a wildcard: it spans exactly
-          # 2^popcount(mask) members. An instance set that is not a power-of-two,
-          # stride-aligned box would silently include ghost members in every
-          # reduction, so it is refused here, at generation.
-          if len(_bi) != (1 << bin(_mask).count("1")):
-              raise ValueError(
-                  f"[COLLECTIVE] component '{comp.name}': its {len(_bi)} instance bases do not form "
-                  f"a wildcard-expressible group (mask 0x{_mask:x} spans {1 << bin(_mask).count('1')} "
-                  f"members). Re-place the instances on a power-of-two aligned box, or disable the "
-                  f"narrow reduction.")
-          _c0 = min(_bi)
-          _boff_i  = int(str(_boff), 0)
-          _coff_i  = int(str(_coff), 0) if _coff is not None else None
-          _ccoff_i = int(str(_ccoff), 0) if _ccoff is not None else None
-          _mcoff_i = int(str(_mcoff), 0) if _mcoff is not None else None
-          # Every WINDOWED slot must sit on a narrow-beat boundary: FlooNoC's
-          # collective machinery consumes the beat at channel width - LsbAnd
-          # ANDs data bit 0 of the whole beat (floo_reduction_arbiter) and the
-          # integer ALU computes on the low word - so a 32-bit store at an
-          # offset not aligned to the beat puts the value in the HIGH half and
-          # the machinery silently reduces the unwritten low half (the barrier
-          # at 'h1_FFFC never converged for exactly this reason, 2026-08-31).
-          _beat = getattr(config.topology.noc_settings.networks['narrow'], 'data_width', 64) // 8
-          # The wide landing is a full beat of the WIDE channel, so its alignment is
-          # that channel's beat (64 bytes at 512 bits), not the narrow one the
-          # slots above follow: a wide transfer at a sub-beat offset makes iDMA
-          # emit strobed narrow beats instead of one full one, and a wide
-          # reduction would then merge partial beats.
-          _woff = _fx.get("OffloadWideOffs")
-          _woff_i = int(str(_woff), 0) if _woff is not None else None
-          _wbeat = config.topology.noc_settings.networks['wide'].data_width // 8
-          if _woff_i is not None and _woff_i % _wbeat:
-              raise ValueError(
-                  f"[COLLECTIVE] '{comp.name}': OffloadWideOffs {hex(_woff_i)} is not aligned to the "
-                  f"wide beat ({_wbeat} bytes). The wide landing is a whole 512-bit beat written by the "
-                  f"cluster's DMA; an unaligned offset degrades into strobed narrow beats.")
-          for _nm, _o in (("OffloadCollectOffs", _coff_i),
-                          ("OffloadCollectColOffs", _ccoff_i),
-                          ("OffloadBarrierOffs", _boff_i),
-                          ("OffloadMcastOffs", _mcoff_i)):
-              if _o is not None and _o % _beat:
-                  raise ValueError(
-                      f"[COLLECTIVE] component '{comp.name}': {_nm}=0x{_o:x} is not aligned to the "
-                      f"narrow beat ({_beat} bytes). FlooNoC reduces the beat at channel width, so a "
-                      f"sub-width store landing in the high half is silently reduced as garbage.")
-          # The windows sit on the isle-declared ALIAS base: a member's write
-          # must always exit its cluster (the destination's router expects the
-          # local contribution on its loopback port), and the alias is the range
-          # the isle's internal decode forwards out. The stamper rewrites each
-          # matched address to the real slot BEFORE the chimney routes.
-          _alias = int(str(_fx.get("OffloadCollAliasBase")), 0)
-          # Sequential (value) reductions support 1D CHAINS ONLY: a merge node
-          # accepts at most two contributions, so a monolithic 2D mask creates
-          # 3-input fold-join nodes and the reduction storms (reference: MAGIA
-          # reduces the full mesh in software as column-then-row 1D phases;
-          # verified in-tree 2026-08-31). The group mask therefore splits by
-          # dimension: a COLUMN window (every instance reduces to its own
-          # column head) and a ROW window (the heads reduce to instance 0).
-          # The barrier is a PARALLEL op (n-ary by design): full 2D mask.
-          _stride = sorted(_bi)[1] - _c0
-          # Dimension decomposition: needed by the sequential reduction only.
-          # The barrier and the multicast are n-ary by construction (a parallel
-          # merge and a replication), so they take the full group mask and none
-          # of the guards below applies to them.
-          _ydims = set()
-          for _it in _items:
-              _bx = _it.get("box") if isinstance(_it, dict) else None
-              if _bx:
-                  _ydims.add(_bx["y_end"] - _bx["y_start"] + 1)
-          if len(_ydims) != 1:
-              raise ValueError(
-                  f"[COLLECTIVE] component '{comp.name}': the dimension-ordered reduction needs one "
-                  f"uniform placement-box height, got {sorted(_ydims)}. Re-place the instances or "
-                  f"disable the narrow reduction.")
-          _ydim = _ydims.pop()
-          _y_mask = (_stride * _ydim - 1) & ~(_stride - 1)
-          if _y_mask & ~_mask:
-              raise ValueError(
-                  f"[COLLECTIVE] component '{comp.name}': the column mask 0x{_y_mask:x} escapes the "
-                  f"group mask 0x{_mask:x} - the address enumeration is not column-fastest, so the "
-                  f"1D chains would not be geometric columns. Check the placement/base ordering.")
-          _x_mask = _mask & ~_y_mask
-          if (1 << bin(_x_mask).count("1")) * _ydim != len(_bi):
-              raise ValueError(
-                  f"[COLLECTIVE] component '{comp.name}': {_ydim} rows x {1 << bin(_x_mask).count('1')} "
-                  f"columns does not cover the {len(_bi)} instances - the box is not a full grid.")
-          _two_phase = (_ydim > 1) and (_x_mask != 0)
-          # {op, alias base, alias last, member group base, member mask (who may
-          #  stamp), collective mask (the 1D set stamped into the header, and
-          #  what the stamper clears off the writer's own base to reach its
-          #  chain head), slot offset}
-          if narrow_red_on and _coff_i is not None and _ccoff_i is not None:
-              if _two_phase:
-                  stamper_windows += [
-                      ("IntAdd", _alias + _ccoff_i, _alias + _ccoff_i + 3, _c0, _mask,   _y_mask, _ccoff_i, "col"),
-                      ("IntAdd", _alias + _coff_i,  _alias + _coff_i + 3,  _c0, _x_mask, _x_mask, _coff_i, "row"),
-                  ]
-              else:
-                  # One dimension is degenerate: the whole group already is a 1D
-                  # chain, one window onto the final slot suffices.
-                  stamper_windows += [
-                      ("IntAdd", _alias + _coff_i, _alias + _coff_i + 3, _c0, _mask, _mask, _coff_i, "row"),
-                  ]
-          # Barrier: parallel (n-ary) op, full group mask, always available.
-          stamper_windows.append(
-              ("LsbAnd", _alias + _boff_i, _alias + _boff_i + 3, _c0, _mask, _mask, _boff_i, "barrier"))
-          # Multicast: one member writes, the network replicates to the whole
-          # group and each destination lands it at its OWN copy of the slot. The
-          # destination the stamp carries is the group's minimum corner, which is
-          # what the router's mask expansion starts from - the same
-          # (base & ~mask) the other windows compute.
-          if _mcoff_i is not None:
-              stamper_windows.append(
-                  ("Multicast", _alias + _mcoff_i, _alias + _mcoff_i + 3, _c0, _mask, _mask, _mcoff_i, "mcast"))
+  # The stamper follows the SLOTS the isle declares (a barrier slot and the alias
+  # base at least), not the wide offload port: the narrow collectives need no
+  # FPU-backed offload, and an isle with slots but without the wide port - the
+  # case every non-Snitch cluster will be - must get its stamper too. The
+  # geometry itself (bases, wildcard mask, dimension decomposition, windows) is
+  # computed by core/collective_geometry.py, the same code the placement report
+  # reads, so the two never disagree.
+  _fx_slots = isle_info.get("fixed_params", {}) if isle_info else {}
+  has_coll_slots = (_fx_slots.get("OffloadBarrierOffs") is not None
+                    and _fx_slots.get("OffloadCollAliasBase") is not None)
+  if use_mcast and has_coll_slots:
+      from core.collective_geometry import collective_geometry
+      _geo = collective_geometry(
+          comp, _fx_slots, narrow_red_on,
+          getattr(config.topology.noc_settings.networks['narrow'], 'data_width', 64) // 8,
+          config.topology.noc_settings.networks['wide'].data_width // 8)
+      if _geo is not None:
+          stamper_windows = list(_geo.windows)
           stamper_on = True
+          # The stamper takes the instance base at run time from the identity PORT
+          # (component standardization 2.6, the form that keeps sixteen identical
+          # tiles one hierarchical block): an isle with slots but without the
+          # port would elaborate with a dangling base - refused here instead.
+          if 'instance_base_addr_i' not in known_ports:
+              raise ValueError(
+                  f"[COLLECTIVE] component '{comp.name}': its isle declares collective slots but "
+                  f"no 'instance_base_addr_i' port - the stamper needs the instance base at run "
+                  f"time. Declare the identity port (component standardization 2.6).")
   # Reduction windows take their opcode from the system controller (see coll_csr).
   coll_csr = bool(stamper_on and any(w[7] in ("col", "row") for w in stamper_windows))
   # The plain (SoC-wide) user width, to rebuild {mask, op, user} at the chimney.

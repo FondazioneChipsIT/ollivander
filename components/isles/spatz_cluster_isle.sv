@@ -6,6 +6,25 @@
 //
 // BENDER: name="spatz"
 // BENDER: name="axi"
+//
+// =============================================================================
+// ONE INSTANCE PER PROJECT - an IP-level limit, not an integration choice.
+// =============================================================================
+// spatz generates its cluster bootrom once per project, with ONE cluster base
+// baked into BOOTDATA (tcdm_start; bootrom.S derives the peripheral and the
+// entry-point register from it), and unlike its parent snitch_cluster it has no
+// ALIAS REGION - the fixed address range a cluster decodes as "itself" - so
+// neither the bootrom nor a payload image can address their own cluster across
+// instances placed at different bases. A second instance would mis-boot; the
+// registry's prep_spatz_bootrom.py therefore REFUSES a description that declares
+// more than one spatz cluster. Consequences: no spatz group on a mesh, hence no
+// spatz collectives (a group needs at least two members), and this isle carries
+// no instance identity port - every address it needs is the one project base.
+// Lifting the limit means porting snitch_cluster's alias region into
+// spatz_cluster.sv (AliasRegionEnable/Base, doubled xbar rules, BootAddr from
+// the alias) plus BOOTDATA pointing at the alias - a feature for the IP's
+// maintainers, not a registry patch.
+// =============================================================================
 
 `include "axi/typedef.svh"
 

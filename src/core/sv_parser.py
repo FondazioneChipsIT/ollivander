@@ -13,7 +13,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from core.utils import strip_comments
 
 try:
@@ -37,7 +37,7 @@ def _token_text(node: Any) -> str:
     return re.sub(r"\s+", " ", re.sub(r"//[^\n]*", " ", str(node))).strip()
 
 
-def get_module_ports(filepath: Path, module_name: str) -> Optional[Dict[str, Dict[str, str]]]:
+def get_module_ports(filepath: Path, module_name: str) -> Optional[dict[str, dict[str, str]]]:
     """Read the ANSI port list of one module from a file: {name: {dir, type}}.
 
     SYNTAX ONLY, deliberately: no Compilation is built, so no packages, include
@@ -67,7 +67,7 @@ def get_module_ports(filepath: Path, module_name: str) -> Optional[Dict[str, Dic
     except Exception:
         return None
 
-    ports: Dict[str, Dict[str, str]] = {}
+    ports: dict[str, dict[str, str]] = {}
     for member in getattr(tree.root, "members", []):
         if "ModuleDeclaration" not in str(member.kind):
             continue
@@ -130,7 +130,7 @@ def _clean_param_val(val: Any) -> str:
         # If it's not a number (e.g., a string parameter), return as is
         return val_str
 
-def get_isle_info(component_type: str, search_paths: List[Path] = None, exclude_dir: str = None) -> Optional[Dict[str, Any]]:
+def get_isle_info(component_type: str, search_paths: list[Path] = None, exclude_dir: str = None) -> Optional[dict[str, Any]]:
     """
     Scans the Ollivander project for the SystemVerilog wrapper associated 
     with the component_type to extract its capabilities and fixed constraints.

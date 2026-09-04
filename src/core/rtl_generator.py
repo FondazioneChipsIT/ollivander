@@ -1180,6 +1180,7 @@ class RTLGenerator:
                     mem["file"] = mem["file"].replace("{test_app}", app_name)
 
         offload_targets = {}
+        self.offload_targets = {}
         offload_payload_base = 0
         offload_payload_size = 0
         offload_host_stack_top = 0
@@ -1189,6 +1190,8 @@ class RTLGenerator:
             offload_targets = resolve_offload_targets(
                 self.soc_config, self.env.search_paths, self.env.exclude_dir,
                 self.original_isle_types, report=True)
+            # Kept for the placement report, which is written after this rendering pass.
+            self.offload_targets = offload_targets
 
             all_comps = [self.soc_config.host] + (self.soc_config.components or [])
 

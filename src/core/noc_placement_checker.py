@@ -2,12 +2,14 @@
 # Solderpad Hardware License, Version 0.51, see LICENSE for details.
 # SPDX-License-Identifier: SHL-0.51
 """
-NoC Placement Checker (NPC) and Latency Estimator
+NoC Placement Checker (NPC) and placement report
 
-This module validates that components placed on a 2D routing mesh do not overlap
-their physical coordinates (collisions). It also computes Manhattan distance 
-between master and slave tiles to estimate communication latency (hops),
-exporting a detailed report in Markdown format.
+Validates that the components placed on the 2D mesh do not overlap (a collision
+halts generation), then writes generated/doc/noc_placement_report.md: the grid,
+the hop distances of the paths the generated workload uses, the static router
+load XY routing implies, the collective groups (from core/collective_geometry,
+the same code the tile template uses), a per-tile inventory, and the all-pairs
+table folded at the end. Hop counts, never latencies.
 """
 
 from pathlib import Path
@@ -74,15 +76,8 @@ def get_net_lists(c):
         slv_nets = noc_nets_raw
     return mst_nets, slv_nets
 
-def run_noc_placement_check(soc_config, env):
-    """
-    Main NoC Placement Check execution block.
-    Raises ValueError on coordinate collision, halts generation.
-    Otherwise, generates the latency estimation report.
-    """
-    # Only execute for NoC topologies
-    if getattr(soc_config.topology, 'type', None) != 'noc':
-        return
+def _placement_data(soc_config):
+    """The instances on the grid and their collisions - shared by the check and the report."""
 
     comps = [soc_config.host] + (soc_config.components if soc_config.components else [])
     occupied = {}
@@ -113,6 +108,16 @@ def run_noc_placement_check(soc_config, env):
                 'component': c
             })
             
+    return comps, occupied, collisions, all_instances
+
+
+def run_noc_placement_check(soc_config, env):
+    """Phase 2: refuse a mesh where two instances claim one coordinate (ValueError
+    halts generation). The report is written later, by write_noc_placement_report,
+    once the staged isle headers and the offload targets exist."""
+    if getattr(soc_config.topology, 'type', None) != 'noc':
+        return
+    _, _, collisions, _ = _placement_data(soc_config)
     if collisions:
         err_msg = "\n[ERROR] NoC Grid Collision Detected!"
         err_msg += "\n========================================================"
@@ -125,6 +130,16 @@ def run_noc_placement_check(soc_config, env):
             err_msg += f"\n  - {new_name} (from component '{new_comp}')"
         err_msg += "\n========================================================"
         raise ValueError(err_msg)
+
+
+def write_noc_placement_report(soc_config, env, comp_info, offload_targets, original_isle_types=None):
+    """After Phase 3: generated/doc/noc_placement_report.md. comp_info is the
+    generator's own (the staged, de-typed isle headers with their contract
+    localparams), offload_targets the dict the firmware generator resolved - the
+    report reads the generator's truth instead of re-deriving it."""
+    if getattr(soc_config.topology, 'type', None) != 'noc':
+        return
+    comps, occupied, _, all_instances = _placement_data(soc_config)
 
     # 2. Extract network names
     networks = []
@@ -169,77 +184,237 @@ def run_noc_placement_check(soc_config, env):
                         'network': net
                     })
 
-    # 4. Generate the Markdown report
+    # 4. The report. Hop DISTANCE, not latency: the Manhattan count between two tiles
+    # under XY routing, with no traffic or arbitration in it. Sections, by value:
+    # the grid; the paths the generated workload actually uses; the static link
+    # load a placement implies; the collective groups; a per-tile inventory; the
+    # all-pairs table last, folded, for the reader who wants it.
     max_x = max([inst['x'] for inst in all_instances]) if all_instances else 0
     max_y = max([inst['y'] for inst in all_instances]) if all_instances else 0
-    
+    by_name = {inst['inst_name']: inst for inst in all_instances}
+    host_name = soc_config.host.name
+    host_inst = by_name.get(host_name)
+    boot_mem = (soc_config.software_stack or {}).get('boot_memory')
+    sysctrl = soc_config.system_controller
+    groups = (sysctrl.auto_control_groups or []) if sysctrl else []
+    gated_types = {g.target_component_type for g in groups if g.target_component_type}
+    power_on = getattr(sysctrl, 'power_on_state', 'gated') if sysctrl else 'enabled'
+
+    def hops(a, b):
+        return abs(a['x'] - b['x']) + abs(a['y'] - b['y'])
+
+    def is_memory(c):
+        ifs = c.interfaces or {}
+        return bool(ifs.get('axi_slave')) and not ifs.get('axi_master') and c.name != host_name
+
+    def gating(c):
+        if c.name == host_name:
+            return "host domain"
+        if c.type in gated_types and power_on != 'enabled':
+            return "gated at power-on (control group)"
+        return "clocked from power-on"
+
+    offload_targets = offload_targets or {}
+
+    # 4.2 static link load under XY routing: every master->slave pair, per network,
+    # walks X first then Y; each router it enters counts one visit.
+    router_load = {net: {} for net in networks}
+    for net in networks:
+        for pth in network_paths[net]:
+            (mx, my), (sx, sy) = pth['master_coord'], pth['slave_coord']
+            x, y = mx, my
+            visited = []
+            while x != sx:
+                x += 1 if sx > x else -1
+                visited.append((x, y))
+            while y != sy:
+                y += 1 if sy > y else -1
+                visited.append((x, y))
+            for cell in visited[:-1]:  # the destination's own router is not transit
+                router_load[net][cell] = router_load[net].get(cell, 0) + 1
+
+    # 4.3 collective groups, from the shared geometry helper
+    from core.collective_geometry import collective_geometry
+    coll_groups = []
+    # On a mesh the generator's comp_info holds the generated TILE headers (that is
+    # what the IR builder wires), whose few parameters say nothing about the
+    # collective contract: the contract localparams live in the ISLE header, so the
+    # report reads the staged isle exactly as the tile template does -
+    # <module_prefix>_<original isle type>, the shipped component as fallback.
+    from core.sv_parser import get_isle_info
+    comp_info_by_name = {}
+    for c in comps:
+        if not (c.features and c.features.get('multicast_target')):
+            continue
+        orig = (original_isle_types or {}).get(c.name, c.type)
+        info = get_isle_info(f"{soc_config.project.module_prefix}_{orig}", env.search_paths, None) \
+               or get_isle_info(orig, env.search_paths, env.exclude_dir) or {}
+        comp_info_by_name[c.name] = info
+    colls = getattr(soc_config.topology.noc_settings, 'collectives', None)
+    narrow_red_on = bool(colls and colls.narrow_reduction.enable)
+    nets_cfg = soc_config.topology.noc_settings.networks
+    n_beat = getattr(nets_cfg.get('narrow'), 'data_width', 64) // 8 if nets_cfg.get('narrow') else 8
+    w_beat = getattr(nets_cfg.get('wide'), 'data_width', 512) // 8 if nets_cfg.get('wide') else 64
+    for c in comps:
+        if c.name not in comp_info_by_name:
+            continue
+        info = comp_info_by_name[c.name]
+        fx = info.get('fixed_params', {}) if info else {}
+        try:
+            geo = collective_geometry(c, fx, narrow_red_on, n_beat, w_beat)
+        except ValueError as exc:
+            print(f"  [WARNING] placement report: {c.name}: {exc}")
+            geo = None
+        if geo is not None:
+            coll_groups.append((c, geo))
+        else:
+            # A multicast target without a group is worth a line in the log: either
+            # the isle declares no barrier slot, or the component has one instance.
+            print(f"  [INFO] placement report: '{c.name}' is a multicast target without a collective group "
+                  f"(barrier slot: {fx.get('OffloadBarrierOffs')}, header params read: {len(fx)}, "
+                  f"comp_info keys: {sorted((comp_info or {}).keys())[:6]})")
+
     report = []
-    report.append(f"# NoC Placement and Latency Report\n")
+    report.append(f"# NoC Placement Report\n")
     report.append(f"**Project:** {soc_config.project.name}  ")
     algo = getattr(soc_config.topology.noc_settings, 'routing_algorithm', 'XY')
-    report.append(f"**Routing Topology:** NoC ({algo})  ")
-    report.append(f"**Grid Dimensions:** {max_x + 1}x{max_y + 1}  \n")
+    report.append(f"**Routing:** {algo} on a {max_x + 1}x{max_y + 1} mesh  ")
+    report.append(f"**Placement check:** PASS - no two instances claim one coordinate.  \n")
+    report.append("Distances below are hop counts (Manhattan distance under XY routing), not latencies: they carry no traffic, arbitration or link width.\n")
     report.append("---")
-    report.append("\n## NoC Placement Checker (NPC) Status\n")
-    report.append("> [!NOTE]")
-    report.append("> **NPC Status:** PASS  ")
-    report.append("> No coordinate overlaps or collision violations were detected on the NoC physical grid. All components are safely placed.\n")
-    report.append("---")
-    report.append("\n## Grid Placement Map\n")
-    report.append("The following table visualizes the physical 2D layout of tiles on the routing grid.  ")
-    report.append("*Note: Y coordinates are represented from top (max_y) to bottom (0).*\n")
-    
+
+    # Grid
+    report.append("\n## Grid\n")
+    report.append("*Y from top (max_y) to bottom (0). `-` is a dummy tile: a router with no isle, kept for transit.*\n")
     headers = ["Y \\ X"] + [str(x) for x in range(max_x + 1)]
     report.append("| " + " | ".join(headers) + " |")
     report.append("| " + " | ".join([":---:" for _ in headers]) + " |")
     for y in range(max_y, -1, -1):
         row_cells = [f"**{y}**"]
         for x in range(max_x + 1):
-            if (x, y) in occupied:
-                _, _, inst_name = occupied[(x, y)]
-                row_cells.append(inst_name)
-            else:
-                row_cells.append("-")
+            row_cells.append(occupied[(x, y)][2] if (x, y) in occupied else "-")
         report.append("| " + " | ".join(row_cells) + " |")
-        
-    report.append("\n---")
-    report.append("\n## Hops & Latency Estimation\n")
-    report.append("Latency on the 2D mesh is estimated using the **Manhattan Distance** (number of routing hops) between the source (Master) and target (Slave) tiles:")
-    report.append("\\[\\text{Hops} = |x_{\\text{master}} - x_{\\text{slave}}| + |y_{\\text{master}} - y_{\\text{slave}}|\\]\n")
-    report.append("For each physical network traffic class, the estimated routing hops are detailed below.\n")
-    
-    # 4.1 Summary statistics
-    report.append("### Summary Metrics\n")
-    report.append("| Network | Total Paths | Min Hops | Max Hops | Avg Hops |")
+    dummies = [(x, y) for x in range(max_x + 1) for y in range(max_y + 1) if (x, y) not in occupied]
+    report.append(f"\n{len(all_instances)} tiles with an isle, {len(dummies)} dummy tiles.\n")
+
+    # The paths the workload uses
+    report.append("---\n\n## Paths the generated workload uses\n")
+    if host_inst:
+        rows = []
+        if boot_mem:
+            bm = [i for i in all_instances if i['name'] == boot_mem]
+            for b in bm:
+                rows.append((f"{host_name} -> {b['inst_name']} (boot memory, {gating(b['component'])})", hops(host_inst, b)))
+        for t_name in offload_targets:
+            insts = [i for i in all_instances if i['name'] == t_name]
+            if insts:
+                hs = [hops(host_inst, i) for i in insts]
+                rows.append((f"{host_name} -> {t_name} (offload target, {len(insts)} instances: payload load and polling)",
+                             f"{min(hs)} .. {max(hs)}"))
+        mems = [i for i in all_instances if is_memory(i['component']) and i['name'] != boot_mem]
+        for t_name in offload_targets:
+            insts = [i for i in all_instances if i['name'] == t_name]
+            if insts and mems:
+                nearest = [min(hops(i, m) for m in mems) for i in insts]
+                rows.append((f"{t_name} -> nearest memory tile (each instance)", f"{min(nearest)} .. {max(nearest)}"))
+        report.append("| Path | Hops |")
+        report.append("| :--- | :---: |")
+        for label, h in rows:
+            report.append(f"| {label} | {h} |")
+        if not rows:
+            report.append("| (no boot memory or offload target declared) | - |")
+    else:
+        report.append("*The host has no placement; nothing to measure from.*")
+
+    # Static link load
+    report.append("\n---\n\n## Static router load under XY routing\n")
+    report.append("How many master-to-slave pairs route THROUGH each router (the pair's own endpoints excluded), per network: the design-time twin of the run-time `[TB_ACTIVITY]` grid. A column of high numbers next to the host is where every poll and payload load funnels.\n")
+    for net in networks:
+        report.append(f"**{net}**\n")
+        report.append("| Y \\ X | " + " | ".join(str(x) for x in range(max_x + 1)) + " |")
+        report.append("| :---: | " + " | ".join(":---:" for _ in range(max_x + 1)) + " |")
+        for y in range(max_y, -1, -1):
+            report.append(f"| **{y}** | " + " | ".join(str(router_load[net].get((x, y), 0)) for x in range(max_x + 1)) + " |")
+        report.append("")
+
+    # Collective groups
+    report.append("---\n\n## Collective groups\n")
+    if not coll_groups:
+        report.append("*No multicast-target component with collective slots.*")
+    for c, geo in coll_groups:
+        report.append(f"### {c.name}\n")
+        xs = [x for x, _ in geo.coords]; ys = [y for _, y in geo.coords]
+        report.append(f"- box x {min(xs)}..{max(xs)}, y {min(ys)}..{max(ys)}: {geo.x_dim} columns x {geo.y_dim} rows, {len(geo.bases)} members, "
+                      f"bases 0x{geo.c0:08x} + n*0x{geo.stride:x}, group mask 0x{geo.mask:x}")
+        report.append(f"- reduction: {'two dimension-ordered phases (column mask 0x%x, row mask 0x%x)' % (geo.y_mask, geo.x_mask) if geo.two_phase else 'single phase (one dimension degenerate)'}"
+                      f"{'' if narrow_red_on else ' - narrow reduction not declared, barrier and multicast only'}")
+        heads = geo.heads
+        report.append(f"- column heads (instance -> coords): " + ", ".join(f"{i} -> {geo.coords[i]}" for i in heads))
+        report.append(f"- longest chain: {geo.y_dim - 1} hops along a column, {geo.x_dim - 1} along the head row")
+        crossed = [(x, y) for x in range(min(xs), max(xs) + 1) for y in range(min(ys), max(ys) + 1) if (x, y) not in geo.coords]
+        report.append(f"- dummy or foreign tiles inside the box (transit for the multicast): {crossed if crossed else 'none'}")
+        report.append(f"- alias base 0x{geo.alias:08x}; slots: " + ", ".join(f"{k} 0x{v:x}" for k, v in geo.slots.items()))
+        report.append("- windows (op, kind, slot offset): " + ", ".join(f"{w[0]}/{w[7]}/0x{w[6]:x}" for w in geo.windows) + "\n")
+
+    # Per-tile inventory
+    report.append("---\n\n## Tile inventory\n")
+    report.append("| Tile | Type | Networks (master / slave) | Role | Address window |")
+    report.append("| :--- | :--- | :--- | :--- | :--- |")
+    group_roles = {}
+    for c, geo in coll_groups:
+        for i, (x, y) in enumerate(geo.coords):
+            group_roles[(x, y)] = "column head" if i in geo.heads else "member"
+    from core.collective_geometry import instance_bases_and_coords
+    win_of = {}
+    for c in comps:
+        try:
+            bases, coords = instance_bases_and_coords(c)
+        except Exception:
+            bases, coords = None, []
+        if bases and len(bases) == len(coords):
+            for b, xy in zip(bases, coords):
+                win_of[(c.name, xy)] = b
+    for inst in sorted(all_instances, key=lambda i: (i['x'], i['y'])):
+        c = inst['component']
+        mst, slv = get_net_lists(c)
+        kind = "host" if c.name == host_name else ("memory" if is_memory(c) else "compute")
+        role = group_roles.get((inst['x'], inst['y']), "-")
+        ifs = c.interfaces or {}
+        s_ifs = ifs.get('axi_slave')
+        s0 = s_ifs[0] if isinstance(s_ifs, list) and s_ifs else (s_ifs if isinstance(s_ifs, dict) else None)
+        b = win_of.get((c.name, (inst['x'], inst['y'])))
+        if b is None and s0 and s0.get('base_addr') is not None:
+            try:
+                b = int(str(s0.get('base_addr')), 0)
+            except ValueError:
+                b = None
+        win = f"0x{b:08x}" if b is not None else "-"
+        report.append(f"| {inst['inst_name']} ({inst['x']},{inst['y']}) | {kind} | {','.join(mst) or '-'} / {','.join(slv) or '-'} | {role} | {win} |")
+
+    # All pairs, folded
+    report.append("\n---\n\n## Hop distances\n")
+    report.append("| Network | Pairs | Min | Max | Avg |")
     report.append("| :--- | :---: | :---: | :---: | :---: |")
     for net in networks:
         paths = network_paths[net]
         if not paths:
             report.append(f"| **{net}** | 0 | - | - | - |")
             continue
-        hops_list = [p['hops'] for p in paths]
-        total_paths = len(paths)
-        min_h = min(hops_list)
-        max_h = max(hops_list)
-        avg_h = sum(hops_list) / total_paths
-        report.append(f"| **{net}** | {total_paths} | {min_h} | {max_h} | {avg_h:.2f} |")
-        
-    report.append("\n### Detailed Path Table\n")
-    report.append("| Source (Master) | Dest (Slave) | Network | Master Coords | Slave Coords | Routing Hops |")
-    report.append("| :--- | :--- | :---: | :---: | :---: | :---: |")
-    
-    all_paths = []
-    for net in networks:
-        for p in network_paths[net]:
-            all_paths.append(p)
-            
-    # Sort by network, then master, then slave for deterministic ordering
-    all_paths.sort(key=lambda x: (x['network'], x['master'], x['slave']))
-    for p in all_paths:
-        report.append(
-            f"| {p['master']} | {p['slave']} | {p['network']} | `({p['master_coord'][0]}, {p['master_coord'][1]})` | `({p['slave_coord'][0]}, {p['slave_coord'][1]})` | **{p['hops']}** |"
-        )
-        
+        hl = [p_['hops'] for p_ in paths]
+        report.append(f"| **{net}** | {len(paths)} | {min(hl)} | {max(hl)} | {sum(hl) / len(hl):.2f} |")
+    all_paths = sorted((p_ for net in networks for p_ in network_paths[net]), key=lambda x: (-x['hops'], x['network'], x['master'], x['slave']))
+    report.append("\nThe ten longest:\n")
+    report.append("| Source | Destination | Network | Hops |")
+    report.append("| :--- | :--- | :---: | :---: |")
+    for p_ in all_paths[:10]:
+        report.append(f"| {p_['master']} | {p_['slave']} | {p_['network']} | {p_['hops']} |")
+    report.append("\n<details><summary>All master-to-slave pairs</summary>\n")
+    report.append("| Source | Destination | Network | Hops |")
+    report.append("| :--- | :--- | :---: | :---: |")
+    for p_ in sorted(all_paths, key=lambda x: (x['network'], x['master'], x['slave'])):
+        report.append(f"| {p_['master']} | {p_['slave']} | {p_['network']} | {p_['hops']} |")
+    report.append("\n</details>")
+
     doc_dir = Path(env.outdir_path) / env.doc_sub
     doc_dir.mkdir(parents=True, exist_ok=True)
     report_file = doc_dir / "noc_placement_report.md"
