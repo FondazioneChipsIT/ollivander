@@ -1181,6 +1181,8 @@ class RTLGenerator:
 
         offload_targets = {}
         self.offload_targets = {}
+        host_contract = {}
+        irq_witness = None
         offload_payload_base = 0
         offload_payload_size = 0
         offload_host_stack_top = 0
@@ -1192,6 +1194,15 @@ class RTLGenerator:
                 self.original_isle_types, report=True)
             # Kept for the placement report, which is written after this rendering pass.
             self.offload_targets = offload_targets
+            from core.soc_schema import resolve_host_contract, irq_route_witness
+            host_contract = resolve_host_contract(
+                self.soc_config, self.env.search_paths, self.env.exclude_dir, self.original_isle_types)
+            irq_witness = irq_route_witness(self.soc_config, host_contract, self.original_isle_types,
+                                            self.env.search_paths, self.env.exclude_dir)
+            if irq_witness:
+                print(f"  -> Interrupt route witness: {irq_witness['src']} line {irq_witness['idx']}"
+                      f" -> {self.soc_config.host.name}.intr_ext_i[{irq_witness['host_bit']}] -> PLIC source"
+                      f" {host_contract['plic_ext_irq_base'] + irq_witness['host_bit']}")
 
             all_comps = [self.soc_config.host] + (self.soc_config.components or [])
 
@@ -1272,6 +1283,8 @@ class RTLGenerator:
             "uart_freq": uart_freq,
             "uart_divisor": uart_divisor,
             "offload_targets": offload_targets,
+            "host_contract": host_contract,
+            "irq_witness": irq_witness,
             "offload_payload_base": offload_payload_base,
             "offload_payload_size": offload_payload_size,
             # Top of the HOST's stack in the offload app: the payload base when the
@@ -2794,6 +2807,6 @@ class RTLGenerator:
         if self.soc_config.topology.type == "crossbar":
             build_crossbar_ir(ir, self.soc_config, comp_info, wiring_matrix, comp_extra_conns)
         elif self.soc_config.topology.type == "noc":
-            build_noc_ir(ir, self.soc_config, comp_info, noc_comp_extra_conns, self.original_isle_types)
+            build_noc_ir(ir, self.soc_config, comp_info, noc_comp_extra_conns, self.original_isle_types, wiring_matrix)
 
         return ir

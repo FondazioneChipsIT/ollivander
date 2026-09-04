@@ -351,14 +351,18 @@ def build_crossbar_ir(ir, soc_config, comp_info, wiring_matrix, comp_extra_conns
                 inst.connections.append(PortConnection(port_name, val))
 
 
-def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_types):
+def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_types, wiring_matrix=None):
     """
     Populate *ir* with instances and connections for a NoC (FlooNoC) topology.
 
     Builds the physical 2-D mesh grid from component placement metadata, fills
     unoccupied coordinates with dummy-tile instances, and wires every real tile
-    to its clock, reset, NoC router ports, and system-controller hooks.
+    to its clock, reset, NoC router ports, system-controller hooks and interrupt
+    wires. *wiring_matrix* is the same per-component connection list the crossbar
+    builder consumes (build_connection_matrix): only its interrupt entries apply
+    here, the AXI ones describe a crossbar that does not exist on a mesh.
     """
+    wiring_matrix = wiring_matrix or {}
     max_x, max_y = 0, 0
     grid = {}
     comps = [soc_config.host] + (soc_config.components if soc_config.components else [])
@@ -414,6 +418,7 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 is_host = (c.name == soc_config.host.name)
                 module_type = f"{soc_config.project.module_prefix}_{c.type}"
                 inst = ir.add_instance(t_name, module_type)
+                inst.comp_name = c.name  # for the IR's structural checks (sv_ir.verify)
 
                 # Populate instance parameters from user-defined YAML configuration (host and components)
                 if c.parameters:
@@ -443,6 +448,19 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 inst.connections.append(PortConnection("rst_ni", c_rst_wire))
                 inst.connections.append(PortConnection("test_mode_i", "test_mode_i"))
                 inst.connections.append(PortConnection("id_i", f"'{{ x: {x}, y: {y}, port_id: 0 }}"))
+                # The isles that came from the crossbar family carry a power-on reset and a
+                # reference clock of their own (pulp_cluster_isle, the security island); the
+                # tile passes both through, and here they take what the crossbar builder gives
+                # them: the domain's power-on reset and the real-time clock. Left to the
+                # generic tie-off below, the isle would sit in power-on reset forever.
+                _tports = comp_info.get(c.name, {}).get("ports", {})
+                if "pwr_on_rst_ni" in _tports:
+                    inst.connections.append(PortConnection(
+                        "pwr_on_rst_ni",
+                        'host_pwr_on_rst_n' if c_rst == host_clk.replace('_clk', '_rst')
+                        else f'pwr_on_rsts_n[DomainIdx_{fmt_rst(c_rst)}]'))
+                if "ref_clk_i" in _tports:
+                    inst.connections.append(PortConnection("ref_clk_i", "rt_clk_i"))
                 inst.connections.append(PortConnection("floo_req_o", f"tile_req_o[{x}][{y}]"))
                 inst.connections.append(PortConnection("floo_rsp_i", f"tile_rsp_i[{x}][{y}]"))
                 inst.connections.append(PortConnection("floo_wide_o", f"tile_wide_o[{x}][{y}]"))
@@ -568,6 +586,127 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                         "coll_op_col_i", f"sys_regs_hwif_out.collective_ctrl.{c.name}_coll_col_op.value"))
                     inst.connections.append(PortConnection(
                         "coll_op_row_i", f"sys_regs_hwif_out.collective_ctrl.{c.name}_coll_row_op.value"))
+                # SYSTEM CONTROLLER WIRES, PER INSTANCE. The crossbar builder connects the
+                # control_wire family - fetch enable, stand-alone boot enable, debug request,
+                # boot address, busy and EoC status - and this builder used to connect none
+                # of them: a mesh component declaring 'fetch_enable' got its register, its
+                # firmware helper and a tile port tied to zero, the isolation defect in five
+                # more registers. The fields are one bit per instance (soc_regs.rdl.mako,
+                # inst_fields), indexed like isolation; 'boot_addr' stays one register per
+                # component, one image for every instance. The tile's declared ports decide,
+                # so an isle without the wire gets no connection rather than a dangling one.
+                _sc = c.system_config or {}
+                _sel = f"[{inst_idx}]" if instance_count(c) > 1 else ""
+                _irqs = c.interrupts or {}
+                if _sc.get('fetch_enable') and "fetch_en_i" in tile_ports:
+                    inst.connections.append(PortConnection(
+                        "fetch_en_i", f"sys_regs_hwif_out.fetch_enable.{c.name}_fetch_enable.value{_sel}"))
+                if _sc.get('boot_enable') and "en_sa_boot_i" in tile_ports:
+                    inst.connections.append(PortConnection(
+                        "en_sa_boot_i", f"sys_regs_hwif_out.boot_enable.{c.name}_boot_enable.value{_sel}"))
+                if _sc.get('debug_req') and "debug_req_i" in tile_ports:
+                    # One register bit fans out to every core of the instance when the port
+                    # is a vector - the crossbar builder's replication, unchanged.
+                    _dbg = f"sys_regs_hwif_out.debug_req.{c.name}_debug_req.value{_sel}"
+                    if re.findall(r'\[.*?\]', tile_ports["debug_req_i"]["type_dim"]):
+                        _dbg = f"'{{default: {_dbg}}}"
+                    inst.connections.append(PortConnection("debug_req_i", _dbg))
+                if 'boot_addr' in _sc and "boot_addr_i" in tile_ports:
+                    inst.connections.append(PortConnection(
+                        "boot_addr_i", f"sys_regs_hwif_out.{c.name}_boot_addr.{c.name}_boot_addr.value"))
+                if _sc.get('has_busy_status') and "busy_o" in tile_ports:
+                    inst.connections.append(PortConnection(
+                        "busy_o", f"sys_regs_hwif_in.busy_status.{c.name}_busy.next{_sel}"))
+                # EoC feeds the status register unless it is ALSO a routed interrupt: then the
+                # matrix takes the port and the top copies the intr_ wire into the register
+                # (noc_soc_top.sv.mako, section 1) - the crossbar's rule.
+                if (_sc.get('has_eoc_status') and "eoc_o" in tile_ports
+                        and 'eoc' not in _irqs and 'eoc_o' not in _irqs):
+                    inst.connections.append(PortConnection(
+                        "eoc_o", f"sys_regs_hwif_in.eoc_status.{c.name}_eoc.next{_sel}"))
+
+                # INTERRUPT MATRIX ON THE MESH. The matrix is computed for both topologies
+                # and was consumed by the crossbar builder only: a mesh component's
+                # 'interrupts' produced wires in nobody's top and ports tied to zero in every
+                # tile. Only the interrupt entries apply here (a port the tile declares AND
+                # the component lists under 'interrupts', in either direction); the AXI and
+                # export entries describe the crossbar. Same dual-role rule as the crossbar
+                # builder: a port both exported and routed drives its intr_ wire and the
+                # export is fed from that wire by an assignment.
+                #
+                # PER-INSTANCE SOURCES: an OUTPUT interrupt of a multi-instance component is
+                # one wire per instance - the top declares 'intr_<comp>_<port>' as an array
+                # over the instances (interrupt_routing.mako) and each tile drives its own
+                # slice, so a consumer that names 'comp.port' sees the whole array.
+                _irq_ports = set()
+                for _iname, _icfg in _irqs.items():
+                    if isinstance(_icfg, dict) and _icfg.get('source'):
+                        _irq_ports.add(_iname if _iname.endswith('_i') else f"{_iname}_i")
+                    else:
+                        _op = (_icfg.get('port', _iname) if isinstance(_icfg, dict) else _iname)
+                        _irq_ports.add(f"{_op[:-2] if _op.endswith('_o') else _op}_o")
+                _exported = [ec.split('(')[0].strip().strip('.')
+                             for ec in noc_comp_extra_conns.get(key, [])]
+                _by_port = {}
+                for wc in wiring_matrix.get(c.name, []):
+                    m = re.match(r'^\s*\.\s*([a-zA-Z0-9_]+)\s*\(\s*(.*)\s*\)\s*$', wc.strip())
+                    if m and m.group(1).strip() in _irq_ports and m.group(1).strip() in tile_ports:
+                        _by_port.setdefault(m.group(1).strip(), []).append(m.group(2).strip())
+                _dual = {}
+                for _pn, _exprs in _by_port.items():
+                    _intr = [e for e in _exprs if e.startswith("intr_") or e.startswith("'{default: intr_")]
+                    _other = [e for e in _exprs if e not in _intr]
+                    if tile_ports[_pn]["dir"] == "output" and instance_count(c) > 1:
+                        _intr = [f"{e}[{inst_idx}]" for e in _intr]
+                    if _intr and (_other or _pn in _exported):
+                        _dual[_pn] = _intr[0]
+                        inst.connections.append(PortConnection(_pn, _intr[0]))
+                        for e in _other:
+                            ir.add_assignment(e, _intr[0])
+                        continue
+                    if _pn in _exported:
+                        continue
+                    inst.connections.append(PortConnection(_pn, (_intr or _exprs)[0]))
+                if _dual:
+                    # The export of a dual-role port was appended above from
+                    # noc_comp_extra_conns; replace it with the assignment from the wire.
+                    _kept = []
+                    for conn in inst.connections:
+                        if conn.port_name in _dual and conn.expression != _dual[conn.port_name]:
+                            ir.add_assignment(conn.expression, _dual[conn.port_name])
+                            continue
+                        _kept.append(conn)
+                    inst.connections[:] = _kept
+
+                # INSTANCE ORDINAL ON A PORT (component_standardization.md, 1.6): an isle
+                # whose IP derives its window from an id - pulp_cluster decodes
+                # 'ClusterBaseAddr + (cluster_id << 22)' - declares 'instance_id_i' and
+                # receives its index here; its InstanceBaseAddr is then the COMPONENT's
+                # base (instance 0), identical for every instance, so the tile stays one
+                # module under hierarchical verilation. The header states the stride the
+                # IP implies ('InstanceIdStride'), and a box placed at any other stride is
+                # refused: the IP would decode windows the address map never assigned.
+                _id_port = "instance_id_i" in tile_ports
+                if _id_port:
+                    _idw = re.findall(r'\[(\d+):0\]', tile_ports["instance_id_i"]["type_dim"])
+                    _idw = int(_idw[0]) + 1 if _idw else 1
+                    inst.connections.append(PortConnection("instance_id_i", f"{_idw}'d{inst_idx}"))
+                    _fixed = c_info.get("fixed_params", {}) or {}
+                    _id_stride = _fixed.get("InstanceIdStride")
+                    slaves_id = (c.interfaces or {}).get("axi_slave", [])
+                    if isinstance(slaves_id, dict):
+                        slaves_id = [slaves_id]
+                    if _id_stride is not None and slaves_id and instance_count(c) > 1:
+                        _wins = resolve_instance_windows(slaves_id[0], instance_count(c))
+                        _want = int(str(_id_stride).replace("'h", "0x").replace("_", ""), 0)
+                        for _k in range(1, len(_wins)):
+                            if _wins[_k][0] - _wins[_k - 1][0] != _want:
+                                raise ValueError(
+                                    f"[{c.name}] instance {_k} sits {_wins[_k][0] - _wins[_k - 1][0]:#x} "
+                                    f"after instance {_k - 1}, but {c.type} derives its window from "
+                                    f"instance_id_i at a fixed stride of {_want:#x} (InstanceIdStride): "
+                                    f"declare size_per_instance accordingly")
+
                 base_is_port = "instance_base_addr_i" in tile_ports
                 wants_base = base_is_port or "InstanceBaseAddr" in supported
                 wants_size = "InstanceWindowSize" in supported
@@ -581,7 +720,7 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                         # window - INCLUDING its size, which now varies between instances of
                         # one component - is whatever that layout assigns it.
                         s_base, s_size = resolve_instance_windows(
-                            slaves[0], instance_count(c))[inst_idx]
+                            slaves[0], instance_count(c))[0 if _id_port else inst_idx]
                         if wants_base:
                             base_lit = f"64'h{s_base:X}"
                             if base_is_port:

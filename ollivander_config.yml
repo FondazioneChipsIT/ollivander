@@ -63,6 +63,9 @@ paths:
 #   IP expects but does not carry. Substituted in each command:
 #     {bender_work}     the checkout directory of the fetched IPs
 #     {ollivander_dir}  the generator root, for scripts shipped alongside Ollivander
+#     {host.<Param>}    any resolved parameter of the host (the isle's defaults, the
+#                       description's values, the derived ones such as NumIntrsIn or
+#                       NumIrqHarts), for an IP regenerated to the host's configuration
 #     $(PYTHON)         the interpreter of the active virtual environment
 #     $(MAKE), $(BENDER) the corresponding executables
 #   The virtual environment's bin/ is prepended to PATH, so a script with a "python" shebang
@@ -136,6 +139,14 @@ dependencies:
       # upstream quirk (wget -o writes the LOG, not the file).
       - "test -s {bender_work}/cheshire/target/sim/models/s25fs512s.v || wget --no-check-certificate https://freemodelfoundry.com/fmf_vlog_models/flash/s25fs512s.v -O {bender_work}/cheshire/target/sim/models/s25fs512s.v"
       - "test -s {bender_work}/cheshire/target/sim/models/24FC1025.v || (wget https://ww1.microchip.com/downloads/en/DeviceDoc/24xx1025_Verilog_Model.zip -O {bender_work}/cheshire/target/sim/models/24xx1025.zip && unzip -p {bender_work}/cheshire/target/sim/models/24xx1025.zip 24FC1025.v > {bender_work}/cheshire/target/sim/models/24FC1025.v && rm {bender_work}/cheshire/target/sim/models/24xx1025.zip)"
+      # The host's PLIC, regenerated with cheshire's own recipe (the .generated step of
+      # cheshire.mk, which Bender never runs) for THIS host: without it the compiled
+      # rv_plic is opentitan_peripherals' 32-source, 1-target default, which sees the
+      # first 32 internal sources only - no intr_ext_i line reaches it and the S-mode
+      # target does not exist (found 2026-09-04). The script adds the host's external
+      # lines to cheshire's own internal count and sizes the targets from its harts;
+      # the external width is the capacity cheshire_isle.sv declares.
+      - "$(PYTHON) {ollivander_dir}/scripts/regen_rv_plic.py {bender_work} --num-ext-irqs {host.NumIntrsIn} --num-cores {host.NumCores} --num-ext-irq-harts {host.NumIrqHarts}"
     patches:
       # The PeakRDL-generated register storage is an unpacked struct holding an unpacked array,
       # and Verilator's V3Force cannot build force infrastructure through unpacked composites

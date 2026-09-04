@@ -65,6 +65,10 @@ class OllivanderEnv:
         self.fast_check_tool = "questa"
         self.generated_rtl_check = "strict"   # strict | warn | off, see setup_environment
         self.ecc_schemes_dir = None
+        # The host's resolved parameters (isle defaults overlaid by the description and by
+        # autoconfigure_host), filled by the generator before the pre-build phase: a registry
+        # command may substitute any of them as '{host.<Parameter>}'.
+        self.host_params = {}
 
 def setup_environment(args, base_dir: Path) -> OllivanderEnv:
     """

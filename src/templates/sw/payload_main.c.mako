@@ -51,8 +51,10 @@ ${license(prefix='//')}\
  * folds the whole loop into a constant and the cores would prove nothing about
  * the local memory path. Whitened so that a reset-value zero can never be
  * mistaken for a passing result. */
-static uint32_t offload_workload(void) {
-    volatile uint32_t *scratch = (volatile uint32_t *)(OFFLOAD_STACK_TOP - 0x8000);
+static uint32_t offload_workload(uint32_t inst_offs) {
+    /* inst_offs relocates the scratch area to this instance's window (control_wire
+     * arrays); the memory_mapped payloads see themselves at the local alias and pass 0. */
+    volatile uint32_t *scratch = (volatile uint32_t *)(OFFLOAD_STACK_TOP - 0x8000 + inst_offs);
     for (uint32_t i = 1; i <= (uint32_t)OFFLOAD_CHECK_N; i++) {
         scratch[i - 1] = i * i;
     }
@@ -75,7 +77,7 @@ int main(void) {
     /* Core 0 carries the checksum; every OTHER core returns the distinctive
      * secondary code, NOT zero - zero is what a wrong code path would store,
      * so the host's exact per-core check could never tell them apart. */
-    uint32_t value = (idx == 0) ? offload_workload() : (uint32_t)OFFLOAD_SECONDARY_CODE;
+    uint32_t value = (idx == 0) ? offload_workload(0u) : (uint32_t)OFFLOAD_SECONDARY_CODE;
 
     /* One store closes the protocol: result in the upper bits, done in bit 0. */
     slots[idx] = (value << 1) | 1u;
@@ -324,11 +326,27 @@ __attribute__((naked, section(".text.init"))) void _start(void) {
 
 #else /* control_wire */
 
-int main(void) {
-    volatile uint32_t *ret_reg = (volatile uint32_t *)OFFLOAD_RETURN_ADDR;
-    volatile uint32_t *eoc_reg = (volatile uint32_t *)OFFLOAD_EOC_ADDR;
+/* The build gives the image instance 0's addresses. Two decodes meet inside a PULP
+ * cluster, and the two runs that taught it are recorded here so nobody relearns them:
+ * the cores' TCDM path is decoded WITHOUT the cluster id - instance 0's local-memory
+ * addresses are every cluster's own TCDM, and the space above them is refused as
+ * "unmapped" (ERROR_2 when the stack was relocated) - while the peripheral path, where
+ * the control unit lives, is decoded WITH the id (an unrelocated EoC landed in instance
+ * 0: one EoC out of four). So the stack and the scratch stay at instance 0's addresses
+ * and only the control-unit registers move by the instance ordinal read in mhartid
+ * (the cluster id above the core index, OFFLOAD_HART_INST_SHIFT) times the stride. */
+static inline uint32_t offload_inst_offs(void) {
+    uint32_t hartid;
+    __asm__ volatile("csrr %0, mhartid" : "=r"(hartid));
+    return (hartid >> OFFLOAD_HART_INST_SHIFT) * (uint32_t)OFFLOAD_INST_STRIDE;
+}
 
-    *ret_reg = offload_workload();
+int main(void) {
+    const uint32_t inst_offs = offload_inst_offs();
+    volatile uint32_t *ret_reg = (volatile uint32_t *)(OFFLOAD_RETURN_ADDR + inst_offs);
+    volatile uint32_t *eoc_reg = (volatile uint32_t *)(OFFLOAD_EOC_ADDR + inst_offs);
+
+    *ret_reg = offload_workload(0u);   /* local memory: canonical, see above */
 
     /* Signal completion: the write below reaches the cluster control unit and
      * drives the eoc_o wire sampled by the System Controller. */
@@ -349,9 +367,9 @@ int main(void) {
 __attribute__((naked, section(".text.init"))) void _start(void) {
     __asm__ volatile(
         "csrr t0, mhartid\n"
-        "andi t0, t0, 0xF\n"
+        "andi t0, t0, 0xF\n"                            /* core index: only core 0 runs */
         "bnez t0, 1f\n"
-        "li   sp, " OFFLOAD_STR(OFFLOAD_STACK_TOP) "\n"
+        "li   sp, " OFFLOAD_STR(OFFLOAD_STACK_TOP) "\n"  /* local memory: canonical address */
         "call main\n"
         "1:\n"
         "wfi\n"

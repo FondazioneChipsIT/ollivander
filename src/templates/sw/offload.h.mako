@@ -80,6 +80,67 @@ static inline void offload_payload_mem_enable(void) {
  * MMIO poll costs some hundred ns of simulated time - 10k polls stay within a
  * few ms, while the expected EOC latency is tens of microseconds). */
 #define OFFLOAD_POLL_LIMIT 10000u
+% if irq_witness:
+<%
+  W = irq_witness
+  HC = host_contract
+  plic_src = HC["plic_ext_irq_base"] + W["host_bit"]
+%>
+
+/* INTERRUPT ROUTE WITNESS: ${W["src"]} line ${W["idx"]} -> ${config.host.name}.intr_ext_i[${W["host_bit"]}]
+ * -> PLIC source ${plic_src}. The one route the test can drive end to end without an
+ * interrupt handler: the source raises its line through its own registers (the
+ * IrqSource* contract of its isle: enable, set and clear offsets at a per-line stride),
+ * the host reads the PLIC's pending word, claims the source for context 0 (which returns
+ * its id), clears the line and completes. Enabling the source at priority 1 is what
+ * makes it claimable; the hart never traps, its global interrupt enable stays clear. The
+ * PLIC geometry comes from the host isle's Host* contract, checked against the pinned IP
+ * at elaboration. Neither register map is written here. */
+#define OFFLOAD_IRQ_SRC_LINE  ((uintptr_t)${project_name.upper()}_${W["src"].upper()}_BASE_ADDR + ${W["idx"]}u * ${hex(W["stride"])}u)
+#define OFFLOAD_IRQ_SRC(off)  (*(volatile uint32_t *)(OFFLOAD_IRQ_SRC_LINE + (off)))
+#define OFFLOAD_IRQ_SRC_ENABLE ${hex(W["enable_offs"])}u
+#define OFFLOAD_IRQ_SRC_SET    ${hex(W["set_offs"])}u
+#define OFFLOAD_IRQ_SRC_CLEAR  ${hex(W["clear_offs"])}u
+#define OFFLOAD_IRQ_PLIC_SRC  ${plic_src}u
+#define OFFLOAD_IRQ_PLIC(off) (*(volatile uint32_t *)(uintptr_t)(${hex(HC["plic_base"])}u + (off)))
+#define OFFLOAD_IRQ_PLIC_PRIO    ${hex(HC["plic_prio_offs"])}u
+#define OFFLOAD_IRQ_PLIC_PENDING ${hex(HC["plic_pending_offs"])}u
+#define OFFLOAD_IRQ_PLIC_ENABLE  ${hex(HC["plic_enable_offs"])}u
+#define OFFLOAD_IRQ_PLIC_CLAIM   ${hex(HC["plic_claim_offs"])}u
+
+/* Returns 0 when the line pended, was claimed under its own id and went away after the
+ * clear; a negative code names the step that failed (1 pending, 2 claim id, 3 clear). */
+static inline int offload_irq_route_check(void) {
+    const uint32_t src  = OFFLOAD_IRQ_PLIC_SRC;
+    const uint32_t word = (src / 32u) * 4u;
+    const uint32_t bit  = 1u << (src % 32u);
+    int rc = -1;
+    OFFLOAD_IRQ_PLIC(OFFLOAD_IRQ_PLIC_PRIO + src * 4u) = 1u;
+    OFFLOAD_IRQ_PLIC(OFFLOAD_IRQ_PLIC_ENABLE + word) |= bit;
+    OFFLOAD_IRQ_SRC(OFFLOAD_IRQ_SRC_ENABLE) = 1u;
+    OFFLOAD_IRQ_SRC(OFFLOAD_IRQ_SRC_SET) = 1u;
+    for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
+        if (OFFLOAD_IRQ_PLIC(OFFLOAD_IRQ_PLIC_PENDING + word) & bit) { rc = 0; break; }
+    }
+    if (rc == 0) {
+        uint32_t id = OFFLOAD_IRQ_PLIC(OFFLOAD_IRQ_PLIC_CLAIM);   /* claim */
+        if (id != src) rc = -2;
+        OFFLOAD_IRQ_SRC(OFFLOAD_IRQ_SRC_CLEAR) = 1u;              /* BEFORE the complete */
+        OFFLOAD_IRQ_PLIC(OFFLOAD_IRQ_PLIC_CLAIM) = id;           /* complete */
+        if (rc == 0) {
+            rc = -3;
+            for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
+                if (!(OFFLOAD_IRQ_PLIC(OFFLOAD_IRQ_PLIC_PENDING + word) & bit)) { rc = 0; break; }
+            }
+        }
+    } else {
+        OFFLOAD_IRQ_SRC(OFFLOAD_IRQ_SRC_CLEAR) = 1u;
+    }
+    OFFLOAD_IRQ_PLIC(OFFLOAD_IRQ_PLIC_ENABLE + word) &= ~bit;
+    OFFLOAD_IRQ_PLIC(OFFLOAD_IRQ_PLIC_PRIO + src * 4u) = 0u;
+    return rc;
+}
+% endif
 
 % for t_name, t in offload_targets.items():
 <%
@@ -93,24 +154,18 @@ P = project_name.upper()
 /* IP-internal register layout, from the Offload* contract of the isle. */
 #define ${T}_OFFLOAD_CTRL_BASE      (${P}_${T}_BASE_ADDR + ${hex(t["ctrl_offs"])}u)
 #define ${T}_OFFLOAD_NUM_CORES      ${t["num_cores"]}u
-% if t["contract"] == "control_wire":
-#define ${T}_OFFLOAD_EOC_REG        (${T}_OFFLOAD_CTRL_BASE + ${hex(t["eoc_offs"])}u)
-#define ${T}_OFFLOAD_BOOT_ADDR_REG  (${T}_OFFLOAD_CTRL_BASE + ${hex(t["boot_addr_offs"])}u)
-#define ${T}_OFFLOAD_RETURN_REG     (${T}_OFFLOAD_CTRL_BASE + ${hex(t["return_offs"])}u)
-% else:
-/* Instance array: a placement box generates N instances at a fixed stride; the
- * firmware drives all of them in parallel. Single-instance targets degenerate
- * to N = 1, stride 0, and the very same code. */
+/* Instance array: a placement box generates N instances at a fixed stride, and the
+ * firmware drives all of them; a single-instance target degenerates to N = 1,
+ * stride 0, and the very same code. */
 #define ${T}_OFFLOAD_NUM_INSTANCES  ${t["num_instances"]}u
 #define ${T}_OFFLOAD_INST_STRIDE    ${hex(t["instance_stride"])}u
 #define ${T}_OFFLOAD_INST_BASE(i)   (${P}_${T}_BASE_ADDR + (i) * ${T}_OFFLOAD_INST_STRIDE)
-#define ${T}_OFFLOAD_ENTRY_REG(i)   (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["ctrl_offs"])}u + ${hex(t["entry_offs"])}u)
-#define ${T}_OFFLOAD_WAKE_REG(i)    (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["ctrl_offs"])}u + ${hex(t["wake_offs"])}u)
-#define ${T}_OFFLOAD_RETURN_BASE(i) (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["return_offs"])}u)
+% if t["sys_ctrl_group"]:
 /* This target's first bit in its control group, and the group's width: both resolved by
  * the generator from the authority that assigns the RTL bit indices. */
-#define ${T}_SYS_CTRL_BIT_BASE      ${t["sys_ctrl_bit_base"]}u
-#define ${T}_SYS_CTRL_GROUP_WIDTH   ${t["sys_ctrl_group_width"]}u
+#define ${T}_SYS_CTRL_BIT_BASE      ${t.get("sys_ctrl_bit_base", 0)}u
+#define ${T}_SYS_CTRL_GROUP_WIDTH   ${t.get("sys_ctrl_group_width", 1)}u
+% endif
 % if t["sys_isolate"]:
 /* Every instance of this target isolated at once. The isolation field is ONE BIT PER INSTANCE
  * (soc_regs.rdl.mako sizes it from num_instances), so writing a bare 1 would isolate instance 0
@@ -118,6 +173,24 @@ P = project_name.upper()
  * helpers mean the whole target. */
 #define ${T}_ISOLATE_MASK          ${"0x%xu" % ((1 << t["num_instances"]) - 1)}
 % endif
+% if t["contract"] == "control_wire":
+/* The host drives the array through the SoC-side wires (one bit per instance in the
+ * fetch-enable and EoC fields) and reaches each instance's control unit through its
+ * own window. One payload image serves the array: it is built with instance 0's
+ * addresses and relocates the control-unit ones at run time by the instance ordinal
+ * it reads in mhartid (the isle's OffloadHartInstShift) times the window stride; the
+ * local memory needs no relocation (payload_main.c explains the two decodes). */
+#define ${T}_OFFLOAD_INST_CTRL(i)   (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["ctrl_offs"])}u)
+#define ${T}_OFFLOAD_EOC_REG(i)        (${T}_OFFLOAD_INST_CTRL(i) + ${hex(t["eoc_offs"])}u)
+#define ${T}_OFFLOAD_BOOT_ADDR_REG(i)  (${T}_OFFLOAD_INST_CTRL(i) + ${hex(t["boot_addr_offs"])}u)
+#define ${T}_OFFLOAD_RETURN_REG(i)     (${T}_OFFLOAD_INST_CTRL(i) + ${hex(t["return_offs"])}u)
+/* The whole target in the per-instance System Controller fields (soc_regs.rdl.mako
+ * sizes them from num_instances, like isolation). */
+#define ${T}_WIRE_MASK              ${"0x%xu" % ((1 << t["num_instances"]) - 1)}
+% else:
+#define ${T}_OFFLOAD_ENTRY_REG(i)   (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["ctrl_offs"])}u + ${hex(t["entry_offs"])}u)
+#define ${T}_OFFLOAD_WAKE_REG(i)    (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["ctrl_offs"])}u + ${hex(t["wake_offs"])}u)
+#define ${T}_OFFLOAD_RETURN_BASE(i) (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["return_offs"])}u)
 % endif
 
 % if t["sys_ctrl_group"]:
@@ -205,8 +278,10 @@ static inline void ${t_name}_disable_instance(uint32_t inst) {
     (void)OFFLOAD_SYS_REGS->${t["sys_ctrl_group"]}_rst.w;
 }
 
+% if t["contract"] == "memory_mapped":
 /* Wait for ONE instance's cores, so a phase can require a single instance to finish while its
- * siblings are parked - which ${t_name}_wait_done cannot express, sweeping all of them. */
+ * siblings are parked - which ${t_name}_wait_done cannot express, sweeping all of them. The
+ * control_wire twin is ${t_name}_wait_eoc_instance, on the EoC field. */
 static inline int ${t_name}_wait_done_instance(uint32_t inst) {
     uint32_t done = 0;
     for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
@@ -217,6 +292,7 @@ static inline int ${t_name}_wait_done_instance(uint32_t inst) {
     }
     return -1;
 }
+% endif
 
 /* Put the group back to its power-on state once this target's phase is over.
  *
@@ -291,32 +367,47 @@ static inline void ${t_name}_load_payload(const uint32_t *image, uint32_t n_word
 }
 
 % if t["contract"] == "control_wire":
-/* Point every core of the target at the payload entry, through the per-core
- * boot-address registers behind the slave window. */
-static inline void ${t_name}_set_bootaddress(uint32_t boot_addr) {
+/* Point every core of one instance at the payload entry, through the per-core
+ * boot-address registers behind that instance's slave window. */
+static inline void ${t_name}_set_bootaddress(uint32_t inst, uint32_t boot_addr) {
     for (uint32_t i = 0; i < ${T}_OFFLOAD_NUM_CORES; i++) {
-        *(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_BOOT_ADDR_REG + i * ${hex(t["boot_addr_stride"])}u) = boot_addr;
+        *(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_BOOT_ADDR_REG(inst) + i * ${hex(t["boot_addr_stride"])}u) = boot_addr;
     }
 }
 
-/* Release the cores. Deliberately only the fetch-enable wire: the stand-alone
- * boot enable is sampled by the cluster's boot FSM once, right after reset, and
- * raising it here would be a no-op at best (cluster_control_unit.sv). */
+/* Release the cores of every instance at once. Deliberately only the fetch-enable
+ * wire: the stand-alone boot enable is sampled by the cluster's boot FSM once, right
+ * after reset, and raising it here would be a no-op at best (cluster_control_unit.sv). */
 static inline void ${t_name}_start(void) {
-    OFFLOAD_SYS_REGS->fetch_enable.f.${t_name}_fetch_enable = 1;
+    OFFLOAD_SYS_REGS->fetch_enable.f.${t_name}_fetch_enable = ${T}_WIRE_MASK;
 }
 
-/* Poll the EOC status flag: 0 on completion, -1 if the target never signalled. */
+/* Poll the EOC status field until EVERY instance has signalled: 0 on completion,
+ * -1 if any of them never did (the caller prints the field to name the silent one). */
 static inline int ${t_name}_wait_eoc(void) {
     for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
-        if (OFFLOAD_SYS_REGS->eoc_status.f.${t_name}_eoc) return 0;
+        if ((OFFLOAD_SYS_REGS->eoc_status.f.${t_name}_eoc & ${T}_WIRE_MASK) == ${T}_WIRE_MASK) return 0;
     }
     return -1;
 }
 
-/* Read back the result the payload left in the target's return register. */
-static inline uint32_t ${t_name}_get_return(void) {
-    return *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_RETURN_REG;
+/* Read back the result the payload left in one instance's return register. */
+static inline uint32_t ${t_name}_get_return(uint32_t inst) {
+    return *(volatile uint32_t *)(uintptr_t)${T}_OFFLOAD_RETURN_REG(inst);
+}
+
+/* ONE instance: release it alone, wait for its own EoC bit. The selective-power phase
+ * drives instance 0 while the last one is parked; the fetch-enable field is
+ * read-modify-written so the parked instance's bit stays clear. */
+static inline void ${t_name}_start_instance(uint32_t inst) {
+    OFFLOAD_SYS_REGS->fetch_enable.f.${t_name}_fetch_enable |= (1u << inst);
+}
+
+static inline int ${t_name}_wait_eoc_instance(uint32_t inst) {
+    for (uint32_t i = 0; i < OFFLOAD_POLL_LIMIT; i++) {
+        if (OFFLOAD_SYS_REGS->eoc_status.f.${t_name}_eoc & (1u << inst)) return 0;
+    }
+    return -1;
 }
 % else:
 /* Zero one instance's return slots BEFORE waking it: each slot reads as done

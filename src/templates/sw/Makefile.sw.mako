@@ -76,9 +76,21 @@ common = [
     f'-DOFFLOAD_CHECK_XOR={hex(offload_check_xor)}',
 ]
 if t["contract"] == "control_wire":
+    # Instance 0's control unit and stack, plus what the ONE image needs to relocate the
+    # control unit to its own instance at run time: the stride between instance windows
+    # and the bit position of the instance ordinal in mhartid (the isle's
+    # OffloadHartInstShift). The cluster's peripheral path decodes against the cluster
+    # id, so instance 0's control unit addressed from cluster n reaches instance 0 (the
+    # first mesh run: one EoC out of four); the TCDM path does not, so the stack stays
+    # put (payload_main.c). An array without the shift cannot be served by one image.
+    if t["num_instances"] > 1 and "hart_inst_shift" not in t:
+        raise ValueError(f"[{t_name}] {t['num_instances']} instances of a control_wire target, but the isle "
+                         f"declares no OffloadHartInstShift: the payload could not locate its instance")
     specific = [
         f'-DOFFLOAD_RETURN_ADDR={hex(ctrl_base + t["return_offs"])}',
         f'-DOFFLOAD_EOC_ADDR={hex(ctrl_base + t["eoc_offs"])}',
+        f'-DOFFLOAD_INST_STRIDE={hex(t["instance_stride"] if t["num_instances"] > 1 else 0)}',
+        f'-DOFFLOAD_HART_INST_SHIFT={t.get("hart_inst_shift", 0)}',
     ]
 else:
     specific = [

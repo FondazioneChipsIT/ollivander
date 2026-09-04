@@ -45,8 +45,13 @@ module pulp_cluster_isle
   parameter int unsigned LogDepth           = 3,
   // Base of the SoC address region mapped to this cluster, driven by the generator
   // from the component's axi_slave 'base_addr'. The cluster decodes its own slave
-  // traffic against InstanceBaseAddr + (cluster_id_i << 22) (cluster_bus_wrap), so
+  // traffic against InstanceBaseAddr + (instance_id_i << 22) (cluster_bus_wrap), so
   // leaving the IP default here would send every external access to the wrong rule.
+  // With several instances the generator hands every one of them the COMPONENT's base
+  // (instance 0) and a distinct id on the port: the IP itself then places instance n
+  // at base + n * InstanceIdStride, the parameter stays identical across instances
+  // and the tile is one module under hierarchical verilation. The address map must
+  // declare the same stride, 'size_per_instance' - the generator refuses any other.
   parameter logic [63:0] InstanceBaseAddr    = 64'h1000_0000,
   // Not configurable: the cluster sources shipped by Bender hardwire the core count
   // in the `NB_CORES define (pulp_soc_defines.sv), which feeds PulpClusterDefaultCfg
@@ -72,6 +77,10 @@ module pulp_cluster_isle
   // register. Authority for the offsets: cluster_control_unit.sv (cluster_peripherals),
   // whose control unit occupies slot 0 of the peripheral region, hence OffloadCtrlOffs
   // equals ClusterCfg.ClusterPeriphOffs below.
+  // Distance between the windows of consecutive instance ids, fixed by the IP's decode
+  // (cluster_bus_wrap: id << 22). Read by the generator from this header, like the
+  // Offload* values below.
+  localparam int unsigned InstanceIdStride      = 'h0040_0000,
   localparam string       OffloadContract       = "control_wire",
   // Base of the control unit, as an offset from the component's axi_slave base address.
   localparam int unsigned OffloadCtrlOffs       = 'h0020_0000,
@@ -85,6 +94,14 @@ module pulp_cluster_isle
   // Top of the cluster-local memory the payload may use as its stack, as an offset
   // from the component's base address (the TCDM size, ClusterCfg.TcdmSize below).
   localparam int unsigned OffloadStackOffs      = 'h0002_0000,
+  // Bit position of the instance ordinal (the cluster id, instance_id_i) in the cores'
+  // mhartid ({cluster_id[5:0], 1'b0, core_id[3:0]}). The one payload image built for an
+  // array of these clusters relocates its CONTROL-UNIT accesses by it: the peripheral
+  // interconnect decodes that region against the cluster id, so instance 0's control
+  // unit addressed from cluster n reaches instance 0. The TCDM path is decoded without
+  // the id - instance 0's local-memory addresses are every cluster's own TCDM, and the
+  // windows above are refused - so stack and scratch are NOT relocated.
+  localparam int unsigned OffloadHartInstShift  = 5,
   // Number of cores the boot-address loop and the payload's hart demux must cover, and
   // the ISA/ABI the payload is cross-compiled for (RI5CY: rv32 integer multiply subset,
   // deliberately conservative - no compressed, no Xpulp - so any rv32 multilib fits;
@@ -113,7 +130,9 @@ module pulp_cluster_isle
 
   // Control and Status
   input  logic        en_sa_boot_i,
-  input  logic [5:0]  cluster_id_i,
+  // Instance ordinal (component_standardization.md, 1.6): the IP's cluster id, which
+  // also selects the address window - see InstanceBaseAddr above. Zero on a crossbar.
+  input  logic [5:0]  instance_id_i,
   input  logic        fetch_en_i,
   output logic        eoc_o,
   output logic        busy_o,
@@ -258,7 +277,7 @@ module pulp_cluster_isle
     .pmu_mem_pwdn_i              ( 1'b0            ), // Tie-off default
     .test_mode_i                 ( test_mode_i     ),
     .en_sa_boot_i                ( en_sa_boot_i    ),
-    .cluster_id_i                ( cluster_id_i    ),
+    .cluster_id_i                ( instance_id_i   ),
     .fetch_en_i                  ( fetch_en_i      ),
     .eoc_o                       ( eoc_o           ),
     .busy_o                      ( busy_o          ),

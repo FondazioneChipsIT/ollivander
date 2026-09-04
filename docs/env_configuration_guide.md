@@ -375,3 +375,15 @@ From a project directory, `make check-rtl` re-runs the check over the tree as it
 ### 6.6 It degrades loudly
 
 There is no path in which a missing check looks like a passing one. If `pyslang` is absent, if Bender cannot produce a file list, or if the checker fails its own self-test — an input known to be invalid that it must reject before its clean verdicts are believed — the phase says so and leaves the generation alone.
+
+## 7. Regenerating an IP to the Host's Configuration (`{host.<Parameter>}`)
+
+A pre-build command of a dependency may substitute **any resolved parameter of the host** as `{host.<Parameter>}`: the isle's own defaults, the values the description sets under `parameters`, and the ones the generator derives (`NumIntrsIn`, `NumIrqHarts`, `NumDbgHarts`, the bus counts). It is the generic hook for an IP that must be regenerated to the host it serves, and the generator knows nothing of what the command does with the numbers.
+
+Its user today is the Cheshire host's PLIC. The `rv_plic` that reaches the compile list is `opentitan_peripherals`' checked-in default - 32 sources, one target - which sees only the first 32 internal sources: no `intr_ext_i` line reaches it and the S-mode target does not exist. Cheshire's own build regenerates it (`cheshire.mk`, target `.generated`: its `hw/rv_plic.cfg.hjson` copied into `opentitan_peripherals`, then `ipgen` + `regtool`), a step a Bender fetch never runs; Astral's `update_plic` edits that configuration with two `sed` before letting Cheshire regenerate. `scripts/regen_rv_plic.py`, a pre-build command of the `cheshire` dependency, does the same with the host's numbers:
+
+```yaml
+- "$(PYTHON) {ollivander_dir}/scripts/regen_rv_plic.py {bender_work} --num-ext-irqs {host.NumIntrsIn} --num-cores {host.NumCores} --num-ext-irq-harts {host.NumIrqHarts}"
+```
+
+Everything Cheshire-specific stays in Cheshire's files: the script reads the internal source count and the contexts per hart from Cheshire's own configuration (kept pristine in a side copy), so sources are internal + external and targets are contexts x harts. The external width is not the routed count but the **capacity the host isle declares** (`HostExtIrqCapacity`, standardization document section 5.5): a per-project count could not serve a project and the pre-generated macro it nests from one Bender tree, while a declared capacity is the same for every host built from that isle. The generator sizes `NumIntrsIn` to it and refuses a description routing a bit beyond it; `parameters.NumIntrsIn` in the host's description overrides the capacity, and the regeneration follows, since it reads the resolved value. The regeneration is idempotent and offline.

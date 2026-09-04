@@ -1567,6 +1567,41 @@ ${group_displays_str}
   // crossbar: every phase printed twice, 0.55 us apart), so the last value seen
   // is kept and compared.
   // ---------------------------------------------------------------------------
+<%
+  # Every interrupt source wire of the top (core/interrupt_routing.py decides which
+  # exist, for both topologies), watched below.
+  _irq_wires = []
+  _ci = context.get('comp_info', None)
+  if _ci:
+      from core.interrupt_routing import irq_plan
+      _irq_wires = list(irq_plan(config, _ci)['out_ports'].items())
+%>
+% if _irq_wires:
+  // INTERRUPT WIRE MONITOR. One line per change of every interrupt source wire of the
+  // top - the mailbox lines, a cluster's EoC, a peripheral's event - so a routed line
+  // shows up in the transcript the moment its source moves, whether or not anything
+  // consumes it. Quiet by construction: nothing prints unless a wire changes, and the
+  // time-zero settling is skipped.
+  // The previous value starts unknown, so the X-to-zero settling of a four-state simulator
+  // is not reported (Verilator starts it at zero and has no such event to skip). Declared
+  // with the wire's own range when it is a literal or package-qualified one ($bits on a
+  // hierarchical reference is not allowed in a declaration); anything else gets a wide
+  // vector, and the comparison zero-extends.
+<%
+  import re as _re
+  def _prev_dim(d):
+      return d if (not d or _re.match(r"^\[[0-9A-Za-z_:()\s+\-]+\]$", d)) else "[255:0]"
+%>
+ % for (c_name, prt_name), dim in _irq_wires:
+  logic ${_prev_dim(dim) + " " if _prev_dim(dim) else ""}tbirq_prev_${c_name}_${prt_name} = 'x;
+  always @(dut.intr_${c_name}_${prt_name}) begin
+    if (!$isunknown(tbirq_prev_${c_name}_${prt_name}) && dut.intr_${c_name}_${prt_name} !== tbirq_prev_${c_name}_${prt_name})
+      $display("[TB_IRQ] %0t intr_${c_name}_${prt_name} = 0x%h", $time, dut.intr_${c_name}_${prt_name});
+    tbirq_prev_${c_name}_${prt_name} = dut.intr_${c_name}_${prt_name};
+  end
+ % endfor
+% endif
+
   logic [15:0] tb_phase_seen = '0;
   always @(dut.sys_regs_hwif_out.tb_phase.seq.value or dut.sys_regs_hwif_out.tb_phase.code.value) begin
     automatic logic [15:0] tb_phase_cur = {dut.sys_regs_hwif_out.tb_phase.seq.value, dut.sys_regs_hwif_out.tb_phase.code.value};

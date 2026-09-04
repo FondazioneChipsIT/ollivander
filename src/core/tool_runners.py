@@ -11,6 +11,7 @@ It also handles the execution of pre-build scripts and code patches on fetched I
 
 import sys
 import os
+import re
 import shutil
 import subprocess
 import yaml
@@ -103,6 +104,17 @@ def run_pre_build_steps(env):
             print(f"  -> Executing pre-build commands for {dep_name}...")
             for cmd in dep_info["pre_build_cmds"]:
                 cmd = cmd.replace("{bender_work}", str(bender_work)).replace("{ollivander_dir}", str(env.base_dir))
+                # '{host.<Parameter>}': any resolved parameter of the host (isle defaults, the
+                # description, autoconfigure_host), for an IP whose regeneration depends on the
+                # host's configuration - the cheshire PLIC takes the interrupt and hart counts.
+                def _host_param(m):
+                    name = m.group(1)
+                    if name not in env.host_params:
+                        raise SystemExit(f"[ERROR] Pre-build command for {dep_name} asks for "
+                                         f"{{host.{name}}}, which the host does not resolve. "
+                                         f"Known: {', '.join(sorted(env.host_params))}")
+                    return str(env.host_params[name])
+                cmd = re.sub(r"\{host\.([A-Za-z0-9_]+)\}", _host_param, cmd)
                 cmd = cmd.replace("$(PYTHON)", sys.executable).replace("$(MAKE)", "make").replace("$(BENDER)", "bender")
                 cmd = cmd.replace("$$", "$")
                 print(f"    $ {cmd}")

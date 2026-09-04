@@ -117,6 +117,26 @@
   isle_owns_isolate = 'axi_isolate_i' in known_ports
   tile_owns_isolate = (bool(comp.system_config and comp.system_config.get('isolate'))
                        and not isle_owns_isolate and has_master)
+
+  # AN ISLE WITH ASYNCHRONOUS AXI PORTS. The isles born in the crossbar family carry their own
+  # half of a clock-domain crossing and publish gray-pointer FIFO buses instead of req/rsp
+  # structs (pulp_cluster_isle: async_axi_in_* towards the cluster, async_axi_out_* from it),
+  # because there the host closes the crossing. On a mesh nothing did: the tile connected
+  # sync ports only, and the auto tie-off silently grounded the async ones - a cluster that
+  # never saw a transaction. The tile now closes each such bus against the network clock with
+  # the counterpart cell, axi_cdc_src towards the isle's slave side and axi_cdc_dst from its
+  # master side, typed with the network's own channels. The isle's LogDepth parameter sizes
+  # both ends (it is a tile parameter too, as every isle parameter is). Join and dual modes
+  # are not bridged: no such isle exists, and a guess here would be a silent misconnection.
+  isle_async_slave  = (has_slave and 'async_axi_in_aw_data_i' in known_ports
+                       and 'axi_req_i' not in known_ports)
+  isle_async_master = (has_master and 'async_axi_out_aw_data_o' in known_ports
+                       and 'axi_req_o' not in known_ports)
+  if (isle_async_slave or isle_async_master) and (noc_mode == "dual" or use_join):
+      raise ValueError(f"{c_name}: an isle with asynchronous AXI ports is bridged on a single "
+                       f"network only, not in '{noc_mode}' mode")
+  if (isle_async_slave or isle_async_master) and 'LogDepth' not in (isle_info or {}).get('supported_params', {}):
+      raise ValueError(f"{c_name}: the asynchronous AXI bridge needs the isle's 'LogDepth' parameter")
   iso_nets = []
   if tile_owns_isolate:
       if has_master_narrow: iso_nets.append("narrow")
@@ -165,9 +185,9 @@
           # to touch the boot memory's decoding. The day an array of it appears, the
           # conversion is the same three lines as here.
           passthrough_ports = {
-              'sys_clk_i', 'sys_rst_ni', 'pwr_on_rst_ni', 'rt_clk_i', 'boot_mode_i', 'bootmode_i',
+              'sys_clk_i', 'sys_rst_ni', 'pwr_on_rst_ni', 'rt_clk_i', 'ref_clk_i', 'boot_mode_i', 'bootmode_i',
               'axi_isolate_i', 'axi_isolated_o', 'fetch_en_i', 'en_sa_boot_i', 'boot_addr_i',
-              'busy_o', 'eoc_o', 'debug_req_i', 'instance_base_addr_i'
+              'busy_o', 'eoc_o', 'debug_req_i', 'instance_base_addr_i', 'instance_id_i'
           }
           
           if comp.interrupts:
@@ -175,6 +195,18 @@
                   passthrough_ports.add(irq_name)
                   if isinstance(irq_cfg, dict) and 'port' in irq_cfg:
                       passthrough_ports.add(irq_cfg['port'])
+          # OUTPUT INTERRUPTS THE REST OF THE SoC LISTENS TO. The matrix builder infers an
+          # output interrupt on a component the moment another component names it as a
+          # source (wiring.py, _infer_interrupts) - but it runs in Phase 3, and this tile is
+          # rendered in Phase 1. Without this scan the mailbox's snd_irq_o stayed inside its
+          # tile, and the route declared on the host ended on a wire nobody drives.
+          for _oc in [config.host] + list(config.components or []):
+              for _icfg in (_oc.interrupts or {}).values():
+                  _src = _icfg.get('source') if isinstance(_icfg, dict) else None
+                  for _s in (_src.values() if isinstance(_src, dict) else [_src]):
+                      for _m in re.finditer(rf"\b{re.escape(c_name)}\.([a-zA-Z_][a-zA-Z0-9_]*)", str(_s or "")):
+                          if _m.group(1) in known_ports:
+                              passthrough_ports.add(_m.group(1))
 
           if p_port_name in passthrough_ports:
               isle_ports.append({'dir': p_dir, 'type': p_type_dim, 'name': p_port_name, 'unpacked': p_unpacked_dim})
@@ -249,6 +281,9 @@
           if 'axi_req_t' in all_params: isle_type_overrides['axi_req_t'] = req_mst_type
           if 'axi_resp_t' in all_params: isle_type_overrides['axi_resp_t'] = rsp_mst_type
           if 'axi_rsp_t' in all_params: isle_type_overrides['axi_rsp_t'] = rsp_mst_type
+          for _ch in ("aw", "w", "b", "ar", "r"):
+              if f'axi_{_ch}_chan_t' in all_params:
+                  isle_type_overrides[f'axi_{_ch}_chan_t'] = req_mst_type.replace("_req_t", f"_{_ch}_chan_t")
       if 'sync_axi_out_req_t' in all_params: isle_type_overrides['sync_axi_out_req_t'] = req_mst_type
       if 'sync_axi_out_rsp_t' in all_params: isle_type_overrides['sync_axi_out_rsp_t'] = rsp_mst_type
 
@@ -281,6 +316,18 @@
           if 'axi_req_t' in all_params: isle_type_overrides['axi_req_t'] = req_slv_type
           if 'axi_resp_t' in all_params: isle_type_overrides['axi_resp_t'] = rsp_slv_type
           if 'axi_rsp_t' in all_params: isle_type_overrides['axi_rsp_t'] = rsp_slv_type
+          # THE CHANNEL TYPES TOO. An isle that also declares 'axi_aw_chan_t' & co. (the
+          # mailbox isle feeds them to its two axi_cut stages) used to receive only the
+          # request/response pair: the channel parameters stayed at their 'logic' default,
+          # every cut carried ONE bit of each channel, and the first write to the mailbox
+          # came out as address 0 with a mangled id - the chimney's B lookup missed and
+          # the response went to tile (0,0), where a slave-only chimney sat on it forever
+          # (NoNarrowMgrPortBResponse, first mesh simulation of the mailbox, 2026-09-04).
+          # The crossbar family never saw it because its de-typing pass fills every type
+          # parameter of a staged isle from the SoC package.
+          for _ch in ("aw", "w", "b", "ar", "r"):
+              if f'axi_{_ch}_chan_t' in all_params:
+                  isle_type_overrides[f'axi_{_ch}_chan_t'] = req_slv_type.replace("_req_t", f"_{_ch}_chan_t")
       if 'sync_axi_in_req_t' in all_params: isle_type_overrides['sync_axi_in_req_t'] = req_slv_type
       if 'sync_axi_in_rsp_t' in all_params: isle_type_overrides['sync_axi_in_rsp_t'] = rsp_slv_type
       
@@ -1278,6 +1325,107 @@ module ${p_name}_${c_type}
 % if not has_master_wide:
   assign wide_in_req = '0;
 % endif
+% if isle_async_slave or isle_async_master:
+
+  // =======================================================================
+  // ASYNCHRONOUS AXI BRIDGE TOWARDS THE ISLE
+  // =======================================================================
+  // The isle publishes gray-pointer FIFO buses (its own axi_cdc half, see the
+  // header note); each is closed here against the network clock with the
+  // counterpart cell. The isle side of every bus runs on the isle's clock, which
+  // this tile may gate: that is what makes the crossing necessary rather than
+  // decorative. SyncStages matches the isle's own cell (three, pulp_cluster's
+  // AxiCdcSyncStages); the FIFO depth is the isle's LogDepth on both halves.
+<%
+  _bm_net = "narrow" if has_master_narrow else "wide"
+  _bm_sig = f"iso_{_bm_net}" if _bm_net in iso_nets else f"{_bm_net}_in"
+  _bs_net = "wide" if has_slave_wide else "narrow"
+%>
+ % if isle_async_slave:
+  // Network -> isle (the isle's slave side): src half here, dst half in the isle.
+  ${noc_pkg}::axi_${_bs_net}_out_aw_chan_t [2**LogDepth-1:0] cdc_in_aw_data;
+  ${noc_pkg}::axi_${_bs_net}_out_w_chan_t  [2**LogDepth-1:0] cdc_in_w_data;
+  ${noc_pkg}::axi_${_bs_net}_out_b_chan_t  [2**LogDepth-1:0] cdc_in_b_data;
+  ${noc_pkg}::axi_${_bs_net}_out_ar_chan_t [2**LogDepth-1:0] cdc_in_ar_data;
+  ${noc_pkg}::axi_${_bs_net}_out_r_chan_t  [2**LogDepth-1:0] cdc_in_r_data;
+  logic [LogDepth:0] cdc_in_aw_wptr, cdc_in_aw_rptr, cdc_in_w_wptr, cdc_in_w_rptr, cdc_in_b_wptr, cdc_in_b_rptr;
+  logic [LogDepth:0] cdc_in_ar_wptr, cdc_in_ar_rptr, cdc_in_r_wptr, cdc_in_r_rptr;
+
+  axi_cdc_src #(
+    .LogDepth   ( LogDepth ),
+    .SyncStages ( 3 ),
+    .aw_chan_t  ( ${noc_pkg}::axi_${_bs_net}_out_aw_chan_t ),
+    .w_chan_t   ( ${noc_pkg}::axi_${_bs_net}_out_w_chan_t ),
+    .b_chan_t   ( ${noc_pkg}::axi_${_bs_net}_out_b_chan_t ),
+    .ar_chan_t  ( ${noc_pkg}::axi_${_bs_net}_out_ar_chan_t ),
+    .r_chan_t   ( ${noc_pkg}::axi_${_bs_net}_out_r_chan_t ),
+    .axi_req_t  ( ${noc_pkg}::axi_${_bs_net}_out_req_t ),
+    .axi_resp_t ( ${noc_pkg}::axi_${_bs_net}_out_rsp_t )
+  ) i_isle_cdc_src (
+    .src_clk_i                   ( noc_clk ),
+    .src_rst_ni                  ( noc_rst_n ),
+    .src_req_i                   ( ${_bs_net}_out_req ),
+    .src_resp_o                  ( ${_bs_net}_out_rsp ),
+    .async_data_master_aw_data_o ( cdc_in_aw_data ),
+    .async_data_master_aw_wptr_o ( cdc_in_aw_wptr ),
+    .async_data_master_aw_rptr_i ( cdc_in_aw_rptr ),
+    .async_data_master_w_data_o  ( cdc_in_w_data ),
+    .async_data_master_w_wptr_o  ( cdc_in_w_wptr ),
+    .async_data_master_w_rptr_i  ( cdc_in_w_rptr ),
+    .async_data_master_b_data_i  ( cdc_in_b_data ),
+    .async_data_master_b_wptr_i  ( cdc_in_b_wptr ),
+    .async_data_master_b_rptr_o  ( cdc_in_b_rptr ),
+    .async_data_master_ar_data_o ( cdc_in_ar_data ),
+    .async_data_master_ar_wptr_o ( cdc_in_ar_wptr ),
+    .async_data_master_ar_rptr_i ( cdc_in_ar_rptr ),
+    .async_data_master_r_data_i  ( cdc_in_r_data ),
+    .async_data_master_r_wptr_i  ( cdc_in_r_wptr ),
+    .async_data_master_r_rptr_o  ( cdc_in_r_rptr )
+  );
+ % endif
+ % if isle_async_master:
+  // Isle -> network (the isle's master side): dst half here, src half in the isle.
+  ${noc_pkg}::axi_${_bm_net}_in_aw_chan_t [2**LogDepth-1:0] cdc_out_aw_data;
+  ${noc_pkg}::axi_${_bm_net}_in_w_chan_t  [2**LogDepth-1:0] cdc_out_w_data;
+  ${noc_pkg}::axi_${_bm_net}_in_b_chan_t  [2**LogDepth-1:0] cdc_out_b_data;
+  ${noc_pkg}::axi_${_bm_net}_in_ar_chan_t [2**LogDepth-1:0] cdc_out_ar_data;
+  ${noc_pkg}::axi_${_bm_net}_in_r_chan_t  [2**LogDepth-1:0] cdc_out_r_data;
+  logic [LogDepth:0] cdc_out_aw_wptr, cdc_out_aw_rptr, cdc_out_w_wptr, cdc_out_w_rptr, cdc_out_b_wptr, cdc_out_b_rptr;
+  logic [LogDepth:0] cdc_out_ar_wptr, cdc_out_ar_rptr, cdc_out_r_wptr, cdc_out_r_rptr;
+
+  axi_cdc_dst #(
+    .LogDepth   ( LogDepth ),
+    .SyncStages ( 3 ),
+    .aw_chan_t  ( ${noc_pkg}::axi_${_bm_net}_in_aw_chan_t ),
+    .w_chan_t   ( ${noc_pkg}::axi_${_bm_net}_in_w_chan_t ),
+    .b_chan_t   ( ${noc_pkg}::axi_${_bm_net}_in_b_chan_t ),
+    .ar_chan_t  ( ${noc_pkg}::axi_${_bm_net}_in_ar_chan_t ),
+    .r_chan_t   ( ${noc_pkg}::axi_${_bm_net}_in_r_chan_t ),
+    .axi_req_t  ( ${noc_pkg}::axi_${_bm_net}_in_req_t ),
+    .axi_resp_t ( ${noc_pkg}::axi_${_bm_net}_in_rsp_t )
+  ) i_isle_cdc_dst (
+    .async_data_slave_aw_data_i ( cdc_out_aw_data ),
+    .async_data_slave_aw_wptr_i ( cdc_out_aw_wptr ),
+    .async_data_slave_aw_rptr_o ( cdc_out_aw_rptr ),
+    .async_data_slave_w_data_i  ( cdc_out_w_data ),
+    .async_data_slave_w_wptr_i  ( cdc_out_w_wptr ),
+    .async_data_slave_w_rptr_o  ( cdc_out_w_rptr ),
+    .async_data_slave_b_data_o  ( cdc_out_b_data ),
+    .async_data_slave_b_wptr_o  ( cdc_out_b_wptr ),
+    .async_data_slave_b_rptr_i  ( cdc_out_b_rptr ),
+    .async_data_slave_ar_data_i ( cdc_out_ar_data ),
+    .async_data_slave_ar_wptr_i ( cdc_out_ar_wptr ),
+    .async_data_slave_ar_rptr_o ( cdc_out_ar_rptr ),
+    .async_data_slave_r_data_o  ( cdc_out_r_data ),
+    .async_data_slave_r_wptr_o  ( cdc_out_r_wptr ),
+    .async_data_slave_r_rptr_i  ( cdc_out_r_rptr ),
+    .dst_clk_i                  ( noc_clk ),
+    .dst_rst_ni                 ( noc_rst_n ),
+    .dst_req_o                  ( ${_bm_sig}_req ),
+    .dst_resp_i                 ( ${_bm_sig}_rsp )
+  );
+ % endif
+% endif
 
 % if error_slave_ports:
   // =======================================================================
@@ -1574,7 +1722,17 @@ module ${p_name}_${c_type}
           _mpfx = f"iso_{_mnet}" if _mnet in iso_nets else f"{_mnet}_in"
           mst_req_sig = f"{_mpfx}_req"
           mst_rsp_sig = f"{_mpfx}_rsp"
-          if '[' in axi_req_o_dim:
+          if isle_async_master:
+              # The bridge above owns the sync side; the isle takes the FIFO buses.
+              for _ch in ("aw", "w", "ar"):
+                  isle_connections.append(f".async_axi_out_{_ch}_data_o ( cdc_out_{_ch}_data )")
+                  isle_connections.append(f".async_axi_out_{_ch}_wptr_o ( cdc_out_{_ch}_wptr )")
+                  isle_connections.append(f".async_axi_out_{_ch}_rptr_i ( cdc_out_{_ch}_rptr )")
+              for _ch in ("b", "r"):
+                  isle_connections.append(f".async_axi_out_{_ch}_data_i ( cdc_out_{_ch}_data )")
+                  isle_connections.append(f".async_axi_out_{_ch}_wptr_i ( cdc_out_{_ch}_wptr )")
+                  isle_connections.append(f".async_axi_out_{_ch}_rptr_o ( cdc_out_{_ch}_rptr )")
+          elif '[' in axi_req_o_dim:
               isle_connections.append(f".axi_req_o  ( {{{mst_req_sig}}} )")
               isle_connections.append(f".axi_resp_i ( {{{mst_rsp_sig}}} )")
           else:
@@ -1629,7 +1787,16 @@ module ${p_name}_${c_type}
           req_sig = "join_req" if use_join else ("wide_out_req" if has_slave_wide else "narrow_out_req")
           rsp_sig = "join_rsp" if use_join else ("wide_out_rsp" if has_slave_wide else "narrow_out_rsp")
           
-          if '[' in axi_req_i_dim:
+          if isle_async_slave:
+              for _ch in ("aw", "w", "ar"):
+                  isle_connections.append(f".async_axi_in_{_ch}_data_i ( cdc_in_{_ch}_data )")
+                  isle_connections.append(f".async_axi_in_{_ch}_wptr_i ( cdc_in_{_ch}_wptr )")
+                  isle_connections.append(f".async_axi_in_{_ch}_rptr_o ( cdc_in_{_ch}_rptr )")
+              for _ch in ("b", "r"):
+                  isle_connections.append(f".async_axi_in_{_ch}_data_o ( cdc_in_{_ch}_data )")
+                  isle_connections.append(f".async_axi_in_{_ch}_wptr_o ( cdc_in_{_ch}_wptr )")
+                  isle_connections.append(f".async_axi_in_{_ch}_rptr_i ( cdc_in_{_ch}_rptr )")
+          elif '[' in axi_req_i_dim:
               isle_connections.append(f".axi_req_i  ( {{{req_sig}}} )")
               isle_connections.append(f".axi_resp_o ( {{{rsp_sig}}} )")
           else:

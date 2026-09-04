@@ -44,19 +44,31 @@ ${license(prefix='//')}\
   # Reset value: ISOLATED (all ones). A block comes out of reset fenced and software opens it,
   # which matches the reset state of the axi_isolate cell itself (its state registers reset to
   # 'Isolate') and the software-reset registers above.
-  iso_fields = []
-  _iso_bit = 0
-  for _c in components:
-      _sc = _c.get('system_config') or {}
-      if not _sc.get('isolate'):
-          continue
-      _n = _c.get('num_instances', 1) or 1
-      iso_fields.append((_c, _iso_bit, _iso_bit + _n - 1))
-      _iso_bit += _n
-  if _iso_bit > 32:
-      raise ValueError(
-          f"isolation needs {_iso_bit} bits but the control register is 32 wide: "
-          f"the components declaring 'isolate' expand into too many instances between them")
+  #
+  # THE SAME ALLOCATION SERVES EVERY PER-COMPONENT WIRE the System Controller drives or
+  # samples: fetch enable, boot enable, debug request, busy and EoC status. They used to be
+  # one bit per component at the component's position in the list, which is the isolation
+  # defect again in five more registers - on a mesh, a control_wire component expands into an
+  # array, and sixteen tiles would share one fetch-enable bit and fight over one EoC bit. The
+  # IR builders index these fields per instance exactly as they index isolation, and the
+  # firmware helpers derive their masks from the same 'num_instances'.
+  def inst_fields(flag):
+      """(component, lo, hi) per component declaring 'flag', bits allocated cumulatively."""
+      fields, bit = [], 0
+      for _c in components:
+          _sc = _c.get('system_config') or {}
+          if not _sc.get(flag):
+              continue
+          _n = _c.get('num_instances', 1) or 1
+          fields.append((_c, bit, bit + _n - 1))
+          bit += _n
+      if bit > 32:
+          raise ValueError(
+              f"'{flag}' needs {bit} bits but its register is 32 wide: the components declaring "
+              f"it expand into too many instances between them")
+      return fields
+
+  iso_fields = inst_fields('isolate')
 
   def por_rst(width):
       """Power-on value of a software-reset field: ALWAYS held in reset, in both policies.
@@ -158,12 +170,12 @@ addrmap ${top_level_module_name}_sys_regs {
     reg {
         name = "Fetch Enable";
         desc = "Allow compute cores to start fetching instructions";
-        % for i, c in enumerate([c for c in components if c.get('system_config') and c.get('system_config').get('fetch_enable')]):
+        % for c, lo, hi in inst_fields('fetch_enable'):
         field {
             name = "${c['name']}_fetch_enable";
-            desc = "Fetch enable for ${c['name']}";
+            desc = "Fetch enable for ${c['name']}${" (one bit per instance)" if hi > lo else ""}";
             hw = r; sw = rw;
-        } ${c['name']}_fetch_enable[${i}:${i}] = 0;
+        } ${c['name']}_fetch_enable[${hi}:${lo}] = 0;
         % endfor
     } fetch_enable;
     % endif
@@ -177,12 +189,12 @@ addrmap ${top_level_module_name}_sys_regs {
     reg {
         name = "Boot Enable";
         desc = "Triggers standalone hardware boot sequence";
-        % for i, c in enumerate([c for c in components if c.get('system_config') and c.get('system_config').get('boot_enable')]):
+        % for c, lo, hi in inst_fields('boot_enable'):
         field {
             name = "${c['name']}_boot_enable";
-            desc = "Boot enable for ${c['name']}";
+            desc = "Boot enable for ${c['name']}${" (one bit per instance)" if hi > lo else ""}";
             hw = r; sw = rw;
-        } ${c['name']}_boot_enable[${i}:${i}] = 0;
+        } ${c['name']}_boot_enable[${hi}:${lo}] = 0;
         % endfor
     } boot_enable;
     % endif
@@ -195,12 +207,12 @@ addrmap ${top_level_module_name}_sys_regs {
     reg {
         name = "Debug Request";
         desc = "Send external debug halt request to CPUs";
-        % for i, c in enumerate([c for c in components if c.get('system_config') and c.get('system_config').get('debug_req')]):
+        % for c, lo, hi in inst_fields('debug_req'):
         field {
             name = "${c['name']}_debug_req";
-            desc = "Debug request for ${c['name']}";
+            desc = "Debug request for ${c['name']}${" (one bit per instance)" if hi > lo else ""}";
             hw = r; sw = rw;
-        } ${c['name']}_debug_req[${i}:${i}] = 0;
+        } ${c['name']}_debug_req[${hi}:${lo}] = 0;
         % endfor
     } debug_req;
     % endif
@@ -307,11 +319,11 @@ addrmap ${top_level_module_name}_sys_regs {
         name = "Busy Status";
         desc = "Component busy status indicator";
         default sw = r; default hw = w;
-        % for i, c in enumerate([c for c in components if c.get('system_config') and c.get('system_config').get('has_busy_status')]):
+        % for c, lo, hi in inst_fields('has_busy_status'):
         field {
             name = "${c['name']}_busy";
-            desc = "${c['name']} busy status";
-        } ${c['name']}_busy[${i}:${i}] = 0;
+            desc = "${c['name']} busy status${" (one bit per instance)" if hi > lo else ""}";
+        } ${c['name']}_busy[${hi}:${lo}] = 0;
         % endfor
     } busy_status;
     % endif
@@ -326,11 +338,11 @@ addrmap ${top_level_module_name}_sys_regs {
         name = "EOC Status";
         desc = "End of Computation status indicator";
         default sw = r; default hw = w;
-        % for i, c in enumerate([c for c in components if c.get('system_config') and c.get('system_config').get('has_eoc_status')]):
+        % for c, lo, hi in inst_fields('has_eoc_status'):
         field {
             name = "${c['name']}_eoc";
-            desc = "${c['name']} EOC status";
-        } ${c['name']}_eoc[${i}:${i}] = 0;
+            desc = "${c['name']} EOC status${" (one bit per instance)" if hi > lo else ""}";
+        } ${c['name']}_eoc[${hi}:${lo}] = 0;
         % endfor
     } eoc_status;
     % endif

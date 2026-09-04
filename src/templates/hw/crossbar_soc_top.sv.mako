@@ -18,127 +18,13 @@
   import re
   from core.utils import simplify_port_ranges
 
-  # Resolves SystemVerilog dimensions by substituting 'parameter' names with their
-  # actual integer values defined in the component's YAML configuration or the 
-  # module's default 'fixed_params', evaluating simple math expressions if needed.
-  def resolve_dim(c, c_info, dim_str):
-      params = {}
-      if c_info:
-          params.update(c_info.get('fixed_params', {}))
-          supported = c_info.get('supported_params', {})
-          if isinstance(supported, dict):
-              params.update(supported)
-      if getattr(c, 'parameters', None):
-          params.update(c.parameters)
-          
-      for pk, pv in params.items():
-          dim_str = re.sub(r'\b' + re.escape(pk) + r'\b', str(pv), dim_str)
-          
-      def eval_math(m):
-          parts = m.group(1).split(':')
-          eval_parts = []
-          for p in parts:
-              try:
-                  val = eval(p, {"__builtins__": {}})
-                  eval_parts.append(str(val))
-              except Exception:
-                  eval_parts.append(p.strip())
-          return '[' + ':'.join(eval_parts) + ']'
-          
-      return re.sub(r'\[(.*?)\]', eval_math, dim_str)
-
-  # Extracts the array dimension (e.g. '[31:0]') of a specific port by parsing 
-  # the SystemVerilog header extracted during Phase 2.
-  def get_port_dim(c_name, port_name, is_input):
-      c_info = comp_info.get(c_name, {})
-      ports = c_info.get("ports", {})
-      p_info = ports.get(port_name)
-      if not p_info:
-          base_port = port_name[:-2] if (is_input and port_name.endswith('_i')) or (not is_input and port_name.endswith('_o')) else port_name
-          p_info = ports.get(base_port)
-          
-      if p_info:
-          dims = re.findall(r'\[.*?\]', p_info["type_dim"])
-          if dims:
-              c_obj = next((x for x in [config.host] + config.components if x.name == c_name), None)
-              return resolve_dim(c_obj, c_info, "".join(dims))
-      return ""
-
-  def get_rep_factor(dim_str):
-      if not dim_str: return ""
-      m = re.match(r'\[(.*?):(.*?)\s*\]', dim_str)
-      if m:
-          try:
-              val = int(m.group(1)) - int(m.group(2)) + 1
-              return str(val) if val > 1 else ""
-          except Exception:
-              u = m.group(1).strip()
-              l = m.group(2).strip()
-              if l == '0':
-                  if u.endswith('-1'): return u[:-2].strip()
-                  if u.endswith('- 1'): return u[:-3].strip()
-              return f"({u})-({l})+1"
-      return ""
-
-  # Validates that a source component referenced in an interrupt mapping 
-  # actually exists in the topology. Missing components are safely ignored 
-  # to allow partial SoC generation without causing syntax errors.
-  def check_src_valid(src_expr):
-      src_comp_names = set(re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.', src_expr))
-      for sc in src_comp_names:
-          found = False
-          if sc == config.host.name:
-              found = True
-          else:
-              for c in config.components:
-                  if c.name == sc: found = True; break
-                  if c.components:
-                      for sub in c.components:
-                          if sub.name == sc: found = True; break
-          if not found:
-              return False, sc
-      return True, None
-
-  # Pre-compute interrupt wires and required packages strictly used in Top-Level logic
-  def get_all_irqs(comps, parent_clk=None, parent_rst=None):
-      irqs = []
-      for c in comps:
-          c_clk = c.clock_domain or parent_clk or "host_clk"
-          c_rst = c.reset_domain or parent_rst or "host_rst"
-          if c.interrupts:
-              for irq_name, irq_cfg in c.interrupts.items():
-                  irqs.append((c, irq_name, irq_cfg, c_clk, c_rst))
-      return irqs
-  
-  all_irqs = get_all_irqs([config.host] + config.components)
-
-  # Extract all physical output interrupt ports that need a wire declaration
-  out_ports = {}
-  
-  for c, irq_name, irq_cfg, c_clk, c_rst in all_irqs:
-      if not irq_cfg.get('source'):
-          port_name = irq_cfg.get('port', irq_name)
-          if (c.name, port_name) not in out_ports:
-              fallback = irq_cfg.get('width', 1)
-              c_info = comp_info.get(c.name, {})
-              header = c_info.get("header_content", "")
-              parse_dim = irq_cfg.get('parse_sv_dim', True)
-              dim = ""
-              if parse_dim:
-                  ports = c_info.get("ports", {})
-                  base_port = port_name[:-2] if port_name.endswith('_o') else port_name
-                  p_info = ports.get(port_name) or ports.get(base_port)
-                  if p_info:
-                      dims = re.findall(r'\[.*?\]', p_info["type_dim"])
-                      if dims:
-                          dim = resolve_dim(c, c_info, "".join(dims))
-              if not dim and fallback > 1:
-                  dim = f"[{fallback-1}:0]"
-              out_ports[(c.name, port_name)] = dim
-      else:
-          dim = get_port_dim(c.name, irq_name, is_input=True)
-          
+  # The interrupt routing - wires, aliases, mapped vectors, synchronizers - is shared
+  # with the NoC top: core/interrupt_routing.py computes it, the defs imported below
+  # emit it. It lived in this header until the mesh needed it too.
+  from core.interrupt_routing import irq_plan
+  irq = irq_plan(config, comp_info)
 %><%namespace file="/license_header.mako" import="license"/>\
+<%namespace file="/hw/infrastructure/interrupt_routing.mako" import="interrupt_wires, interrupt_routing"/>\
 ${license()}\
 //
 // AUTOMATICALLY GENERATED BY OLLIVANDER - DO NOT EDIT DIRECTLY
@@ -289,11 +175,7 @@ module ${top_level_module_name}
   assign rt_clk_i = 1'b0;
 % endif
 
-  // Physical Interconnect Wires
-% for (c_name, prt_name), dim in out_ports.items():
-  logic ${dim + " " if dim else ""}intr_${c_name}_${prt_name};
-% endfor
-
+${interrupt_wires(irq)}
   // =========================================================================
   // 1. CLOCK AND RESET TREE
   // =========================================================================
@@ -559,139 +441,7 @@ ${clock_and_reset_tree(config, p_name)}
  % endif
 % endif
 
-  // Logical Aliases for sparse interrupt mapping.
-  // If an interrupt destination is just a single bit of a larger bus, we create an alias wire.
-% for c, irq_name, irq_cfg, c_clk, c_rst in all_irqs:
- % if not irq_cfg.get('source'):
-  % if irq_cfg.get('port') and irq_cfg.get('port') != irq_name:
-  <% 
-    bit_idx = irq_cfg.get('bit', 0)
-    dim = get_port_dim(c.name, irq_name, is_input=False)
-  %>
-  logic ${dim + " " if dim else ""}intr_${c.name}_${irq_name};
-  assign intr_${c.name}_${irq_name} = intr_${c.name}_${irq_cfg['port']}[${bit_idx}];
-  % endif
- % endif
-% endfor
-
-  // =========================================================================
-  // 4. INTERRUPT ROUTING (MAPPED SOURCES)
-  // =========================================================================
-  // Generates continuous assignments for interrupts defined using the 
-  // '{ [bit] : component.port }' dictionary syntax in the YAML.
-<%
-  complex_irqs = []
-  for c, irq_name, irq_cfg, c_clk, c_rst in all_irqs:
-      source_str = str(irq_cfg.get('source', '')).strip()
-      if source_str.startswith('{') and source_str.endswith('}'):
-          complex_irqs.append((c, irq_name, irq_cfg, source_str))
-%>
-% for c, irq_name, irq_cfg, source_str in complex_irqs:
-  <% 
-     dim = get_port_dim(c.name, irq_name, is_input=True)
-     mappings = re.findall(r'(\[[^\]]+\])\s*:\s*([^,\n]+)', source_str[1:-1])
-  %>\
-  logic ${dim + " " if dim else ""}intr_${c.name}_${irq_name};
-  always_comb begin
-    intr_${c.name}_${irq_name} = '0; // Unmapped bits default to zero
-  % for idx, src in mappings:
-    <% 
-       is_valid, missing = check_src_valid(src)
-       if is_valid:
-           val_processed = re.sub(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b', r'intr_\1_\2', src.strip())
-       else:
-           val_processed = f"'0 /* Missing component: {missing} */"
-    %>\
-    intr_${c.name}_${irq_name}${idx} = ${val_processed};
-  % endfor
-  end
-% endfor
-
-  // =========================================================================
-  // 5. INTER-DOMAIN SYNCHRONIZERS (CDC)
-  // =========================================================================
-  // Automatically generates multi-stage synchronizers whenever an interrupt 
-  // connection spans across two different clock domains, guaranteeing a safe 
-  // transition without metastability.
-<%
-  def get_clk_by_comp_name(name):
-      if name == config.host.name: return config.host.clock_domain or 'host_clk'
-      c = next((c for c in config.components if c.name == name), None)
-      if c: return c.clock_domain or 'host_clk'
-      for c in config.components:
-          if c.components:
-              sub = next((s for s in c.components if s.name == name), None)
-              if sub: return sub.clock_domain or c.clock_domain or 'host_clk'
-      return 'host_clk'
-
-  sync_irqs = []
-  for c, irq_name, irq_cfg, c_clk, c_rst in all_irqs:
-      if irq_cfg.get('source') and str(irq_cfg.get('source')) != 'none':
-          source_str = str(irq_cfg.get('source')).strip()
-          is_valid, missing = check_src_valid(source_str)
-          if not is_valid:
-              continue
-              
-          src_comp_names = set(re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.', source_str))
-          needs_sync = False
-          for src_comp_name in src_comp_names:
-              src_clk = get_clk_by_comp_name(src_comp_name)
-              if src_clk != c_clk:
-                  needs_sync = True
-                  break
-          if irq_cfg.get('cdc') is False:
-              needs_sync = False
-          if needs_sync:
-              sync_irqs.append((c, irq_name, irq_cfg, c_clk, c_rst, source_str))
-%>
-% for c, irq_name, irq_cfg, c_clk, c_rst, source_str in sync_irqs:
-  // Synchronizer for ${c.name} ${irq_name} (CDC to ${c_clk})
-  <%
-    dim = get_port_dim(c.name, irq_name, is_input=True)
-  %>\
-  logic ${dim + " " if dim else ""}intr_${c.name}_${irq_name}_async;
-  % if source_str.startswith('{'):
-  assign intr_${c.name}_${irq_name}_async = intr_${c.name}_${irq_name};
-  % else:
-  <% 
-     processed_str = re.sub(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b', r'intr_\1_\2', source_str)
-     rep = ""
-     src_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)$', source_str.strip())
-     if src_match and not get_port_dim(src_match.group(1), src_match.group(2), False):
-         rep = get_rep_factor(dim)
-  %>\
-  assign intr_${c.name}_${irq_name}_async = ${f"'{{default: {processed_str}}}" if rep else processed_str};
-  % endif
-  
-  ${require_file("olli_sync.sv")}
-  logic ${dim + " " if dim else ""}intr_${c.name}_${irq_name}_sync;
-  
-  % if dim:
-  for (genvar i = 0; i < $bits(intr_${c.name}_${irq_name}_async); i++) begin : gen_sync_${c.name}_${irq_name}
-  olli_sync #(
-    .STAGES    (3),
-    .ResetValue(1'b0)
-  ) i_sync_${c.name}_${irq_name} (
-    .clk_i    ( ${c_clk} ),
-    .rst_ni   ( ${'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'pwr_on_rsts_n[{pkg}::DomainIdx_{fmt_rst(c_rst)}]'} ),
-    .serial_i ( intr_${c.name}_${irq_name}_async[i] ),
-    .serial_o ( intr_${c.name}_${irq_name}_sync[i] )
-  );
-  end
-  % else:
-  olli_sync #(
-    .STAGES    (3),
-    .ResetValue(1'b0)
-  ) i_sync_${c.name}_${irq_name} (
-    .clk_i    ( ${c_clk} ),
-    .rst_ni   ( ${'host_pwr_on_rst_n' if c_rst == 'host_rst' else f'pwr_on_rsts_n[{pkg}::DomainIdx_{fmt_rst(c_rst)}]'} ),
-    .serial_i ( intr_${c.name}_${irq_name}_async ),
-    .serial_o ( intr_${c.name}_${irq_name}_sync )
-  );
-  % endif
-
-% endfor
-
+${interrupt_routing(irq, pkg, require_file)}
   // =========================================================================
   // 6. COMPONENT INSTANTIATIONS (ISLES)
   // =========================================================================

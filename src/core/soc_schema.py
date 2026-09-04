@@ -1903,3 +1903,79 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: list[Path] =
             print(f"[INFO]   Skipped '{name}': declares an offload contract, but {reason}.")
 
     return targets
+
+
+def resolve_host_contract(config: OllivanderConfig, search_paths: list[Path] = None,
+                          exclude_dir: str = None, original_types: dict[str, str] = None) -> dict[str, int]:
+    """
+    The host isle's Host* localparams, snake_cased and resolved to integers: the firmware
+    generator's view of what the host publishes about itself (today the PLIC contract of
+    cheshire_isle.sv - base, pending-word offset, source id of the first external line),
+    which is what lets the generated test observe a routed interrupt line at the PLIC
+    without an interrupt handler. Read from the isle header like the Offload* contract, so
+    a host without the block simply yields an empty mapping and the firmware emits no such
+    check. On a mesh the host is wrapped in a tile, hence the original-type lookup.
+    """
+    host = config.host
+    h_type = original_types.get(host.name, host.type) if original_types else host.type
+    info = get_isle_info(h_type, search_paths, exclude_dir)
+    if not info:
+        return {}
+    contract: dict[str, int] = {}
+    for k, v in info["fixed_params"].items():
+        if not k.startswith("Host"):
+            continue
+        try:
+            contract[_snake_case(k[len("Host"):])] = int(str(v).strip(), 0)
+        except ValueError:
+            raise ValueError(
+                f"\n[HOST CONTRACT ERROR] in the host '{host.name}' ({h_type}): the localparam "
+                f"'{k}' resolves to '{v}', not an integer literal.")
+    return contract
+
+
+def irq_route_witness(config: OllivanderConfig, host_contract: dict[str, int],
+                      original_types: dict[str, str] = None, search_paths: list[Path] = None,
+                      exclude_dir: str = None) -> Optional[dict[str, Any]]:
+    """
+    The interrupt route the generated test can exercise end to end without an interrupt
+    handler: a line the host aggregates into its PLIC whose SOURCE can be raised from
+    software. Two contracts meet here, both read from isle headers: the host's Host* PLIC
+    block (where the PLIC is, which source id the first external line takes) and the
+    source's IrqSource* block (which port carries the lines, and the register offsets and
+    stride a program writes to enable, set and clear line k). The first single-bit entry
+    of the host's 'intr_ext_i' dictionary whose source publishes the block is chosen; the
+    firmware then raises line k through those registers, expects PLIC source
+    (ext_irq_base + bit) pending and claimable, clears it and expects it gone. None when
+    either half is missing - the firmware then emits no such check, never a failing one.
+    """
+    needed_host = ("plic_base", "plic_pending_offs", "plic_prio_offs", "plic_enable_offs",
+                   "plic_claim_offs", "plic_ext_irq_base")
+    if not host_contract or any(k not in host_contract for k in needed_host):
+        return None
+    src = ((config.host.interrupts or {}).get("intr_ext_i") or {}).get("source")
+    if not isinstance(src, str) or not src.strip().startswith("{"):
+        return None
+    needed_src = ("IrqSourcePort", "IrqSourceStride", "IrqSourceEnableOffs", "IrqSourceSetOffs",
+                  "IrqSourceClearOffs")
+    for idx, expr in re.findall(r'(\[[^\]]+\])\s*:\s*([^,\n]+)', src.strip()[1:-1]):
+        m = re.match(r'^\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\[(\d+)\]\s*$', expr)
+        b = re.match(r'^\[(\d+)\]$', idx.strip())
+        if not (m and b):
+            continue
+        comp = next((c for c in (config.components or []) if c.name == m.group(1)), None)
+        if comp is None:
+            continue
+        c_type = (original_types or {}).get(comp.name, comp.type)
+        info = get_isle_info(c_type, search_paths, exclude_dir)
+        fx = (info or {}).get("fixed_params") or {}
+        if any(k not in fx for k in needed_src):
+            continue
+        if str(fx["IrqSourcePort"]).strip().strip('"') != m.group(2):
+            continue
+        return {"src": comp.name, "idx": int(m.group(3)), "host_bit": int(b.group(1)),
+                "stride": int(str(fx["IrqSourceStride"]), 0),
+                "enable_offs": int(str(fx["IrqSourceEnableOffs"]), 0),
+                "set_offs": int(str(fx["IrqSourceSetOffs"]), 0),
+                "clear_offs": int(str(fx["IrqSourceClearOffs"]), 0)}
+    return None

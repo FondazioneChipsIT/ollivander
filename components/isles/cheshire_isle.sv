@@ -73,6 +73,26 @@ module cheshire_isle
   parameter int unsigned NumIrqHarts        = 1,
   parameter int unsigned NumDbgHarts        = 1,
   localparam int unsigned NumIrqCtxts       = 2, // Number of interrupt contexts (M, S modes)
+  // ---------------------------------------------------------------------------------
+  // Host interrupt contract - what the generated firmware needs to OBSERVE an external
+  // interrupt line at the host's PLIC without an interrupt handler: where the PLIC is,
+  // where its pending words are, and which source id the first bit of intr_ext_i takes
+  // (cheshire concatenates {ext, internal}, so external line k is source NumIntIntrs + k).
+  // Read by the generator from this header (get_isle_info), hence literals: the two that
+  // restate a cheshire constant are checked against it at elaboration below, so a bump of
+  // the pinned cheshire that moves either fails the self-check instead of the firmware.
+  localparam longint unsigned HostPlicBase        = 64'h0400_0000, // cheshire_addrmap_pkg::PLIC_BASE_ADDR
+  localparam int unsigned     HostPlicPrioOffs    = 'h0,           // rv_plic_reg_pkg::RV_PLIC_PRIO0_OFFSET
+  localparam int unsigned     HostPlicPendingOffs = 'h1000,        // RV_PLIC_IP*_OFFSET (name varies with the count)
+  localparam int unsigned     HostPlicEnableOffs  = 'h2000,        // RV_PLIC_IE0*_OFFSET (context 0, same remark)
+  localparam int unsigned     HostPlicClaimOffs   = 'h20_0004,     // rv_plic_reg_pkg::RV_PLIC_CC0_OFFSET (context 0)
+  localparam int unsigned     HostPlicExtIrqBase  = 58,            // cheshire_pkg::NumIntIntrs
+  // Width of intr_ext_i this host is built for. The generator sizes NumIntrsIn to it (and
+  // refuses a description routing a bit beyond it), and the registry regenerates the PLIC
+  // for internal + this many sources (scripts/regen_rv_plic.py): one value, so the vector
+  // cheshire slices for the PLIC and the PLIC itself agree in every project, nested macros
+  // included. 'parameters.NumIntrsIn' in a description overrides it. Unused lines read zero.
+  localparam int unsigned     HostExtIrqCapacity  = 38,
   // Ollivander Host Force-Boot configuration parameters
   // HasForceBoot: 1 indicates this host supports software force-booting in simulation
   localparam bit HasForceBoot = 1,
@@ -658,6 +678,18 @@ module cheshire_isle
   );
 
   assign intr_ext_o = chs_intr_ext_o[0];
+
+  // The host interrupt contract restates two cheshire constants as literals (see the
+  // header); a pinned-IP bump that moves either must fail here, not in the firmware.
+  if (HostPlicBase != cheshire_addrmap_pkg::PLIC_BASE_ADDR)
+    $fatal(1, "cheshire_isle: HostPlicBase (0x%h) no longer matches cheshire_addrmap_pkg::PLIC_BASE_ADDR (0x%h)",
+           HostPlicBase, cheshire_addrmap_pkg::PLIC_BASE_ADDR);
+  if (HostPlicExtIrqBase != cheshire_pkg::NumIntIntrs)
+    $fatal(1, "cheshire_isle: HostPlicExtIrqBase (%0d) no longer matches cheshire_pkg::NumIntIntrs (%0d)",
+           HostPlicExtIrqBase, cheshire_pkg::NumIntIntrs);
+  if (HostPlicPrioOffs != rv_plic_reg_pkg::RV_PLIC_PRIO0_OFFSET || HostPlicClaimOffs != rv_plic_reg_pkg::RV_PLIC_CC0_OFFSET)
+    $fatal(1, "cheshire_isle: the Host PLIC register offsets no longer match rv_plic_reg_pkg (prio 0x%h, claim 0x%h)",
+           rv_plic_reg_pkg::RV_PLIC_PRIO0_OFFSET, rv_plic_reg_pkg::RV_PLIC_CC0_OFFSET);
 
   // Map the synchronous AXI outputs directly.
   // Convention: Async ports are mapped first, Sync ports are mapped sequentially after.

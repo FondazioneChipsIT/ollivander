@@ -127,6 +127,12 @@ class ModuleInstance:
         self.module_name = module_name
         self.parameters = {}  # parameter_name -> value_string
         self.connections = []  # List of PortConnection
+        # The component this instance realizes, when the instance name does not say it:
+        # a mesh tile is 'i_tile_<x>_<y>' and its component is known only to the builder
+        # that placed it. verify() reads the port directions of comp_info through this
+        # name; without it every tile connection counted as a consumer, and a routed
+        # source driven by a tile was reported as never driven.
+        self.comp_name = None
 
 
 class SVArchitectureIR:
@@ -172,7 +178,7 @@ class SVArchitectureIR:
             intr_driven.update(_IDENT.findall(lhs))
             intr_consumed.update(_IDENT.findall(rhs))
         for inst_name, inst in self.instances.items():
-            comp_name = inst_name[2:] if inst_name.startswith("i_") else inst_name
+            comp_name = inst.comp_name or (inst_name[2:] if inst_name.startswith("i_") else inst_name)
             c_ports = comp_info.get(comp_name, {}).get("ports", {})
             for conn in inst.connections:
                 names = _IDENT.findall(conn.expression)
@@ -193,7 +199,7 @@ class SVArchitectureIR:
                             f"missing, misnamed, or claimed by another connection.")
 
         for inst_name, inst in self.instances.items():
-            comp_name = inst_name[2:] if inst_name.startswith("i_") else inst_name
+            comp_name = inst.comp_name or (inst_name[2:] if inst_name.startswith("i_") else inst_name)
             # Fallback for tiled name mappings
             if comp_name.endswith("_tile") and comp_name not in comp_info:
                 comp_name = comp_name[:-5]

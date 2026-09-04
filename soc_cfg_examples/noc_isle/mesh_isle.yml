@@ -127,6 +127,9 @@ system_controller:
     - name: "cluster_ctrl"
       type: "clk_rst_control"
       target_component_type: "cluster_subtile" # Ollivander auto-sizes this based on count
+    - name: "pulp_ctrl"
+      type: "clk_rst_control"
+      target_component_type: "pulp_cluster_isle" # the 2x2 PULP array below, one bit per tile
     - name: "mem_tile_ctrl"
       type: "clk_rst_control"
       target_component_type: "sram_isle"
@@ -147,6 +150,18 @@ host:
   placement:
     logical: { x: 9, y: 3 } # Physical 2D coordinate on the FlooNoC mesh
   export_interfaces: ["jtag", "gpio", "slink", "uart", "spi", "i2c"]
+  interrupts:
+    # INTERRUPT ROUTING ON THE MESH. Same syntax as the crossbar family: the host aggregates
+    # external lines into its PLIC through intr_ext_i, and the generator routes each source
+    # from the tile that owns it. Bit 0 carries a mailbox line: the generated offload test
+    # raises it through the mailbox's registers and reads it back in the PLIC's pending
+    # word, which proves the whole route mailbox -> wire -> host tile -> PLIC.
+    intr_ext_i:
+      cdc: false
+      source: >
+        {
+          [0] : mailbox.snd_irq_o[7]
+        }
   interfaces:
     axi_master: true
     noc_networks:
@@ -194,10 +209,14 @@ components:
     type: "cluster_subtile"
     clock_domain: "system"
     # A 'box' placement automatically generates a 2D array of instances.
-    # Here: X from 4 to 7 (4 columns), Y from 0 to 3 (4 rows) = 16 clusters total!
+    # Here: X from 4 to 7 (4 columns), Y from 2 to 3 (2 rows) = 8 clusters, the upper
+    # half of the compute area; the lower-left quarter is the PULP array below and the
+    # lower-right quarter stays dummy. The asymmetric box is deliberate: the two-phase
+    # collectives (column first, then the row of heads) are exercised on a 2x4 here,
+    # while the square 4x4 is covered by the 'noc' and 'noc_subtile' examples.
     placement:
       logical:
-        box: { x_start: 4, x_end: 7, y_start: 0, y_end: 3 }
+        box: { x_start: 4, x_end: 7, y_start: 2, y_end: 3 }
     export_interfaces: ["debug_req"]
     interfaces:
       axi_master: true
@@ -217,6 +236,58 @@ components:
       UseHWPE: true
 
   # -- SHARED L2 MEMORY --
+  - name: "pulp_cluster"
+    description: "PULP multicore clusters (RI5CY), a 2x2 array started by wire"
+    type: "pulp_cluster_isle"
+    clock_domain: "system"
+    # THE WIRE-CONTROLLED WITNESS OF THE MESH. Unlike the Snitch clusters (memory-mapped
+    # start), these are released by the System Controller's fetch-enable wire and report
+    # completion on their eoc_o wire: one bit per instance in both registers. The isle
+    # publishes asynchronous AXI buses (its own CDC half); the tile closes them against
+    # the network clock.
+    placement:
+      logical:
+        box: { x_start: 4, x_end: 5, y_start: 0, y_end: 1 }
+    interfaces:
+      axi_master: true
+      noc_networks:
+        master: ["narrow"]
+        slave: ["narrow"]
+      axi_slave:
+        # One 4 MB window per instance, at the stride the IP itself decodes
+        # (cluster_bus_wrap: base + (instance_id << 22)); the generator refuses any other.
+        - name: "pulp_tcdm_and_periph"
+          base_addr: 0x30000000
+          size_per_instance: 0x00400000
+          sync_domain: false     # the isle's ports are asynchronous (its own CDC half); the tile closes them
+    system_config:
+      isolate: true
+      fetch_enable: true
+      boot_enable: true
+      boot_addr: 0x22000000     # the payload region (L2), rewritten by the test firmware
+      has_busy_status: true
+      has_eoc_status: true
+    interrupts:
+      # The other mailbox line lands on the PULP clusters' mailbox interrupt: observed by the
+      # testbench on the top-level wire, not handled by the payload.
+      mbox_irq_i: { source: "mailbox.snd_irq_o[4]", cdc: false }
+
+  - name: "mailbox"
+    description: "Centralized mailbox for cross-domain software interrupts (MSI)"
+    type: "mailbox_isle"
+    clock_domain: "system"
+    placement:
+      logical: { x: 9, y: 0 }  # the host's column, a free slot
+    interfaces:
+      noc_networks:
+        slave: ["narrow"]
+      axi_slave:
+        - name: "mailbox_regs"
+          base_addr: 0x24000000
+          size: 0x00001000
+    parameters:
+      NumMailboxes: 16
+
   - name: "l2_shared_memory"
     description: "Level 2 shared SRAM memory"
     type: "sram_isle" # Topology-agnostic memory block
@@ -333,7 +404,8 @@ software_stack:
   test_app:
     # The offload app is a strict superset of hello_world: same greeting first,
     # then payload offload onto every component declaring an Offload* contract
-    # (here: the 16 snitch cluster_subtile instances, launched in parallel).
+    # (here: the 8 snitch cluster_subtile instances launched in parallel, then the
+    # 2x2 pulp_cluster array started by wire).
     # 'payload_memory' is MANDATORY here, and the reason is the same one that makes
     # the internal scratchpad a good boot memory: it lives inside the host, on the
     # narrow network, while the snitch instruction cache refills through the

@@ -39,7 +39,20 @@ module mailbox_isle
   
   // REG types
   parameter type reg_req_t      = logic,
-  parameter type reg_rsp_t      = logic
+  parameter type reg_rsp_t      = logic,
+  // ---------------------------------------------------------------------------------
+  // Software-raisable interrupt contract: how a program raises and clears line k of
+  // the port below through this isle's own registers, as offsets from the component's
+  // slave base plus k times the stride (mailbox_unit: one 256-byte block per mailbox,
+  // irq_snd_en / irq_snd_set / irq_snd_clr). Read by the generator like the Offload*
+  // contract: the offload test's interrupt route witness drives the first routed line
+  // whose source publishes this block, whatever the isle. Literals only, and no comment
+  // line here may end in ');' (the header extractor would stop there).
+  localparam string       IrqSourcePort       = "snd_irq_o",
+  localparam int unsigned IrqSourceStride     = 'h100,
+  localparam int unsigned IrqSourceEnableOffs = 'h00c,
+  localparam int unsigned IrqSourceSetOffs    = 'h004,
+  localparam int unsigned IrqSourceClearOffs  = 'h008
 ) (
   input  logic clk_i,
   input  logic rst_ni,

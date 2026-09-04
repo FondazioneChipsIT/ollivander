@@ -9,7 +9,7 @@ Invoked from the dependency registry as a pre-build command:
     pre_build_cmds:
       - "$(PYTHON) {ollivander_dir}/scripts/patch_pulp_cluster.py {bender_work}"
 
-Three repair families, each documented at its patch group below:
+Four repair families, each documented at its patch group below:
 
 1. cluster_interconnect_wrap still passes hci_interconnect the seven geometry
    overrides of an older hci, which the pinned hci derives internally from the
@@ -37,6 +37,15 @@ Three repair families, each documented at its patch group below:
    incomplete pattern is an error; default: '0 keeps it complete whatever fields
    the fork adds next.
 
+4. core_region's simulation-only ERROR_2 check ("unmapped region") flags every
+   core access between ClusterBaseAddr + 4 MB and ClusterBaseAddr + 160 MB and
+   $finish()es the run. The cluster's own peripherals live at
+   ClusterBaseAddr + (cluster_id << 22) + 2 MB (xbar_pe_wrap, cluster_bus_wrap), so
+   for any cluster_id above zero the check kills a legitimate access to the
+   cluster's own control unit: the first four-cluster array on a mesh died on the
+   second cluster's EoC write (2026-09-04). The check keeps its purpose - other
+   clusters' windows are still refused - and simply exempts the cluster's own.
+
 These replacements lived as {file, search, replace} triples in the dependency
 registry and moved here verbatim when their volume outgrew the YAML.
 The mechanics are unchanged: replacements apply on freshly ledger-restored
@@ -52,6 +61,7 @@ ICW = "rtl/cluster_interconnect_wrap.sv"
 IDMA = "rtl/idma_wrap.sv"
 PKG = "packages/pulp_cluster_package.sv"
 CBW = "rtl/cluster_bus_wrap.sv"
+CORE = "rtl/core_region.sv"
 MANIFEST = "Bender.yml"
 
 PATCHES = [
@@ -89,6 +99,11 @@ PATCHES = [
      "                                          NoAddrRules: N_RULES,\n"
      "                                          default: '0\n"
      "                                          };"),
+    # 4. The unmapped-region check exempts the cluster's own window (cluster_id_i).
+    (CORE,
+     "    if ((core_data_req_o.req == 1'b1) && (core_data_req_o.add >= (CLUSTER_BASE + 32'h0040_0000)) && ((core_data_req_o.add < (CLUSTER_BASE + 32'h0A00_0000)))) begin",
+     "    if ((core_data_req_o.req == 1'b1) && (core_data_req_o.add >= (CLUSTER_BASE + 32'h0040_0000)) && ((core_data_req_o.add < (CLUSTER_BASE + 32'h0A00_0000)))\n"
+     "        && !((core_data_req_o.add >= (CLUSTER_BASE + (cluster_id_i << 22))) && (core_data_req_o.add < (CLUSTER_BASE + (cluster_id_i << 22) + 32'h0040_0000)))) begin"),
 ]
 
 

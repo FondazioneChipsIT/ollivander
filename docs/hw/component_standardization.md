@@ -95,6 +95,8 @@ Two reasons to prefer the port, one per flow. Under **hierarchical verilation** 
 
 Inside the block, cast the port back to whatever type the IP wants at the inner instantiation (`cluster_subtile.sv` does `snitch_cluster_pkg::addr_t'(instance_base_addr_i)`). Where the value used to feed a `localparam` that must be elaborated - an address-map struct array, for instance - derive it with an `assign` to a wire and hand it to the IP's port instead: `l2_isle.sv` converts its four localparams and its `mapping_rules` this way. A value that genuinely cannot leave elaboration keeps the parameter form: `pulp_cluster_isle` does, because its base flows into the struct parameter `Cfg.ClusterBaseAddr` and from there into four child parameter overrides, which would mean modifying upstream IP.
 
+**An IP that derives its window from an ordinal declares `instance_id_i` instead.** `pulp_cluster` decodes `ClusterBaseAddr + (cluster_id << 22)`, so its isle takes `input logic [5:0] instance_id_i` and states the stride that decode implies as a header localparam, `InstanceIdStride` (`'h0040_0000`). The generator then hands every instance the COMPONENT's base (instance 0's window) in `InstanceBaseAddr` and its index on the port: one parameterisation for the whole array, hence one module under hierarchical verilation, and the IP itself places instance n at `base + n * InstanceIdStride`. The address map must declare that stride as `size_per_instance`; a box placed at any other stride is refused at generation time, because the IP would decode windows the map never assigned. On a crossbar the port reads zero.
+
 This is a **declared opt-in**, by parameter or by port: the generator acts only on what the header declares, and never matches on component types. Memory components travel the same route (section 1.5) — one convention for every self-mapping component, memories and clusters alike. The subtile consumes the parameters internally (e.g. `cluster_subtile.sv` drives the meta-generated wrapper's `cluster_base_addr_i`/`cluster_base_offset_i` ports from them, and ties `hart_base_id_i` to zero — global hart IDs deliberately repeat across the array, see the alias-region rationale in the offload contract and the open question in `docs/developer/wip/future_evolution_tasks.md`); no identity port appears on the subtile interface.
 
 ## 2. Supported Interfaces & Port Naming
@@ -307,6 +309,16 @@ Ollivander establishes a strict hardware contract for the SoC Top-Level: **All i
 If your IP natively generates edge-triggered or pulsed interrupts (like some APB timers), **the Isle wrapper must encapsulate an `edge_propagator`** (or equivalent pulse-to-level logic) and expose a stable, level-triggered signal to the outside world.
 
 
+### 3.1 Software-Raisable Lines (`IrqSource*` localparams)
+
+An isle whose interrupt output can be raised and cleared by a program through its own registers may say how, in its header; the generated offload test then uses the first such line the host aggregates into its PLIC as its **interrupt route witness** (configuration guide, section 5.1), and no register map of any IP appears in the generator. `mailbox_isle` is the shipped example.
+
+| Localparam | Meaning |
+| :--- | :--- |
+| `IrqSourcePort` (`string`) | The output port whose bit k is line k. |
+| `IrqSourceStride` (`int unsigned`) | Bytes between the register blocks of line k and line k+1, from the component's slave base. |
+| `IrqSourceEnableOffs`, `IrqSourceSetOffs`, `IrqSourceClearOffs` (`int unsigned`) | Offsets, inside line k's block, of the registers a write of 1 enables, raises and clears the line with. |
+
 ## 4. Autonomous System Signals
 Ollivander's parser reads the SystemVerilog header of your Isle and automatically wires up specific system/control signals if it finds them. You do not need to specify these in the YAML interfaces list.
 
@@ -355,6 +367,12 @@ These signals are mapped automatically if their exact name is found in the modul
     *   **Ollivander Handling**: Connected to the `sys_regs_hw2reg.<component_name>_busy.d` register input (enabled via `has_busy_status: true` in `system_config`).
 *   **`eoc_o`** (`logic`): End of Computation status flag exported to the System Controller (and optionally mapped as an interrupt).
     *   **Ollivander Handling**: Connected to the `sys_regs_hw2reg.<component_name>_eoc.d` register input (enabled via `has_eoc_status: true` in `system_config`).
+*   **`ref_clk_i`** (`logic`): Reference clock for an IP's timers (the PULP cluster's).
+    *   **Ollivander Handling**: Hardwired to the real-time clock, `rt_clk`, in both topologies.
+
+> **One bit per instance, in both topologies.** `fetch_en_i`, `en_sa_boot_i`, `debug_req_i`, `busy_o`, `eoc_o` and the isolation pair are connected per instance on a mesh: their System Controller fields are `num_instances` bits wide (like `isolate_ctrl`), each tile drives or reads its own bit, and a single-instance component keeps the scalar field - the crossbar output is unchanged. `boot_addr_i` stays one register per component, one image for every instance. Before this, a mesh component declaring `fetch_enable` received a register, a firmware helper and a tile port tied to zero.
+
+> **Asynchronous AXI isles on a mesh.** An isle that publishes gray-pointer FIFO buses instead of req/rsp structs (`async_axi_in_*` towards it, `async_axi_out_*` from it - the crossbar-family isles carry their own half of a clock-domain crossing, `pulp_cluster_isle` among them) is hosted by the universal tile through the counterpart cells: `axi_cdc_src` towards the isle's slave side and `axi_cdc_dst` from its master side, on the network clock, typed with the network's channels and sized by the isle's `LogDepth` parameter (which the isle must therefore expose). Declare such a slave `sync_domain: false` in the description; join and dual modes are not bridged.
 
 
 ## 5. The Host Component
@@ -772,3 +790,14 @@ However, if you are designing a **truly reusable** Custom Tile meant to be insta
 *(Note: Because Ollivander currently auto-injects AXI types but not NoC types into Custom Tiles, you must explicitly map these NoC types in the `parameters` block of your YAML configuration if you choose to parameterize them).*
 
 *Note: Because Custom Tiles natively instantiate the NoC router, they must often rely on the auto-generated NoC configuration package (e.g., `AxiCfgN`, `AxiCfgW`, `RouteCfg`) provided by FlooGen, rather than relying solely on scalar parameters.*
+
+### 5.5 Host Interrupt Contract (`Host*` localparams)
+
+What the generated firmware needs to OBSERVE an external interrupt line at the host's PLIC without an interrupt handler, declared by the host isle as literals and checked against the pinned IP at elaboration (`cheshire_isle.sv` does both, so a bump of Cheshire that moves a value fails the self-check rather than the test). The generator reads them like the `Offload*` contract and emits the interrupt route witness of the offload test (configuration guide, section 5.1) only when the block exists.
+
+| Localparam | Meaning |
+| :--- | :--- |
+| `HostPlicBase` (`longint unsigned`) | Base address of the PLIC in the host's map. |
+| `HostPlicPrioOffs`, `HostPlicPendingOffs`, `HostPlicEnableOffs`, `HostPlicClaimOffs` (`int unsigned`) | Offsets of the priority array, the pending words, the enable words of context 0 and the claim/complete register of context 0. |
+| `HostPlicExtIrqBase` (`int unsigned`) | PLIC source id of `intr_ext_i[0]`: the host concatenates `{external, internal}`, so external line k is source `HostPlicExtIrqBase + k`. |
+| `HostExtIrqCapacity` (`int unsigned`) | Width of `intr_ext_i` the host is built for. The generator sizes `NumIntrsIn` to it (a description routing a bit beyond it is refused; `parameters.NumIntrsIn` overrides), and the registry regenerates the host's interrupt controller for that width through `{host.NumIntrsIn}` (environment guide, section 7) - one value, so the vector the host slices for its PLIC and the PLIC itself agree in every project, nested macros included. |

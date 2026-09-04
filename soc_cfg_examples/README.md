@@ -11,7 +11,7 @@ The nine projects in this directory serve two purposes: they showcase every usag
 | [`crossbar_micro`](crossbar_micro/) | `crux_micro` | AXI crossbar, minimal | `spi_flash` | none — the image lives in the flash | no | the **autonomous boot** class: GPT disk image, bootrom-driven load, no JTAG at all |
 | [`crossbar_mini`](crossbar_mini/) | `crux_mini` | AXI crossbar, minimal | `uart` | `uart` | no | the smallest configuration that boots — read its YAML first |
 | [`noc`](noc/) | `mesh` | 2D-mesh NoC (inspired by **Gwaihir**) | `jtag` | `jtag` (SBA) | no | Gwaihir's exact address map; boot from the always-on scratchpad; per-instance power control |
-| [`noc_isle`](noc_isle/) | `mesh_isle` | 2D-mesh NoC, **macro** build | `jtag` | `slink` | no | the NoC macro export, and the gated-L2 boot the testbench must bring up |
+| [`noc_isle`](noc_isle/) | `mesh_isle` | 2D-mesh NoC, **macro** build | `jtag` | `slink` | no | the NoC macro export, the gated-L2 boot the testbench must bring up, a wire-started PULP array and interrupt routing on the mesh |
 | [`noc_subtile`](noc_subtile/) | `mesh_subtile` | 2D-mesh NoC, **subtile macro** | `force` | `readmemh` | no | the subtile export (dual-network AXI ports), on the force path |
 | [`super_crossbar`](super_crossbar/) | `super_crux` | crossbar parent nesting the **`mesh_isle`** macro | `jtag` | `slink` | yes — Python padlist | cross-topology nesting: a NoC SoC compiled inside a crossbar parent |
 | [`super_noc`](super_noc/) | `super_mesh` | NoC parent nesting **`crux_isle`** and **`mesh_subtile`** | `slink` | `slink` | no | cross-topology nesting the other way, package coexistence, deepest gated boot |
@@ -49,7 +49,7 @@ A 2D-mesh NoC of compute, memory and peripheral tiles routed by **FlooNoC**. The
 
 ### `noc_isle` — mesh_isle, the NoC macro
 
-The Mesh SoC exported as a macro (`build_mode: "macro"`, `mesh_isle` prefix on every generated name). Its firmware is deliberately placed in a **gated L2 tile**: the host cannot fetch until the testbench enables that tile, keeping the gated boot path and the 4-group × 128-bit interleaved preload covered by the regression.
+The Mesh SoC exported as a macro (`build_mode: "macro"`, `mesh_isle` prefix on every generated name). Its firmware is deliberately placed in a **gated L2 tile**: the host cannot fetch until the testbench enables that tile, keeping the gated boot path and the 4-group × 128-bit interleaved preload covered by the regression. Its compute area is heterogeneous on purpose: a 2×4 box of Snitch clusters (memory-mapped start, the collectives on an asymmetric group) above a 2×2 box of **PULP clusters** started by wire - fetch enable and EoC one bit per instance, the isle's asynchronous AXI closed inside the tile - and a **mailbox** tile whose lines are routed to the host's PLIC and to the PULP array, the interrupt-routing witness of the mesh.
 
 ### `noc_subtile` — mesh_subtile, the subtile macro
 
@@ -74,7 +74,7 @@ Each collective mechanism the generator supports has exactly one example that ex
 | example | reduction channel | collective phases exercised | mechanism |
 | --- | --- | --- | --- |
 | `noc` | wide (FP) | FpAdd wide (two dimension-ordered phases), multicast, barrier | the gwaihir-like profile: DMA-issued, `dmuser` sets `{mask, op}`, routers offload to the cores' FPUs through the DCA |
-| `noc_isle` | narrow (integer) | IntAdd two-phase, then IntMaxS programmed at runtime (second power cycle), multicast, barrier | the stamper: address windows stamp the mask on core stores, `collective_ctrl` supplies the op |
+| `noc_isle` | narrow (integer) | IntAdd two-phase on a 2×4 group, then IntMaxS programmed at runtime (second power cycle), multicast, barrier | the stamper: address windows stamp the mask on core stores, `collective_ctrl` supplies the op |
 | `noc_subtile` | none | multicast, barrier | the collectives that need no reduction channel; also the macro `super_crossbar` nests |
 | `super_noc` | wide (FP) | as `noc`, inside a macro consumer | the DCA path across a nested boundary |
 

@@ -437,7 +437,18 @@ def main():
     # interrupt vectors and AXI/RegBus interconnect arrays. This is done by
     # inspecting the entire SoC topology defined in the YAML. This makes the
     # Host component highly adaptable without requiring manual parameterization.
-    autoconfigure_host(soc_config)
+    # A host isle may declare the width of its external interrupt vector (HostExtIrqCapacity,
+    # section 5.5 of the component standardization): the vector is then built to it. Once the
+    # host is configured, its resolved parameters - the isle's defaults under the description's
+    # and the derived ones - are published to the pre-build phase, where a registry command may
+    # read any of them as '{host.<Parameter>}' (the cheshire PLIC regeneration does).
+    from core.sv_parser import get_isle_info as _host_isle_info
+    _hinfo = _host_isle_info(soc_config.host.type, env.search_paths, env.exclude_dir) or {}
+    _cap = (_hinfo.get("fixed_params") or {}).get("HostExtIrqCapacity")
+    autoconfigure_host(soc_config, ext_irq_capacity=int(str(_cap), 0) if _cap is not None else None)
+    env.host_params = dict(_hinfo.get("supported_params") or {})
+    env.host_params.update({k: ("1" if v is True else "0" if v is False else v)
+                            for k, v in (soc_config.host.parameters or {}).items()})
 
     print("=" * 70)
     print("[*] Starting Phase 1: Generating dynamic Isles...")

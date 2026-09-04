@@ -277,6 +277,8 @@ module vip_ollivander_soc #(
       8'd13: txt = {tgt_name(), ": power-cycle PASS (2 cycles)"};
       8'd14: txt = {tgt_name(), ": selective-power PASS (last parked, first ran)"};
       8'd15: begin tgt_idx++; txt = {"target ", tgt_name(), " begins"}; end
+      // Mailbox-only codes (16 and up): the UART byte channel carries codes 0-15 only.
+      8'd16: txt = "interrupt route to the PLIC verified (raised, pending, claimed, cleared)";
       default: txt = $sformatf("phase code %0d", code);
     endcase
     $display("[TEST_PROGRESS] %0t  host: %s%s", $realtime, txt, via);

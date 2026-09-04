@@ -36,7 +36,7 @@ def optimize_clock_tree(soc_config):
             
     soc_config.clock_tree.domains = active_domains
 
-def autoconfigure_host(soc_config):
+def autoconfigure_host(soc_config, ext_irq_capacity=None):
     """
     Auto-calculates the required widths for the Host's interrupt vectors
     and AXI/RegBus interconnect arrays by inspecting the entire SoC topology 
@@ -70,6 +70,22 @@ def autoconfigure_host(soc_config):
                 indices = re.findall(r'\[(\d+)(?::\d+)?\]\s*:', src)
                 if indices:
                     host_num_intrs_in = max([int(i) for i in indices]) + 1
+
+    # 1b. A DECLARED CAPACITY WINS OVER THE ROUTED COUNT. A host isle may state how many
+    #     external interrupt lines it is built for ('HostExtIrqCapacity' in its header): its
+    #     interrupt controller is regenerated for exactly that width (a registry pre-build step
+    #     reading '{host.NumIntrsIn}'), and every host of a Bender tree - a project and the
+    #     macro it nests - must agree on it, which a per-project routed count cannot guarantee.
+    #     So the vector takes the capacity, unused bits read zero, and a description routing a
+    #     bit beyond it is refused here with the number to raise. 'parameters.NumIntrsIn' in
+    #     the description still overrides both (setdefault below), for a host built otherwise.
+    if ext_irq_capacity is not None:
+        if host_num_intrs_in > int(ext_irq_capacity):
+            raise ValueError(
+                f"[{soc_config.host.name}] intr_ext_i routes bit {host_num_intrs_in - 1}, but the host "
+                f"isle declares room for {ext_irq_capacity} external interrupt lines (HostExtIrqCapacity): "
+                f"raise it in the isle header, or set parameters.NumIntrsIn to at least {host_num_intrs_in}.")
+        host_num_intrs_in = int(ext_irq_capacity)
 
     # 2. Calculate sizes for other Host-exported interrupt/debug signals.
     for c, irq_name, irq_cfg in all_irqs:

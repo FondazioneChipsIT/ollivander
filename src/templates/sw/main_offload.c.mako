@@ -135,8 +135,12 @@ static void progress(unsigned code) {
     *(volatile uint32_t *)OFFLOAD_TB_PHASE_ADDR = (progress_seq << 8) | (code & 0xFFu);
 #endif
 % if uart_base:
-    while (!(UART_BASE[UART_LSR] & 0x20));
-    UART_BASE[UART_RXTX] = (uint32_t)(0x10u + code);
+    /* The UART byte channel carries codes 0-15 (0x10-0x1F); higher codes travel
+     * on the mailbox only, where the word has room for them. */
+    if (code < 16u) {
+        while (!(UART_BASE[UART_LSR] & 0x20));
+        UART_BASE[UART_RXTX] = (uint32_t)(0x10u + code);
+    }
 % else:
     (void)code;
 % endif
@@ -185,6 +189,24 @@ int main(void) {
     progress(1);
 
 % endif
+% if irq_witness:
+    /* Interrupt route witness (offload.h): a software-raisable line the host
+     * aggregates into its PLIC, driven and observed by this program - proves the
+     * route source -> wire -> host tile -> PLIC, which no payload exercises. */
+    {
+        int irc = offload_irq_route_check();
+        if (irc != 0) {
+            print_str("[OFFLOAD] interrupt route ${irq_witness["src"]} line ${irq_witness["idx"]} -> PLIC failed at step ");
+            print_hex((uint32_t)(-irc));
+            print_str("\n");
+            offload_fail("irq_route", "the routed line was not seen at the PLIC");
+        }
+        progress(16);   /* the verdict, as a phase: one [TEST_PROGRESS] line in every transcript */
+% if offload_verbose:
+        print_str("[OFFLOAD] interrupt route ${irq_witness["src"]} line ${irq_witness["idx"]} -> PLIC OK\n");
+% endif
+    }
+% endif
 % for t_name, t in offload_targets.items():
 <%
   # The power-cycle counter exists only when the loop below is emitted; a bench
@@ -217,30 +239,44 @@ int main(void) {
     ${t_name}_load_payload(payload_${t_name}_image, PAYLOAD_${t_name.upper()}_SIZE_WORDS);
     progress(3);
 % if t["contract"] == "control_wire":
-    ${t_name}_set_bootaddress(OFFLOAD_PAYLOAD_BASE);
+    /* Every instance gets its boot addresses, then ONE write releases them all:
+     * the fetch-enable field is one bit per instance, and the EoC field too. */
+    for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
+        ${t_name}_set_bootaddress(n, OFFLOAD_PAYLOAD_BASE);
+    }
     ${t_name}_start();
+    progress(4);
     if (${t_name}_wait_eoc() != 0) {
-        /* Dump the observable state before parking: the return register tells
-         * whether the payload's stores ever reached the control unit, and the
-         * busy/EOC flags tell how the target looks from the System Controller. */
-        print_str("[OFFLOAD] ${t_name} state at EOC timeout: ret_reg=");
-        print_hex(${t_name}_get_return());
+        /* Dump the observable state before parking: the EoC field names the silent
+         * instances, the return registers tell whether the payloads' stores ever
+         * reached the control units, and busy tells how the target looks from the
+         * System Controller. */
+        print_str("[OFFLOAD] ${t_name} state at EOC timeout: eoc=");
+        print_hex(OFFLOAD_SYS_REGS->eoc_status.f.${t_name}_eoc);
 % if t["sys_busy_status"]:
         print_str(" busy=");
         print_hex(OFFLOAD_SYS_REGS->busy_status.f.${t_name}_busy);
 % endif
-        print_str(" eoc=");
-        print_hex(OFFLOAD_SYS_REGS->eoc_status.f.${t_name}_eoc);
+        print_str(" ret_reg=");
+        for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
+            print_str(" ");
+            print_hex(${t_name}_get_return(n));
+        }
         print_str("\n");
         offload_fail("${t_name}", "EOC timed out");
     }
     {
-        uint32_t ret = ${t_name}_get_return();
-        if (ret != ${hex(expected)}u) {
-            print_str("[OFFLOAD] ${t_name} returned ");
-            print_hex(ret);
-            print_str(", expected ${hex(expected)}\n");
-            offload_fail("${t_name}", "wrong return value");
+        uint32_t ret = 0;
+        for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
+            ret = ${t_name}_get_return(n);
+            if (ret != ${hex(expected)}u) {
+                print_str("[OFFLOAD] ${t_name} inst ");
+                print_hex(n);
+                print_str(" returned ");
+                print_hex(ret);
+                print_str(", expected ${hex(expected)}\n");
+                offload_fail("${t_name}", "wrong return value");
+            }
         }
         progress(12);
 % if offload_verbose:
@@ -433,6 +469,12 @@ int main(void) {
      * Nothing addresses the parked instance while it is down - a transaction into a gated isle
      * does not complete and no inbound fence exists to terminate it - which is why only
      * instance 0 is driven here. */
+% if t["contract"] == "control_wire":
+    /* The fetch-enable wire lives in the always-on controller: cleared BEFORE the group
+     * comes back from reset, or the clusters would fetch from their reset-default boot
+     * address the moment the reset lifts (the power-cycle trap, see _disable). */
+    OFFLOAD_SYS_REGS->fetch_enable.f.${t_name}_fetch_enable = 0;
+% endif
     ${t_name}_enable();
 % if t["sys_isolate"]:
     /* The whole group first: instance 0 has to inject into the network to report its EOC, and
@@ -464,12 +506,16 @@ int main(void) {
         }
     }
 % endif
+% if t["contract"] == "control_wire":
+    ${t_name}_set_bootaddress(0, OFFLOAD_PAYLOAD_BASE);
+    ${t_name}_start_instance(0);
+    if (${t_name}_wait_eoc_instance(0) != 0) {
+% else:
     ${t_name}_init_returns(0);
-% if t["contract"] == "memory_mapped":
     ${t_name}_set_entry(0, OFFLOAD_PAYLOAD_BASE);
     ${t_name}_start(0);
-% endif
     if (${t_name}_wait_done_instance(0) != 0) {
+% endif
         /* Names the SYMPTOM and the suspect, because a diagnostic that does not localize
          * costs hours: instance 0 answered before, and the only thing that changed is that
          * the last instance was parked. */
