@@ -49,8 +49,8 @@ for comp in all_comps:
 _boot_mode = (config.get("testbench", {}) or {}).get("boot_mode", "force")
 if _boot_mode in ("spi_flash", "i2c_eeprom") or boot_mem_name == config.host.name:
     _hf = comp_info.get(config.host.name, {}).get("fixed_params", {})
-    _spm_off = int(str(_hf.get("BootSpmOffset", "0")).strip('"\''))
-    _spm_size = int(str(_hf.get("BootSpmSize", "0")).strip('"\''))
+    _spm_off = int(str(_hf.get("HostBootSpmOffset", "0")).strip('"\''))
+    _spm_size = int(str(_hf.get("HostBootSpmSize", "0")).strip('"\''))
     _hslv = (config.host.interfaces or {}).get("axi_slave", [])
     if isinstance(_hslv, dict):
         _hslv = [_hslv]

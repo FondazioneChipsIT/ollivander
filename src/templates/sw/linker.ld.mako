@@ -37,15 +37,15 @@ for comp in all_comps:
 # names the HOST ITSELF as its boot memory, which means "link for the host's own
 # scratchpad" - the memory cheshire keeps always-on, so the boot no longer depends
 # on anything external being powered and mapped. Either way the window comes from
-# the host's contract (BootSpmOffset/Size, the JtagScratchOffset convention) and
+# the host's contract (HostBootSpmOffset/Size, the JtagScratchOffset convention) and
 # NOT from the host's first axi_slave, which is its whole address window: linking
 # for that would place the image at the base of the internal subsystem and the
 # stack past the end of a 512 MB region backed by nothing.
 boot_mode = (config.get("testbench", {}) or {}).get("boot_mode", "force")
 if boot_mode in ("spi_flash", "i2c_eeprom") or boot_mem_name == config.host.name:
     host_fixed = comp_info.get(config.host.name, {}).get("fixed_params", {})
-    spm_off  = int(str(host_fixed.get("BootSpmOffset", "0")).strip('"\''))
-    spm_size = int(str(host_fixed.get("BootSpmSize", "0")).strip('"\''))
+    spm_off  = int(str(host_fixed.get("HostBootSpmOffset", "0")).strip('"\''))
+    spm_size = int(str(host_fixed.get("HostBootSpmSize", "0")).strip('"\''))
     host_slvs = (config.host.interfaces or {}).get("axi_slave", [])
     if isinstance(host_slvs, dict):
         host_slvs = [host_slvs]

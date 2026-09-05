@@ -333,12 +333,19 @@ __attribute__((naked, section(".text.init"))) void _start(void) {
  * "unmapped" (ERROR_2 when the stack was relocated) - while the peripheral path, where
  * the control unit lives, is decoded WITH the id (an unrelocated EoC landed in instance
  * 0: one EoC out of four). So the stack and the scratch stay at instance 0's addresses
- * and only the control-unit registers move by the instance ordinal read in mhartid
- * (the cluster id above the core index, OFFLOAD_HART_INST_SHIFT) times the stride. */
+ * and only the control-unit registers move by the instance ordinal read in mhartid:
+ * mhartid = OFFLOAD_HART_BASE + instance * OFFLOAD_HART_INST_STRIDE + core, the
+ * contract's one description of the hart numbering (a stride of zero says the harts
+ * carry no ordinal, and the image serves one instance). */
 static inline uint32_t offload_inst_offs(void) {
+#if OFFLOAD_HART_INST_STRIDE
     uint32_t hartid;
     __asm__ volatile("csrr %0, mhartid" : "=r"(hartid));
-    return (hartid >> OFFLOAD_HART_INST_SHIFT) * (uint32_t)OFFLOAD_INST_STRIDE;
+    return ((hartid - (uint32_t)OFFLOAD_HART_BASE) / (uint32_t)OFFLOAD_HART_INST_STRIDE)
+           * (uint32_t)OFFLOAD_INST_STRIDE;
+#else
+    return 0u;
+#endif
 }
 
 int main(void) {
@@ -358,17 +365,22 @@ int main(void) {
 }
 
 /*
- * Common entry point of every core. The PULP-style mhartid packs the core index
- * in its low bits ({cluster_id, 1'b0, core_id[3:0]}): core 0 gets the stack and
- * the workload, everyone else parks. No .data/.bss initialization is performed:
+ * Common entry point of every core. The core index comes out of the contract's
+ * hart numbering (mhartid = base + instance * stride + core): core 0 gets the
+ * stack and the workload, everyone else parks. No .data/.bss initialization is performed:
  * the payload keeps its writable state in registers and MMIO on purpose, so the
  * flat binary image is complete as loaded and needs no runtime.
  */
 __attribute__((naked, section(".text.init"))) void _start(void) {
     __asm__ volatile(
         "csrr t0, mhartid\n"
-        "andi t0, t0, 0xF\n"                            /* core index: only core 0 runs */
-        "bnez t0, 1f\n"
+        "li   t1, " OFFLOAD_STR(OFFLOAD_HART_BASE) "\n"
+        "sub  t0, t0, t1\n"                            /* mhartid - base */
+#if OFFLOAD_HART_INST_STRIDE
+        "li   t1, " OFFLOAD_STR(OFFLOAD_HART_INST_STRIDE) "\n"
+        "remu t0, t0, t1\n"                            /* core = (mhartid - base) % stride */
+#endif
+        "bnez t0, 1f\n"                                /* only core 0 runs */
         "li   sp, " OFFLOAD_STR(OFFLOAD_STACK_TOP) "\n"  /* local memory: canonical address */
         "call main\n"
         "1:\n"

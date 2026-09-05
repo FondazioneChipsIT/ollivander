@@ -38,9 +38,9 @@ LDFLAGS = -T linker.ld -nostartfiles -Wl,--gc-sections${" " + fw_ldflags if fw_l
 _boot_mode = (config.get("testbench", {}) or {}).get("boot_mode", "force")
 _autonomous = _boot_mode in ("spi_flash", "i2c_eeprom")
 _hf = comp_info.get(config.host.name, {}).get("fixed_params", {}) if _autonomous else {}
-_zsl_guid = str(_hf.get("BootZslTypeGuid", "")).strip('"\'')
-_img_lba  = int(str(_hf.get("BootImgPayloadLba", "42")).strip('"\'')) if _autonomous else 42
-_img_pad  = int(str(_hf.get("BootImgPadLbas", "85")).strip('"\'')) if _autonomous else 85
+_zsl_guid = str(_hf.get("HostBootZslTypeGuid", "")).strip('"\'')
+_img_lba  = int(str(_hf.get("HostBootImgPayloadLba", "42")).strip('"\'')) if _autonomous else 42
+_img_pad  = int(str(_hf.get("HostBootImgPadLbas", "85")).strip('"\'')) if _autonomous else 85
 %>\
 % if _autonomous:
 all: ${app_name}.hex ${app_name}.gpt.memh
@@ -78,19 +78,22 @@ common = [
 if t["contract"] == "control_wire":
     # Instance 0's control unit and stack, plus what the ONE image needs to relocate the
     # control unit to its own instance at run time: the stride between instance windows
-    # and the bit position of the instance ordinal in mhartid (the isle's
-    # OffloadHartInstShift). The cluster's peripheral path decodes against the cluster
-    # id, so instance 0's control unit addressed from cluster n reaches instance 0 (the
-    # first mesh run: one EoC out of four); the TCDM path does not, so the stack stays
-    # put (payload_main.c). An array without the shift cannot be served by one image.
-    if t["num_instances"] > 1 and "hart_inst_shift" not in t:
+    # and how mhartid encodes the instance (the contract's OffloadHartBase and
+    # OffloadHartInstStride: mhartid = base + instance * stride + core; a stride of zero
+    # says the harts carry no instance ordinal). The cluster's peripheral path decodes
+    # against the cluster id, so instance 0's control unit addressed from cluster n
+    # reaches instance 0 (the first mesh run: one EoC out of four); the TCDM path does
+    # not, so the stack stays put (payload_main.c). An array whose harts carry no
+    # ordinal cannot be served by one image: refused.
+    if t["num_instances"] > 1 and not t.get("hart_inst_stride"):
         raise ValueError(f"[{t_name}] {t['num_instances']} instances of a control_wire target, but the isle "
-                         f"declares no OffloadHartInstShift: the payload could not locate its instance")
+                         f"declares no OffloadHartInstStride: the payload could not locate its instance")
     specific = [
         f'-DOFFLOAD_RETURN_ADDR={hex(ctrl_base + t["return_offs"])}',
         f'-DOFFLOAD_EOC_ADDR={hex(ctrl_base + t["eoc_offs"])}',
         f'-DOFFLOAD_INST_STRIDE={hex(t["instance_stride"] if t["num_instances"] > 1 else 0)}',
-        f'-DOFFLOAD_HART_INST_SHIFT={t.get("hart_inst_shift", 0)}',
+        f'-DOFFLOAD_HART_BASE={hex(t.get("hart_base", 0))}',
+        f'-DOFFLOAD_HART_INST_STRIDE={t.get("hart_inst_stride", 0)}',
     ]
 else:
     specific = [
@@ -223,7 +226,7 @@ ${app_name}.elf: main.c
 % if _autonomous:
 # The autonomous boot image: a GPT whose second partition carries
 # the firmware under the type GUID the bootrom scans for (the host contract's
-# BootZslTypeGuid) - upstream cheshire's own test-image recipe, dummy
+# HostBootZslTypeGuid) - upstream cheshire's own test-image recipe, dummy
 # partitions included, so the GPT parsing is exercised and not just humored.
 # sgdisk lives in /usr/sbin on this host class, often outside make's PATH.
 SGDISK ?= $(shell command -v sgdisk || echo /usr/sbin/sgdisk)

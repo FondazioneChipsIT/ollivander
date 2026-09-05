@@ -63,6 +63,11 @@ module cheshire_isle
   parameter int unsigned AxiNumSlvSync      = 0,
   parameter int unsigned RegNumSlvAsync     = 0,
   parameter int unsigned RegNumSlvSync      = 0,
+  // NumIntrsIn's default is the width of intr_ext_i this host is BUILT FOR: the generator
+  // keeps it unless the description overrides it, refuses a routed bit beyond it, and the
+  // registry regenerates the PLIC for internal + this many sources (regen_rv_plic.py) -
+  // one value, so the vector cheshire slices for the PLIC and the PLIC itself agree in
+  // every project, nested macros included. Unused lines read zero.
   parameter int unsigned NumIntrsIn         = 32,
   parameter int unsigned NumIntrsOut        = 32,
   // Number of EXTERNAL interrupt targets fed from intr_ext_o. Derived by the generator
@@ -87,12 +92,6 @@ module cheshire_isle
   localparam int unsigned     HostPlicEnableOffs  = 'h2000,        // RV_PLIC_IE0*_OFFSET (context 0, same remark)
   localparam int unsigned     HostPlicClaimOffs   = 'h20_0004,     // rv_plic_reg_pkg::RV_PLIC_CC0_OFFSET (context 0)
   localparam int unsigned     HostPlicExtIrqBase  = 58,            // cheshire_pkg::NumIntIntrs
-  // Width of intr_ext_i this host is built for. The generator sizes NumIntrsIn to it (and
-  // refuses a description routing a bit beyond it), and the registry regenerates the PLIC
-  // for internal + this many sources (scripts/regen_rv_plic.py): one value, so the vector
-  // cheshire slices for the PLIC and the PLIC itself agree in every project, nested macros
-  // included. 'parameters.NumIntrsIn' in a description overrides it. Unused lines read zero.
-  localparam int unsigned     HostExtIrqCapacity  = 38,
   // Ollivander Host Force-Boot configuration parameters
   // HasForceBoot: 1 indicates this host supports software force-booting in simulation
   localparam bit HasForceBoot = 1,
@@ -114,9 +113,9 @@ module cheshire_isle
   // as JtagScratchOffset. Authority: cheshire's own linkage (spm at
   // 0x1000_0000, length 0x10000, sw/link/cheshire_addrs.ldh) and params.h
   // (__BOOT_SPM_MAX_LBAS = 96 -> the GPT payload may not exceed 48 KiB).
-  localparam bit HasAutonomousBoot = 1,
-  localparam longint unsigned BootSpmOffset = 64'h1000_0000,
-  localparam longint unsigned BootSpmSize   = 64'h0001_0000,
+  localparam bit HostHasAutonomousBoot = 1,
+  localparam longint unsigned HostBootSpmOffset = 64'h1000_0000,
+  localparam longint unsigned HostBootSpmSize   = 64'h0001_0000,
   // THE SCRATCHPAD DOES NOT EXIST AT RESET, and this pair says how to know when
   // it does. That memory is the last-level cache with its ways switched to
   // scratchpad duty, and the switch is SOFTWARE: cheshire_bootrom.S waits for the
@@ -129,8 +128,8 @@ module cheshire_isle
   // observes the bootrom's own write (its commit follows three instructions
   // later, long before any burst can land). Offset from the host's window base:
   // LLC_BASE_ADDR 0x300_1000 (cheshire_addrmap_pkg) + CFG_SPM_LOW at 0x0.
-  localparam longint unsigned BootSpmReadyOffs = 64'h0300_1000,
-  localparam int unsigned     BootSpmReadyMask = 32'hFFFF_FFFF,
+  localparam longint unsigned HostBootSpmReadyOffs = 64'h0300_1000,
+  localparam int unsigned     HostBootSpmReadyMask = 32'hFFFF_FFFF,
   // The external memory DEVICES the bootrom can boot from are host-owned
   // knowledge too: the behavioral models ship with the host's own dependency
   // (cheshire's Bender graph carries them under its simulation target), and
@@ -142,31 +141,31 @@ module cheshire_isle
   // silently (the image reads back all-FF). The integers are wiring
   // facts of the bootrom (which chip select it boots from, which strap
   // value selects each source - cheshire_bootrom.c's own bootmode case).
-  localparam string       BootSpiFlashModel   = "s25fs512s",
-  localparam string       BootSpiFlashFileParam = "mem_file_name",
-  localparam int unsigned BootSpiFlashCs      = 1,
-  localparam int unsigned BootModeSpiFlash    = 2,
-  localparam string       BootI2cEepromModel  = "M24FC1025",
+  localparam string       HostBootSpiFlashModel   = "s25fs512s",
+  localparam string       HostBootSpiFlashFileParam = "mem_file_name",
+  localparam int unsigned HostBootSpiFlashCs      = 1,
+  localparam int unsigned HostBootModeSpiFlash    = 2,
+  localparam string       HostBootI2cEepromModel  = "M24FC1025",
   // The EEPROM model is the flash's opposite: it has NO native preload and
   // never initializes its array, so the contract names the ARRAY (for the
   // testbench-side fill+readmemh, race-free there) instead of a file
   // parameter. Count is upstream's fixture fact: two chips on the bus, the
   // index on A0, the image on chip 0.
-  localparam string       BootI2cEepromMemPath = "MemoryBlock",
-  localparam int unsigned BootI2cEepromCount  = 2,
-  localparam int unsigned BootModeI2cEeprom   = 3,
+  localparam string       HostBootI2cEepromMemPath = "MemoryBlock",
+  localparam int unsigned HostBootI2cEepromCount  = 2,
+  localparam int unsigned HostBootModeI2cEeprom   = 3,
   // The partition type GUID the bootrom's GPT scan boots from (params.h's
   // __BOOT_ZSL_TYPE_GUID, sgdisk spelling): the generated sw flow stamps it
   // on the firmware partition of the boot image.
-  localparam string       BootZslTypeGuid     = "0269B26A-FD95-4CE4-98CF-941401412C62",
+  localparam string       HostBootZslTypeGuid     = "0269B26A-FD95-4CE4-98CF-941401412C62",
   // Image geometry, bootrom knowledge too (upstream's own test-image recipe):
   // the LBA the firmware partition starts at and the padding the image is
   // sized with. The generated sw flow renders its sgdisk/dd recipe FROM these
   // - hardcoding them in the generic template would leak this host's layout
   // into every project's build, the same class of leak as a model name in
   // the VIP.
-  localparam int unsigned BootImgPayloadLba   = 42,
-  localparam int unsigned BootImgPadLbas      = 85,
+  localparam int unsigned HostBootImgPayloadLba   = 42,
+  localparam int unsigned HostBootImgPadLbas      = 85,
   // ForceBootPath: Hierarchical path from host wrapper top to the entry point scratch register
   localparam string ForceBootPath = "i_cheshire_soc.i_regs.field_storage.scratch[0].scratch.value",
   // ForceBootVal: Force value template (32-bit hex)

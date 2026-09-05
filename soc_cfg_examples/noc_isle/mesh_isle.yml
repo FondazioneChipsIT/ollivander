@@ -254,11 +254,11 @@ components:
         master: ["narrow"]
         slave: ["narrow"]
       axi_slave:
-        # One 4 MB window per instance, at the stride the IP itself decodes
-        # (cluster_bus_wrap: base + (instance_id << 22)); the generator refuses any other.
+        # One window per instance at the stride the IP itself decodes (cluster_bus_wrap:
+        # base + (instance_id << 22)): the isle declares it (InstanceIdStride, 4 MB) and
+        # the generator takes it as size_per_instance; a different value here is refused.
         - name: "pulp_tcdm_and_periph"
           base_addr: 0x30000000
-          size_per_instance: 0x00400000
           sync_domain: false     # the isle's ports are asynchronous (its own CDC half); the tile closes them
     system_config:
       isolate: true
@@ -379,7 +379,7 @@ testbench:
     # The HOST, meaning its internal scratchpad: the always-on memory cheshire
     # keeps for exactly this purpose, so nothing external has to be powered and
     # mapped before the first fetch. The architected loaders write it BY ADDRESS
-    # (the window comes from the host's BootSpm* contract), so no hierarchical
+    # (the window comes from the host's HostBootSpm* contract), so no hierarchical
     # path enters the design and the host tile stays a Verilator hierarchical
     # block - which a $readmemh into an L2 tile costs us.
     - instance: "i_manager"

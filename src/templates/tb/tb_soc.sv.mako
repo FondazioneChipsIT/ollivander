@@ -159,13 +159,13 @@ ${stubs_str}
     _bm_early = (config.testbench or {}).get("boot_mode", "force")
     _hf_early = comp_info.get(config.host.name, {}).get("fixed_params", {})
     if _bm_early == "i2c_eeprom":
-        _strap_early = int(str(_hf_early.get("BootModeI2cEeprom", "3")).strip('"\''))
+        _strap_early = int(str(_hf_early.get("HostBootModeI2cEeprom", "3")).strip('"\''))
     else:
-        _strap_early = int(str(_hf_early.get("BootModeSpiFlash", "2")).strip('"\''))
+        _strap_early = int(str(_hf_early.get("HostBootModeSpiFlash", "2")).strip('"\''))
 %>\
 % if _bm_early in ("spi_flash", "i2c_eeprom"):
     // Autonomous boot strap: the bootrom's own case value for the selected
-    // source, from the host contract (BootModeSpiFlash / BootModeI2cEeprom).
+    // source, from the host contract (HostBootModeSpiFlash / HostBootModeI2cEeprom).
     boot_mode_i   = 2'd${_strap_early};
 % else:
     boot_mode_i   = 2'b0;
@@ -551,14 +551,14 @@ if not uart_base:
 
 % if boot_mode == "spi_flash":
 <%
-    _flash_model = str(host_fixed.get("BootSpiFlashModel", "s25fs512s")).strip('"\'')
-    _flash_fparam = str(host_fixed.get("BootSpiFlashFileParam", "mem_file_name")).strip('"\'')
-    _flash_cs    = int(str(host_fixed.get("BootSpiFlashCs", "1")).strip('"\''))
+    _flash_model = str(host_fixed.get("HostBootSpiFlashModel", "s25fs512s")).strip('"\'')
+    _flash_fparam = str(host_fixed.get("HostBootSpiFlashFileParam", "mem_file_name")).strip('"\'')
+    _flash_cs    = int(str(host_fixed.get("HostBootSpiFlashCs", "1")).strip('"\''))
     _gpt_app     = (config.get("software_stack", {}) or {}).get("test_app", {}).get("name", "hello_world")
 %>\
   // ===========================================================================
   // Off-chip boot flash: the device the bootrom fetches from. The
-  // MODEL IS NAMED BY THE HOST CONTRACT (BootSpiFlashModel - it ships with the
+  // MODEL IS NAMED BY THE HOST CONTRACT (HostBootSpiFlashModel - it ships with the
   // host's own dependency graph and boots from the contract's chip select),
   // instantiated here and never in the VIP, which stays IP-agnostic. The four
   // data lines are the industry quad-SPI footprint (SI/SO/WPNeg/RESETNeg);
@@ -605,9 +605,9 @@ if not uart_base:
 % endif
 % if boot_mode == "i2c_eeprom":
 <%
-    _eeprom_model = str(host_fixed.get("BootI2cEepromModel", "M24FC1025")).strip('"\'')
-    _eeprom_mem   = str(host_fixed.get("BootI2cEepromMemPath", "MemoryBlock")).strip('"\'')
-    _eeprom_count = int(str(host_fixed.get("BootI2cEepromCount", "2")).strip('"\''))
+    _eeprom_model = str(host_fixed.get("HostBootI2cEepromModel", "M24FC1025")).strip('"\'')
+    _eeprom_mem   = str(host_fixed.get("HostBootI2cEepromMemPath", "MemoryBlock")).strip('"\'')
+    _eeprom_count = int(str(host_fixed.get("HostBootI2cEepromCount", "2")).strip('"\''))
     _gpt_app     = (config.get("software_stack", {}) or {}).get("test_app", {}).get("name", "hello_world")
 %>\
   // ===========================================================================
@@ -1079,19 +1079,19 @@ ${jtag_rst_str}
     # internal scratchpad is the last-level cache with its ways switched to
     # scratchpad duty, and the switch is the bootrom's own work. Loading before
     # that write earns a SLVERR on the first burst, so the agent waits for the
-    # fact the host contract names (BootSpmReadyOffs/Mask) instead of guessing a
+    # fact the host contract names (HostBootSpmReadyOffs/Mask) instead of guessing a
     # delay - the same discipline as waiting for reset release or for the debug
     # server's ACK. Emitted once, ahead of every region.
     _spm_ready = None
     if any(find_component(m['instance'], config) is not None
            and find_component(m['instance'], config).name == config.host.name
            for m in preload_mems):
-        _ready_offs = str(host_fixed.get("BootSpmReadyOffs", "")).strip('"\'')
-        _ready_mask = str(host_fixed.get("BootSpmReadyMask", "")).strip('"\'')
+        _ready_offs = str(host_fixed.get("HostBootSpmReadyOffs", "")).strip('"\'')
+        _ready_mask = str(host_fixed.get("HostBootSpmReadyMask", "")).strip('"\'')
         if not _ready_offs or not _ready_mask:
             raise ValueError(
                 "the host is a preload target (its internal scratchpad), but "
-                f"'{config.host.type}' declares no BootSpmReadyOffs/BootSpmReadyMask: "
+                f"'{config.host.type}' declares no HostBootSpmReadyOffs/HostBootSpmReadyMask: "
                 "without them the testbench cannot tell when that memory answers, "
                 "and loading it too early fails with a bus error")
         _hslv = (config.host.interfaces or {}).get("axi_slave", [])
@@ -1125,7 +1125,7 @@ ${jtag_rst_str}
     sba_base = None
     if sba_comp is not None and getattr(sba_comp, "name", None) == config.host.name:
         # The HOST as preload target means its INTERNAL scratchpad: the window is
-        # contract knowledge (BootSpmOffset), never the host's first axi_slave,
+        # contract knowledge (HostBootSpmOffset), never the host's first axi_slave,
         # which is the whole internal-subsystem window. The architected loaders
         # write by address, so the LLC-backed scratchpad needs no dotted path -
         # and the host tile keeps its Verilator hierarchical-block status.
@@ -1135,7 +1135,7 @@ ${jtag_rst_str}
             _hslv = [_hslv]
         _hb = _hslv[0].get("base_addr", 0) if _hslv else 0
         _hb = int(_hb, 0) if isinstance(_hb, str) else int(_hb)
-        sba_base = _hb + int(str(_hf.get("BootSpmOffset", "0")).strip('"\''))
+        sba_base = _hb + int(str(_hf.get("HostBootSpmOffset", "0")).strip('"\''))
     elif sba_comp:
         for slv in (getattr(sba_comp, "interfaces", {}) or {}).get("axi_slave", []):
             sba_base = slv.get("base_addr")

@@ -95,7 +95,7 @@ Two reasons to prefer the port, one per flow. Under **hierarchical verilation** 
 
 Inside the block, cast the port back to whatever type the IP wants at the inner instantiation (`cluster_subtile.sv` does `snitch_cluster_pkg::addr_t'(instance_base_addr_i)`). Where the value used to feed a `localparam` that must be elaborated - an address-map struct array, for instance - derive it with an `assign` to a wire and hand it to the IP's port instead: `l2_isle.sv` converts its four localparams and its `mapping_rules` this way. A value that genuinely cannot leave elaboration keeps the parameter form: `pulp_cluster_isle` does, because its base flows into the struct parameter `Cfg.ClusterBaseAddr` and from there into four child parameter overrides, which would mean modifying upstream IP.
 
-**An IP that derives its window from an ordinal declares `instance_id_i` instead.** `pulp_cluster` decodes `ClusterBaseAddr + (cluster_id << 22)`, so its isle takes `input logic [5:0] instance_id_i` and states the stride that decode implies as a header localparam, `InstanceIdStride` (`'h0040_0000`). The generator then hands every instance the COMPONENT's base (instance 0's window) in `InstanceBaseAddr` and its index on the port: one parameterisation for the whole array, hence one module under hierarchical verilation, and the IP itself places instance n at `base + n * InstanceIdStride`. The address map must declare that stride as `size_per_instance`; a box placed at any other stride is refused at generation time, because the IP would decode windows the map never assigned. On a crossbar the port reads zero.
+**An IP that derives its window from an ordinal declares `instance_id_i` instead.** `pulp_cluster` decodes `ClusterBaseAddr + (cluster_id << 22)`, so its isle takes `input logic [5:0] instance_id_i` and states the stride that decode implies as a header localparam, `InstanceIdStride` (`'h0040_0000`). The generator then hands every instance the COMPONENT's base (instance 0's window) in `InstanceBaseAddr` and its index on the port: one parameterisation for the whole array, hence one module under hierarchical verilation, and the IP itself places instance n at `base + n * InstanceIdStride`. The generator takes that stride as the array's `size_per_instance` (the description need not repeat it; one that declares another value is refused, because the IP would decode windows the map never assigned). On a crossbar the port reads zero.
 
 This is a **declared opt-in**, by parameter or by port: the generator acts only on what the header declares, and never matches on component types. Memory components travel the same route (section 1.5) — one convention for every self-mapping component, memories and clusters alike. The subtile consumes the parameters internally (e.g. `cluster_subtile.sv` drives the meta-generated wrapper's `cluster_base_addr_i`/`cluster_base_offset_i` ports from them, and ties `hart_base_id_i` to zero — global hart IDs deliberately repeat across the array, see the alias-region rationale in the offload contract and the open question in `docs/developer/wip/future_evolution_tasks.md`); no identity port appears on the subtile interface.
 
@@ -382,6 +382,8 @@ One component of the SoC is declared the `host` in the YAML, and the generator t
 ### 5.1 Auto-Calculated Host Parameters
 To further simplify the configuration, Ollivander automatically calculates several key architectural and interrupt-related parameters for the Host Isle based on the connectivity defined in the YAML sections. The user **should not** specify these in the `parameters` block of the host, as the generator will override them.
 
+**A header default is a capacity.** For `NumIntrsIn` the isle's own default (32 in `cheshire_isle.sv`) says how many external interrupt lines the host is built for: the generator keeps it rather than shrinking the vector to the routed count, refuses a description that routes a bit beyond it (naming the number to raise, or `parameters.NumIntrsIn` to set), and the registry regenerates the host's interrupt controller for that width through `{host.NumIntrsIn}` (environment guide, section 7). One value, declared once where the host is defined, so the vector the host slices for its PLIC and the PLIC itself agree in every project, nested macros included.
+
 #### Bus Interface Counts (Crossbar/NoC Sizing)
 To properly dimension the Host's internal crossbar arrays or NoC injection points, Ollivander aggregates the total number of master and slave interfaces in the system:
 
@@ -444,18 +446,18 @@ A host whose bootrom can fetch the firmware from an external memory device by it
 
 | Localparam | Meaning |
 | :--- | :--- |
-| `HasAutonomousBoot` (`bit`) | `1` declares the autonomous boot roads. |
-| `BootSpmOffset` / `BootSpmSize` (`longint unsigned`) | The internal scratchpad the bootrom loads into, as an offset inside the host's address window plus its size: the generated linker script links the autonomous firmware for this region instead of the project's boot memory. |
-| `BootSpiFlashModel` (`string`) | Module name of the behavioral SPI NOR flash model (ships with the host's own Bender graph). |
-| `BootSpiFlashFileParam` (`string`) | The model's preload-file PARAMETER name. The image must go through the model's own preload mechanism: the model blank-fills its array from an initial block, and a testbench-side `$readmemh` races that fill at time zero and loses silently. |
-| `BootSpiFlashCs` (`int unsigned`) | The chip select the bootrom boots from (the project must build the SPI master with enough chip selects to cover it). |
-| `BootModeSpiFlash` (`int unsigned`) | The `boot_mode_i` strap value for the SPI-flash source. |
-| `BootI2cEepromModel` (`string`) | Module name of the behavioral I2C EEPROM model. |
-| `BootI2cEepromMemPath` (`string`) | The model's memory ARRAY name - the flash's opposite: this model has no native preload and never initializes its array, so the testbench-side fill-and-load is the only way and is race-free there. |
-| `BootI2cEepromCount` (`int unsigned`) | How many chips sit on the bus (upstream's fixture fact: two, the index on the `A0` pin, the image preloaded on chip 0). |
-| `BootModeI2cEeprom` (`int unsigned`) | The `boot_mode_i` strap value for the I2C-EEPROM source. |
-| `BootZslTypeGuid` (`string`) | The partition type GUID the bootrom's GPT scan boots from (`sgdisk` spelling); the software flow stamps it on the firmware partition of the boot image. |
-| `BootImgPayloadLba` / `BootImgPadLbas` (`int unsigned`) | Image geometry, bootrom knowledge too: the LBA the firmware partition starts at, and the padding the image is sized with (upstream's own test-image recipe). |
+| `HostHasAutonomousBoot` (`bit`) | `1` declares the autonomous boot roads. |
+| `HostBootSpmOffset` / `HostBootSpmSize` (`longint unsigned`) | The internal scratchpad the bootrom loads into, as an offset inside the host's address window plus its size: the generated linker script links the autonomous firmware for this region instead of the project's boot memory. |
+| `HostBootSpiFlashModel` (`string`) | Module name of the behavioral SPI NOR flash model (ships with the host's own Bender graph). |
+| `HostBootSpiFlashFileParam` (`string`) | The model's preload-file PARAMETER name. The image must go through the model's own preload mechanism: the model blank-fills its array from an initial block, and a testbench-side `$readmemh` races that fill at time zero and loses silently. |
+| `HostBootSpiFlashCs` (`int unsigned`) | The chip select the bootrom boots from (the project must build the SPI master with enough chip selects to cover it). |
+| `HostBootModeSpiFlash` (`int unsigned`) | The `boot_mode_i` strap value for the SPI-flash source. |
+| `HostBootI2cEepromModel` (`string`) | Module name of the behavioral I2C EEPROM model. |
+| `HostBootI2cEepromMemPath` (`string`) | The model's memory ARRAY name - the flash's opposite: this model has no native preload and never initializes its array, so the testbench-side fill-and-load is the only way and is race-free there. |
+| `HostBootI2cEepromCount` (`int unsigned`) | How many chips sit on the bus (upstream's fixture fact: two, the index on the `A0` pin, the image preloaded on chip 0). |
+| `HostBootModeI2cEeprom` (`int unsigned`) | The `boot_mode_i` strap value for the I2C-EEPROM source. |
+| `HostBootZslTypeGuid` (`string`) | The partition type GUID the bootrom's GPT scan boots from (`sgdisk` spelling); the software flow stamps it on the firmware partition of the boot image. |
+| `HostBootImgPayloadLba` / `HostBootImgPadLbas` (`int unsigned`) | Image geometry, bootrom knowledge too: the LBA the firmware partition starts at, and the padding the image is sized with (upstream's own test-image recipe). |
 
 Generation-time validation: the autonomous modes are refused unless the matching interface is exported (`"spi"` / `"i2c"` in `export_interfaces`), and they take NO `preload_mode`/`preload_memories` - the image travels inside the boot device.
 
@@ -580,7 +582,7 @@ Parameters common to both kinds:
 
 *   **`OffloadEntryOffs`** (`int unsigned`): Offset, inside the peripheral block, of the entry-point register the IP's bootrom jumps through.
 *   **`OffloadWakeOffs`** (`int unsigned`): Offset, inside the peripheral block, of the CLINT set register the host writes the wake mask to.
-*   **`OffloadHartBase`** (`int unsigned`): First hart id of the cluster (snitch-family harts are numbered globally): the payload derives its core index as `mhartid - OffloadHartBase`.
+*   **`OffloadHartBase`** / **`OffloadHartInstStride`** (`int unsigned`, both contracts): the one description of the hart numbering, `mhartid = OffloadHartBase + instance * OffloadHartInstStride + core`. The payload derives its core index and, where the stride is non-zero, its instance ordinal from it - `pulp_cluster` (`{cluster_id, 1'b0, core_id}`: base 0, stride 32) relocates its control-unit accesses by that ordinal. A stride of zero, or none declared, says the harts carry no instance ordinal (the snitch subtile: `hart_base_id_i` tied to zero on every instance, the instance known through the local alias instead).
 
 **Return-code convention (memory_mapped)**: core 0's slot carries the workload checksum; every SECONDARY core returns one distinctive generator-owned code (`offload_secondary_code`, single-sourced into the payload's `-D` set and the host firmware's check), and the host verifies it per-core, exactly. A dead core is caught by the done-bit poll, a wrong-path core by the code check, and the two failures print differently on purpose — gwaihir's exact-accounting practice.
 
@@ -596,6 +598,21 @@ The contract alone does not make a component an offload target: the generated fi
 ### 8.3 Reference Implementation
 
 `pulp_cluster_isle.sv` carries the reference `"control_wire"` contract; the authority for its offsets is the wrapped IP's own control unit (`cluster_control_unit.sv` of `cluster_peripherals`), and the header comment of the block records that derivation. `spatz_cluster_isle.sv` and `cluster_subtile.sv` carry the reference `"memory_mapped"` contracts; their authority is the IP's peripheral register description (`spatz_cluster_peripheral_reg.hjson`) plus the cluster bootrom, and their header comments record both the derivation and the bootrom patching it forced (see `patch_spatz.py` in the dependency registry). When wrapping a new cluster IP, derive the offsets the same way — from the RTL or register description behind the slave window, never from a software header of a reference project.
+
+### 5.6 Index of the Header Contracts
+
+Every value the generator reads from a wrapper header without elaborating it is a `localparam` literal in one of these families, named by the side that publishes it. This table is the map; the sections own the definitions.
+
+| Family | Published by | What it tells the generator | Section |
+| :--- | :--- | :--- | :--- |
+| `InstanceBaseAddr` / `InstanceWindowSize` (parameters), `instance_base_addr_i` / `instance_id_i` (ports), `InstanceIdStride` | any component that decodes its own window | where its window starts and how large it is (filled BY the generator), or which ordinal it derives it from and at what stride (imposed BY the IP) | 1.5, 1.6 |
+| `Preload*` | a memory | how the testbench preloads it: type, groups, banks, interleave, template | 2.1 |
+| `IrqSource*` | a component whose interrupt lines a program can raise | the port, the per-line stride and the enable/set/clear offsets the interrupt route witness writes | 3.1 |
+| `Offload*` | an offload target | the start protocol (`control_wire` / `memory_mapped`), the register layout behind its window, the hart numbering, the payload ISA/ABI, the collective slots and the wide user layout | 8.1 |
+| `HostBoot*`, `HostHasAutonomousBoot` | the host | the internal scratchpad the bootrom loads into, the autonomous boot devices and straps | 5.4 |
+| `HostPlic*` | the host | where its PLIC is and which source id its first external line takes | 5.5 |
+
+Two rules bind them all: scalars and strings only (never `localparam type`), and self-contained literals or one-hop references within the header (section 8.1). A family's snake_cased names are what the generator's templates see (`OffloadCtrlOffs` reads as `ctrl_offs`).
 
 # Part 2 - Particularities of an Isle
 
@@ -791,7 +808,7 @@ However, if you are designing a **truly reusable** Custom Tile meant to be insta
 
 *Note: Because Custom Tiles natively instantiate the NoC router, they must often rely on the auto-generated NoC configuration package (e.g., `AxiCfgN`, `AxiCfgW`, `RouteCfg`) provided by FlooGen, rather than relying solely on scalar parameters.*
 
-### 5.5 Host Interrupt Contract (`Host*` localparams)
+### 5.5 Host PLIC Contract (`HostPlic*` localparams)
 
 What the generated firmware needs to OBSERVE an external interrupt line at the host's PLIC without an interrupt handler, declared by the host isle as literals and checked against the pinned IP at elaboration (`cheshire_isle.sv` does both, so a bump of Cheshire that moves a value fails the self-check rather than the test). The generator reads them like the `Offload*` contract and emits the interrupt route witness of the offload test (configuration guide, section 5.1) only when the block exists.
 
@@ -800,4 +817,3 @@ What the generated firmware needs to OBSERVE an external interrupt line at the h
 | `HostPlicBase` (`longint unsigned`) | Base address of the PLIC in the host's map. |
 | `HostPlicPrioOffs`, `HostPlicPendingOffs`, `HostPlicEnableOffs`, `HostPlicClaimOffs` (`int unsigned`) | Offsets of the priority array, the pending words, the enable words of context 0 and the claim/complete register of context 0. |
 | `HostPlicExtIrqBase` (`int unsigned`) | PLIC source id of `intr_ext_i[0]`: the host concatenates `{external, internal}`, so external line k is source `HostPlicExtIrqBase + k`. |
-| `HostExtIrqCapacity` (`int unsigned`) | Width of `intr_ext_i` the host is built for. The generator sizes `NumIntrsIn` to it (a description routing a bit beyond it is refused; `parameters.NumIntrsIn` overrides), and the registry regenerates the host's interrupt controller for that width through `{host.NumIntrsIn}` (environment guide, section 7) - one value, so the vector the host slices for its PLIC and the PLIC itself agree in every project, nested macros included. |

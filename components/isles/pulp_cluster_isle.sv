@@ -94,14 +94,16 @@ module pulp_cluster_isle
   // Top of the cluster-local memory the payload may use as its stack, as an offset
   // from the component's base address (the TCDM size, ClusterCfg.TcdmSize below).
   localparam int unsigned OffloadStackOffs      = 'h0002_0000,
-  // Bit position of the instance ordinal (the cluster id, instance_id_i) in the cores'
-  // mhartid ({cluster_id[5:0], 1'b0, core_id[3:0]}). The one payload image built for an
-  // array of these clusters relocates its CONTROL-UNIT accesses by it: the peripheral
-  // interconnect decodes that region against the cluster id, so instance 0's control
-  // unit addressed from cluster n reaches instance 0. The TCDM path is decoded without
-  // the id - instance 0's local-memory addresses are every cluster's own TCDM, and the
-  // windows above are refused - so stack and scratch are NOT relocated.
-  localparam int unsigned OffloadHartInstShift  = 5,
+  // How mhartid encodes (instance, core): mhartid = OffloadHartBase + instance *
+  // OffloadHartInstStride + core, here {cluster_id[5:0], 1'b0, core_id[3:0]} so base 0
+  // and stride 32. The one payload image built for an array of these clusters relocates
+  // its CONTROL-UNIT accesses by the instance it reads there: the peripheral interconnect
+  // decodes that region against the cluster id, so instance 0's control unit addressed
+  // from cluster n reaches instance 0. The TCDM path is decoded without the id - instance
+  // 0's local-memory addresses are every cluster's own TCDM, and the windows above are
+  // refused - so stack and scratch are NOT relocated.
+  localparam int unsigned OffloadHartBase       = 0,
+  localparam int unsigned OffloadHartInstStride = 32,
   // Number of cores the boot-address loop and the payload's hart demux must cover, and
   // the ISA/ABI the payload is cross-compiled for (RI5CY: rv32 integer multiply subset,
   // deliberately conservative - no compressed, no Xpulp - so any rv32 multilib fits;

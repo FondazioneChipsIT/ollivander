@@ -596,12 +596,13 @@ module ${p_name}_${c_type}
           # exactly as the ForceBoot* one does. The Slink* preload contract
           # follows for the same reason; its values are EXPRESSIONS over isle params
           # the tile header re-declares, so they keep resolving in tile scope.
-          # The Boot* family joins them: it locates the host's internal scratchpad
-          # (BootSpmOffset/Size) and names the autonomous boots' device models and
-          # straps. Absent from this list, both the internal-scratchpad boot memory
-          # and the autonomous boot modes were silently unavailable on the NoC
-          # family - the generator would look for a contract the tile had dropped.
-          if param_name.startswith("Preload") or param_name.startswith("ForceBoot") or param_name.startswith("Jtag") or param_name.startswith("SlinkAxi") or param_name.startswith("Boot") or param_name in ["HasEcc", "EccType", "HasForceBoot", "HasJtagBoot", "HasSlinkPreload", "HasAutonomousBoot"]:
+          # The Host* family joins them: the boot contract locates the host's internal
+          # scratchpad (HostBootSpmOffset/Size) and names the autonomous boots' device
+          # models and straps, the PLIC contract sizes the interrupt route witness.
+          # Absent from this list, both the internal-scratchpad boot memory and the
+          # autonomous boot modes were silently unavailable on the NoC family - the
+          # generator would look for a contract the tile had dropped.
+          if param_name.startswith("Preload") or param_name.startswith("ForceBoot") or param_name.startswith("Jtag") or param_name.startswith("SlinkAxi") or param_name.startswith("Host") or param_name in ["HasEcc", "EccType", "HasForceBoot", "HasJtagBoot", "HasSlinkPreload", "HostHasAutonomousBoot"]:
               if param_name in ["PreloadTemplate", "ForceBootPath"]:
                   clean_val = p_val.strip("\"'")
                   p_val = f'"i_isle.{clean_val}"'

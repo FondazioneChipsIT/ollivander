@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field, model_validator
 from core.sv_parser import get_isle_info
+from core.utils import instance_count
 
 
 # ==============================================================================
@@ -966,7 +967,7 @@ def validate_cross_references(config: OllivanderConfig):
                           f"{_suggest(boot_memory, comp_names)}")
 
     # NAMING THE HOST as the boot memory means "the host's own internal scratchpad":
-    # the always-on memory its contract locates (BootSpmOffset/Size), so the boot
+    # the always-on memory its contract locates (HostBootSpmOffset/Size), so the boot
     # depends on nothing external being powered and mapped. It composes with the
     # ARCHITECTED preloads only, and not for lack of effort: on cheshire that
     # scratchpad IS the last-level cache with its ways switched to SPM duty, so a
@@ -1392,7 +1393,28 @@ def validate_soc_components(config: OllivanderConfig, search_paths: list[Path] =
         info = get_isle_info(c_type, search_paths, exclude_dir)
         if not info:
             continue # Skip if file not found
-            
+
+        # 0. AN ISLE THAT DERIVES ITS WINDOW FROM AN ORDINAL FEEDS THE ADDRESS MAP. Such an isle
+        #    (instance_id_i, component standardization 1.6) states the stride its IP decodes as
+        #    'InstanceIdStride'; the description need not repeat it: an array of it takes that
+        #    stride as its 'size_per_instance' here, before anything reads the window, and a
+        #    'size_per_instance' that says otherwise is refused - the IP would decode windows the
+        #    map never assigned. One number, declared once, by the side that imposes it.
+        _id_stride = (info.get("fixed_params") or {}).get("InstanceIdStride")
+        if _id_stride is not None and comp.interfaces and comp.interfaces.get('axi_slave') and instance_count(comp) > 1:
+            _slvs = comp.interfaces['axi_slave']
+            _slv0 = _slvs[0] if isinstance(_slvs, list) else _slvs
+            if isinstance(_slv0, dict):
+                _want = int(str(_id_stride), 0)
+                _have = _slv0.get('size_per_instance')
+                if _have is None:
+                    _slv0['size_per_instance'] = _want
+                elif isinstance(_have, (list, tuple)) or int(str(_have), 0) != _want:
+                    raise ValueError(
+                        f"\n[{comp.name}] '{c_type}' derives its window from instance_id_i at a fixed stride "
+                        f"of {_want:#x} (InstanceIdStride), but the description declares size_per_instance = "
+                        f"{_have}: drop it, or make it {_want:#x}.")
+
         # 1. PARAMETER SUPPORT CHECK: Prevent users from setting parameters in YAML 
         #    that do not physically exist as 'parameter' in the module's SV header.
         if comp.parameters is not None:
@@ -1906,31 +1928,36 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: list[Path] =
 
 
 def resolve_host_contract(config: OllivanderConfig, search_paths: list[Path] = None,
-                          exclude_dir: str = None, original_types: dict[str, str] = None) -> dict[str, int]:
+                          exclude_dir: str = None, original_types: dict[str, str] = None) -> dict[str, Any]:
     """
-    The host isle's Host* localparams, snake_cased and resolved to integers: the firmware
-    generator's view of what the host publishes about itself (today the PLIC contract of
-    cheshire_isle.sv - base, pending-word offset, source id of the first external line),
-    which is what lets the generated test observe a routed interrupt line at the PLIC
-    without an interrupt handler. Read from the isle header like the Offload* contract, so
-    a host without the block simply yields an empty mapping and the firmware emits no such
-    check. On a mesh the host is wrapped in a tile, hence the original-type lookup.
+    The host isle's Host* localparams, snake_cased: the whole family the host publishes about
+    itself - the PLIC contract (plic_base, plic_pending_offs, ..., plic_ext_irq_base: what lets
+    the generated test observe a routed interrupt line at the PLIC without an interrupt handler)
+    and the boot contract (boot_spm_offset, boot_spi_flash_model, has_autonomous_boot, ...).
+    Integer literals become ints, string literals lose their quotes, anything else is an error.
+    Read from the isle header like the Offload* contract, so a host without a block simply
+    lacks its keys and the consumer emits nothing. On a mesh the host is wrapped in a tile,
+    hence the original-type lookup.
     """
     host = config.host
     h_type = original_types.get(host.name, host.type) if original_types else host.type
     info = get_isle_info(h_type, search_paths, exclude_dir)
     if not info:
         return {}
-    contract: dict[str, int] = {}
+    contract: dict[str, Any] = {}
     for k, v in info["fixed_params"].items():
         if not k.startswith("Host"):
             continue
+        val = str(v).strip()
+        if val.startswith('"') and val.endswith('"'):
+            contract[_snake_case(k[len("Host"):])] = val.strip('"')
+            continue
         try:
-            contract[_snake_case(k[len("Host"):])] = int(str(v).strip(), 0)
+            contract[_snake_case(k[len("Host"):])] = int(val, 0)
         except ValueError:
             raise ValueError(
                 f"\n[HOST CONTRACT ERROR] in the host '{host.name}' ({h_type}): the localparam "
-                f"'{k}' resolves to '{v}', not an integer literal.")
+                f"'{k}' resolves to '{v}', neither an integer nor a string literal.")
     return contract
 
 

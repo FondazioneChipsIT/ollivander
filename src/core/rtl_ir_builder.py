@@ -683,29 +683,14 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 # 'ClusterBaseAddr + (cluster_id << 22)' - declares 'instance_id_i' and
                 # receives its index here; its InstanceBaseAddr is then the COMPONENT's
                 # base (instance 0), identical for every instance, so the tile stays one
-                # module under hierarchical verilation. The header states the stride the
-                # IP implies ('InstanceIdStride'), and a box placed at any other stride is
-                # refused: the IP would decode windows the address map never assigned.
+                # module under hierarchical verilation. The stride the IP implies
+                # ('InstanceIdStride') already sized the address map (soc_schema,
+                # validate_soc_components), so the windows resolved below agree with it.
                 _id_port = "instance_id_i" in tile_ports
                 if _id_port:
                     _idw = re.findall(r'\[(\d+):0\]', tile_ports["instance_id_i"]["type_dim"])
                     _idw = int(_idw[0]) + 1 if _idw else 1
                     inst.connections.append(PortConnection("instance_id_i", f"{_idw}'d{inst_idx}"))
-                    _fixed = c_info.get("fixed_params", {}) or {}
-                    _id_stride = _fixed.get("InstanceIdStride")
-                    slaves_id = (c.interfaces or {}).get("axi_slave", [])
-                    if isinstance(slaves_id, dict):
-                        slaves_id = [slaves_id]
-                    if _id_stride is not None and slaves_id and instance_count(c) > 1:
-                        _wins = resolve_instance_windows(slaves_id[0], instance_count(c))
-                        _want = int(str(_id_stride).replace("'h", "0x").replace("_", ""), 0)
-                        for _k in range(1, len(_wins)):
-                            if _wins[_k][0] - _wins[_k - 1][0] != _want:
-                                raise ValueError(
-                                    f"[{c.name}] instance {_k} sits {_wins[_k][0] - _wins[_k - 1][0]:#x} "
-                                    f"after instance {_k - 1}, but {c.type} derives its window from "
-                                    f"instance_id_i at a fixed stride of {_want:#x} (InstanceIdStride): "
-                                    f"declare size_per_instance accordingly")
 
                 base_is_port = "instance_base_addr_i" in tile_ports
                 wants_base = base_is_port or "InstanceBaseAddr" in supported

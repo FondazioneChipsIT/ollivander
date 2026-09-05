@@ -1232,8 +1232,8 @@ class RTLGenerator:
                 # whole internal-subsystem region. Same resolution as the linker's.
                 _hf = comp_info.get(self.soc_config.host.name, {}).get("fixed_params", {})
                 _, _hb, _ = _slave_window(boot_mem_name, "host window")
-                b_addr = _hb + int(str(_hf.get("BootSpmOffset", "0")).strip('"\''), 0)
-                b_size = int(str(_hf.get("BootSpmSize", "0")).strip('"\''), 0)
+                b_addr = _hb + int(str(_hf.get("HostBootSpmOffset", "0")).strip('"\''), 0)
+                b_size = int(str(_hf.get("HostBootSpmSize", "0")).strip('"\''), 0)
             else:
                 _, b_addr, b_size = _slave_window(boot_mem_name, "payload region (via 'boot_memory')")
 

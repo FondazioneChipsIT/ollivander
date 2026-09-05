@@ -178,8 +178,9 @@ P = project_name.upper()
  * fetch-enable and EoC fields) and reaches each instance's control unit through its
  * own window. One payload image serves the array: it is built with instance 0's
  * addresses and relocates the control-unit ones at run time by the instance ordinal
- * it reads in mhartid (the isle's OffloadHartInstShift) times the window stride; the
- * local memory needs no relocation (payload_main.c explains the two decodes). */
+ * it reads in mhartid (the contract's OffloadHartBase / OffloadHartInstStride) times
+ * the window stride; the local memory needs no relocation (payload_main.c explains
+ * the two decodes). */
 #define ${T}_OFFLOAD_INST_CTRL(i)   (${T}_OFFLOAD_INST_BASE(i) + ${hex(t["ctrl_offs"])}u)
 #define ${T}_OFFLOAD_EOC_REG(i)        (${T}_OFFLOAD_INST_CTRL(i) + ${hex(t["eoc_offs"])}u)
 #define ${T}_OFFLOAD_BOOT_ADDR_REG(i)  (${T}_OFFLOAD_INST_CTRL(i) + ${hex(t["boot_addr_offs"])}u)

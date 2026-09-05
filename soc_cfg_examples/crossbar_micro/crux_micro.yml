@@ -112,7 +112,7 @@ host:
     Bootrom: true
     Uart: true
     I2c: false
-    # The flash boots from chip select 1 (the host contract's BootSpiFlashCs),
+    # The flash boots from chip select 1 (the host contract's HostBootSpiFlashCs),
     # so the SPI master needs two chip selects.
     SpiHost: true
     SpihNumCs: 2
@@ -165,7 +165,7 @@ testbench:
   # preloaded with the GPT image the sw flow builds, and the bootrom does the
   # rest. NO preload_mode / preload_memories: the image travels inside the
   # boot device, and the firmware is linked for the host's internal
-  # scratchpad (BootSpmOffset/Size), not for the L2.
+  # scratchpad (HostBootSpmOffset/Size), not for the L2.
   boot_mode: spi_flash
   boot_timeout_ns: 10000000
   boot_timeout_fast_ns: 2000000

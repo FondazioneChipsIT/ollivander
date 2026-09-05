@@ -71,20 +71,20 @@ def autoconfigure_host(soc_config, ext_irq_capacity=None):
                 if indices:
                     host_num_intrs_in = max([int(i) for i in indices]) + 1
 
-    # 1b. A DECLARED CAPACITY WINS OVER THE ROUTED COUNT. A host isle may state how many
-    #     external interrupt lines it is built for ('HostExtIrqCapacity' in its header): its
-    #     interrupt controller is regenerated for exactly that width (a registry pre-build step
-    #     reading '{host.NumIntrsIn}'), and every host of a Bender tree - a project and the
-    #     macro it nests - must agree on it, which a per-project routed count cannot guarantee.
-    #     So the vector takes the capacity, unused bits read zero, and a description routing a
-    #     bit beyond it is refused here with the number to raise. 'parameters.NumIntrsIn' in
-    #     the description still overrides both (setdefault below), for a host built otherwise.
+    # 1b. THE HEADER DEFAULT IS THE CAPACITY. The isle's own default of 'NumIntrsIn' says how
+    #     many external interrupt lines the host is built for: its interrupt controller is
+    #     regenerated for exactly that width (a registry pre-build step reading
+    #     '{host.NumIntrsIn}'), and every host of a Bender tree - a project and the macro it
+    #     nests - must agree on it, which a per-project routed count cannot guarantee. So the
+    #     vector takes the default, unused bits read zero, and a description routing a bit
+    #     beyond it is refused here with the number to raise. 'parameters.NumIntrsIn' in the
+    #     description still overrides (setdefault below), for a host built otherwise.
     if ext_irq_capacity is not None:
         if host_num_intrs_in > int(ext_irq_capacity):
             raise ValueError(
                 f"[{soc_config.host.name}] intr_ext_i routes bit {host_num_intrs_in - 1}, but the host "
-                f"isle declares room for {ext_irq_capacity} external interrupt lines (HostExtIrqCapacity): "
-                f"raise it in the isle header, or set parameters.NumIntrsIn to at least {host_num_intrs_in}.")
+                f"isle is built for {ext_irq_capacity} external interrupt lines (its NumIntrsIn default): "
+                f"raise that default, or set parameters.NumIntrsIn to at least {host_num_intrs_in}.")
         host_num_intrs_in = int(ext_irq_capacity)
 
     # 2. Calculate sizes for other Host-exported interrupt/debug signals.
@@ -328,8 +328,8 @@ def check_boot_memory_executable(soc_config, comp_info):
             return default
 
     host_base, _ = _first_axi_slave_window(host)
-    spm_off = contract_int("BootSpmOffset")
-    spm_size = contract_int("BootSpmSize")
+    spm_off = contract_int("HostBootSpmOffset")
+    spm_size = contract_int("HostBootSpmSize")
 
     # The host's own scratchpad: executable by construction (it is what its bootrom
     # runs from), so naming the host is always valid - provided the contract that
@@ -338,7 +338,7 @@ def check_boot_memory_executable(soc_config, comp_info):
     if boot_mem_name == host.name:
         if spm_off is None or spm_size is None or host_base is None:
             print(f"[ERROR] boot_memory '{boot_mem_name}' names the host, meaning its internal")
-            print(f"        scratchpad, but '{host.type}' declares no BootSpmOffset/BootSpmSize")
+            print(f"        scratchpad, but '{host.type}' declares no HostBootSpmOffset/HostBootSpmSize")
             print(f"        contract: there is no window to link the firmware for.")
             sys.exit(1)
         # That scratchpad is the last-level cache with its ways in SPM mode, so a
