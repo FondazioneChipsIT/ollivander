@@ -153,7 +153,7 @@ package ${pkg};
 <%
   from core.macro_boundary import clog2
   user_span = noc_user_widths['narrow']
-  is_isle = config.project.macro_settings.export_type == "isle"
+  is_joined = config.project.macro_settings.boundary != "dual"
   mst_id_w = g_id_w + clog2(max(num_internal_masters, 2))
 %>
 
@@ -162,11 +162,11 @@ package ${pkg};
   // =========================================================================
   // Read by a parent that nests this macro (src/core/macro_boundary.py). Which
   // numbers appear is itself the signal, so the reader needs no notion of export
-  // type: an isle publishes the ID width it *imposes*, a subtile the widths it
-  // *accepts*.
-% if is_isle:
+  // type: a single or joined boundary publishes the ID width it *imposes*, a dual
+  // boundary the widths it *accepts*.
+% if is_joined:
   //
-  // An isle joins its two networks into a single exported master port whose ID
+  // A joined boundary folds its networks into a single exported master port whose ID
   // comes from the crossbar behind it. That width is not negotiable: retyping the
   // port narrower would alias its IDs, so a network this macro plugs into must be
   // at least this wide. The user span is the part of the field carrying semantics.
@@ -175,7 +175,7 @@ package ${pkg};
   localparam int unsigned MacroMstUserSpan  = ${user_span};
 % else:
   //
-  // A subtile plugs its slave ports straight into the chimneys of its own network,
+  // A dual boundary plugs its slave ports straight into the chimneys of its own network,
   // which accept these widths. A parent network wider than this would be truncated
   // at the boundary, so they are an upper bound rather than something to adapt: the
   // parent refuses instead, and this project has to be regenerated wider. The

@@ -119,11 +119,11 @@ module ${top_level_module_name}
 <%
   is_macro = config.project.build_mode == "macro"
   has_macro_types = is_macro and config.project.macro_settings
-  ## The exported master of an isle macro is the joined port, whose ID comes from the
-  ## interconnect behind it and is published as MacroMstIdWidth. A subtile exports the
-  ## network's input type on both directions, so both widths are the same one.
-  is_isle_macro = has_macro_types and config.project.macro_settings.export_type == "isle"
-  out_id_w = f"{pkg}::MacroMstIdWidth" if is_isle_macro else f"{pkg}::AxiIdWidth"
+  ## The exported master of a single or joined boundary is the joined port, whose ID comes
+  ## from the interconnect behind it and is published as MacroMstIdWidth. A dual boundary
+  ## exports the network's input type on both directions, so both widths are the same one.
+  is_joined_macro = has_macro_types and config.project.macro_settings.boundary != "dual"
+  out_id_w = f"{pkg}::MacroMstIdWidth" if is_joined_macro else f"{pkg}::AxiIdWidth"
 %>
 #(
   // Standard geometry, referenced from the SoC package rather than re-emitted here.
@@ -150,7 +150,7 @@ module ${top_level_module_name}
   parameter type axi_master_req_t  = ${pkg}::soc_axi_slv_req_t,
   parameter type axi_master_resp_t = ${pkg}::soc_axi_slv_resp_t,
 %   endif
-  // Boundary AXI types of a subtile macro, one pair per network. Both the slave
+  // Boundary AXI types of a dual-boundary macro, one pair per network. Both the slave
   // and the master port carry the *input* type of the network, which is what a
   // manager attached to a FlooNoC network looks like. FlooNoC compresses IDs
   // across a network (InIdWidth > OutIdWidth), so the output of one chimney can
@@ -189,7 +189,7 @@ module ${top_level_module_name}
 <%
   all_extra_ports_list = list(all_extra_ports)
   if config.project.build_mode == "macro" and config.project.macro_settings:
-      if config.project.macro_settings.export_type == "isle":
+      if config.project.macro_settings.boundary != "dual":
           if config.project.macro_settings.slaves:
               all_extra_ports_list.extend(["input  axi_req_t  axi_req_i", "output axi_resp_t axi_resp_o"])
           if config.project.macro_settings.masters:
@@ -408,14 +408,14 @@ ${interrupt_routing(irq, pkg, require_file)}
  % for (tx, ty, tdir), info in macro_targets.items():
   // --- Border Adapter @ [${tx}, ${ty}] ${tdir} ---
   <%
-    is_isle = config.project.macro_settings.export_type == "isle"
+    is_joined = config.project.macro_settings.boundary != "dual"
     has_slaves = len(info["slaves"]) > 0
     has_masters = len(info["masters"]) > 0
     
-    has_narrow_in = has_slaves and ("narrow" in info["slaves"] or not is_isle)
-    has_wide_in = has_slaves and ("wide" in info["slaves"] or is_isle)
-    has_narrow_out = has_masters and ("narrow" in info["masters"] or is_isle)
-    has_wide_out = has_masters and ("wide" in info["masters"] or is_isle)
+    has_narrow_in = has_slaves and ("narrow" in info["slaves"] or not is_joined)
+    has_wide_in = has_slaves and ("wide" in info["slaves"] or is_joined)
+    has_narrow_out = has_masters and ("narrow" in info["masters"] or is_joined)
+    has_wide_out = has_masters and ("wide" in info["masters"] or is_joined)
     
     c_name = f"border_{tx}_{ty}_{tdir}"
   %>
@@ -498,7 +498,7 @@ ${interrupt_routing(irq, pkg, require_file)}
     .floo_wide_i         ( ${c_name}_floo_wide_i )
   );
 
-  % if is_isle:
+  % if is_joined:
    % if has_slaves:
   always_comb begin
     ${c_name}_wide_in_req = axi_req_i;

@@ -1,16 +1,16 @@
-# Ollivander Component Standardization: Isles, Subtiles and Tiles
+# Ollivander Component Standardization: the Isle
 
-This is the single contract a hardware component must satisfy to be integrated by the Ollivander SoC Generator. It replaces the three guides that preceded it - `isle_standardization.md`, `subtile_standardization.md` and `tile_standardization.md` - which described three levels of what is largely one contract: 947 lines across three files, nine section titles identical in all three, and ownership of individual rules already scattered between them (the isle guide pointed at the subtile guide for the parameter-verification rule, both pointed at the isle guide for memory preloading, and all three restated the dependency mechanism in full).
+This is the single contract a hardware component must satisfy to be integrated by the Ollivander SoC Generator. It replaces the three guides that preceded it - `isle_standardization.md`, `subtile_standardization.md` and `tile_standardization.md` - which described three levels of what is largely one contract: 947 lines across three files, nine section titles identical in all three, and ownership of individual rules already scattered between them (the isle guide pointed at the subtile guide for the parameter-verification rule, both pointed at the isle guide for memory preloading, and all three restated the dependency mechanism in full). Since 2026-09-05 there is one kind of component, the Isle: the Subtile proved to be an Isle with two networks, and the hand-written Custom Tile was withdrawn (the generated tile embeds too many generation-time decisions for a hand-written one to follow; `docs/developer/wip/future_evolution_tasks.md`, chapter 14).
 
-**How to read it.** **Part 1 is the contract**, and it applies to every level: read it in full whichever kind of component you are writing. **Parts 2, 3 and 4 state only the particularities** of an Isle, a Subtile and a Custom Tile respectively - what that level adds, what it replaces, and what does not apply to it. A particularity chapter never restates a rule from Part 1, so "not mentioned there" always means "as in Part 1".
+**How to read it.** **Part 1 is the contract**, and it applies to every Isle: read it in full. **Part 2 states only the particularities** that follow from a property an isle may have - two networks, the host role, a dedicated LLC port, a project exported as a macro - what that property adds, what it replaces, and what does not apply to it. Part 2 never restates a rule from Part 1, so "not mentioned there" always means "as in Part 1".
 
-That rule is the acceptance criterion for any change to this document: a statement that holds for every level belongs in Part 1 and nowhere else. Restating it per level is how the three previous guides came to disagree without anyone noticing.
+That rule is the acceptance criterion for any change to this document: a statement that holds for every Isle belongs in Part 1 and nowhere else. Restating it per property is how the three previous guides came to disagree without anyone noticing.
 
-**Which one am I writing?** An **Isle** (`*_isle.sv`) is topology-agnostic: standard single-network AXI/RegBus ports, usable in both Crossbar and NoC topologies - in a NoC, Ollivander generates the enclosing Tile for it. A **Subtile** (`*_subtile.sv`) is NoC-native: it may expose physically separate narrow and wide networks (`noc_mode: "dual"`) and therefore cannot be used in a Crossbar topology; Ollivander still generates its Tile wrapper. A **Custom Tile** (`*_tile.sv`) is written by hand and instantiates the FlooNoC router itself, connecting directly to the 2D mesh. Prefer an Isle unless you need what the other two give you.
+**One kind of component.** Every component is an **Isle** (`*_isle.sv`): topology-agnostic by default, with standard single-network AXI/RegBus ports, usable in both crossbar and NoC topologies - on a NoC, Ollivander generates the enclosing tile around it. An isle whose IP drives the narrow and the wide network separately declares per-network names (section 9.1) and is then NoC-only, refused on a crossbar for that capability and not for its name. There is no hand-written tile: everything a tile embeds is decided at generation from the description (`docs/developer/universal_tile.md`).
 
 # Part 1 - The Contract
 
-*Applies to Isles, Subtiles and Custom Tiles alike.*
+*Applies to every Isle.*
 
 ## 1. Parameter Interface (`parameter` vs `localparam`)
 Every Isle MUST expose a standardized set of parameters to define bus geometries and microarchitectural behaviors. Ollivander's parser (`sv_parser.py`) actively scans the module header and treats `parameter` and `localparam` differently:
@@ -26,7 +26,7 @@ These parameters define the physical width of the AXI lines, and the generator d
 *   `AxiOutIdWidth`: Width of the AXI ID for outgoing requests (required if `axi_master` is used). Driven with the manager-side ID width (`mst_id_width`, or the network's input width in a NoC).
 
 
-How each declaration is treated depends on whether the wrapper declares it `parameter` or `localparam`, and the distinction is the contract. A **`parameter`** is *driven*: the generator sets it to the geometry of the network the port rides on, so a wrapper around a sizeable IP should expose one and propagate it into the IP — every default it would otherwise fall back to describes the context the wrapper was extracted from, not the SoC it lands in. A **`localparam`** is *verified*: it states a geometry the component cannot depart from, and Ollivander checks it against the bus at generation time. Keep those as literals — the check reads the value as written and cannot resolve `some_pkg::SomeWidth` — and, when the IP defines the same number itself, guard the literal with an elaboration-time `$fatal` against the IP's package, as `cluster_subtile` does, so it stays readable to the generator and cannot drift from the IP.
+How each declaration is treated depends on whether the wrapper declares it `parameter` or `localparam`, and the distinction is the contract. A **`parameter`** is *driven*: the generator sets it to the geometry of the network the port rides on, so a wrapper around a sizeable IP should expose one and propagate it into the IP — every default it would otherwise fall back to describes the context the wrapper was extracted from, not the SoC it lands in. A **`localparam`** is *verified*: it states a geometry the component cannot depart from, and Ollivander checks it against the bus at generation time. Keep those as literals — the check reads the value as written and cannot resolve `some_pkg::SomeWidth` — and, when the IP defines the same number itself, guard the literal with an elaboration-time `$fatal` against the IP's package, as `snitch_cluster_isle` does, so it stays readable to the generator and cannot drift from the IP.
 
 The verification rule is not plain equality. Address and data widths must match exactly, since no adaptation exists for them: a mismatch there is refused. The ID widths are checked **along the direction of travel**: what the component emits (`*OutIdWidth`) may be narrower than the network's input side — the tile zero-extends it — but never wider, or the network would truncate and distinct transactions would alias; what it accepts (`*InIdWidth`) must cover the network's compressed output side, or responses would be misrouted inside the component.
 
@@ -57,9 +57,9 @@ Ollivander will automatically inject the local SoC package types (e.g., `my_soc_
 
 In a **NoC**, the types injected are those of the network the port rides on, chosen per direction: the master pair takes the network's input types, the slave pair its output types (or the joined type, where a Join adapter merges the two networks). Exposing the pairs as `parameter type` is therefore what lets an Isle carry the ID and user widths of whatever network it is placed in, and `AxiOutIdWidth` is set to the network's input width for the same reason.
 
-An Isle that instead types its AXI ports from its own IP package — legitimate for a hand-written wrapper around an IP whose widths are fixed, as the snitch cluster subtile does — keeps them, and the tile adapts around it: the ID is zero-extended to the network width on the way out and truncated back on the response, field-wise, so that only `id` is touched. Nothing is lost either way, but the two cases must not be mixed by hand: whether the port types were injected is what decides which of the two the generator applies.
+An Isle that instead types its AXI ports from its own IP package — legitimate for a hand-written wrapper around an IP whose widths are fixed, as `snitch_cluster_isle` does — keeps them, and the tile adapts around it: the ID is zero-extended to the network width on the way out and truncated back on the response, field-wise, so that only `id` is touched. Nothing is lost either way, but the two cases must not be mixed by hand: whether the port types were injected is what decides which of the two the generator applies.
 
-The package name follows the **top-level module name**, not the bare project name, so it carries the same suffix that `build_mode: "macro"` adds. A project `crux` built standalone produces `crux_soc_pkg`, while the same project built as a macro with `export_type: "isle"` produces `crux_isle_soc_pkg`. This is what allows both builds of a project — and a parent SoC that instantiates one of them — to be compiled into a single simulation library without the two packages colliding under the same name.
+The package name follows the **top-level module name**, not the bare project name, so it carries the same suffix that `build_mode: "macro"` adds. A project `crux` built standalone produces `crux_soc_pkg`, while the same project built as a macro produces `crux_isle_soc_pkg`. This is what allows both builds of a project — and a parent SoC that instantiates one of them — to be compiled into a single simulation library without the two packages colliding under the same name.
 
 ### 1.5 Memory Mapping Parameters
 For topology-agnostic memory wrappers (e.g., L2 memory wrapper `l2_isle.sv`), the wrapper should expose standard configurable parameters defining its size and base address:
@@ -80,7 +80,7 @@ Like every entry of the standard parameter vocabulary, these are matched **by pa
 ### 1.6 Instance Identity
 Some IPs decode their **own slave window internally**: the block compares incoming addresses against a base and an extent it was told at instantiation, serves what falls inside (local memory, internal peripherals) and forwards the rest to its master port. The snitch-family cluster is the reference case. When such a block is instantiated as a component **array** (a placement `box` with `size_per_instance`), every instance needs its own base — one shared constant cannot serve sixteen windows, and a wrong base makes every window access miss the internal decode and stall (there is no error response: the transaction re-enters the network and never completes).
 
-A subtile that decodes its own window declares the following pair in its header, and the generator fills it **per instance** at tile instantiation (`rtl_ir_builder.py`):
+An isle that decodes its own window declares the following pair in its header, and the generator fills it **per instance** at tile instantiation (`rtl_ir_builder.py`):
 
 *   `InstanceBaseAddr` (`parameter longint unsigned`): the base address of THIS instance's slave window. The generator resolves it from `base_addr` and `size_per_instance`, either of which may be a per-instance list (`soc_configuration_guide.md` section 3.1) — so it is `base_addr + index * size_per_instance` only in the scalar case, and in every case it comes from the one resolver rather than being recomputed here. The instance enumeration is the x-major one the FlooGen address map and the auto-control-group bit-selects use, so the three mechanisms can never disagree. In macro builds the value stays **project-local**: the macro's border adapters rebase incoming traffic before any tile sees it.
 *   `InstanceWindowSize` (`parameter longint unsigned`): the per-instance window extent (`size_per_instance`, or `size` for a single instance). **May differ between instances of one component**, since `size_per_instance` accepts a list.
@@ -93,11 +93,11 @@ The declared parameter type travels through the SV parser to the generated tile 
 
 Two reasons to prefer the port, one per flow. Under **hierarchical verilation** a parameter whose value differs per instance makes each instance a distinct module, so sixteen identical tiles become sixteen child libraries to verilate and compile, while a port keeps them one module and one library (see section 5.2.1 of `docs/developer/wip/future_evolution_tasks.md`). In a **macro build** the base becomes `MACRO_BASE_ADDR + offset`, a value the parent knows only at its own instantiation: a port connection can carry that expression, a parameter override computed at generation time cannot without freezing the macro's position.
 
-Inside the block, cast the port back to whatever type the IP wants at the inner instantiation (`cluster_subtile.sv` does `snitch_cluster_pkg::addr_t'(instance_base_addr_i)`). Where the value used to feed a `localparam` that must be elaborated - an address-map struct array, for instance - derive it with an `assign` to a wire and hand it to the IP's port instead: `l2_isle.sv` converts its four localparams and its `mapping_rules` this way. A value that genuinely cannot leave elaboration keeps the parameter form: `pulp_cluster_isle` does, because its base flows into the struct parameter `Cfg.ClusterBaseAddr` and from there into four child parameter overrides, which would mean modifying upstream IP. When such an isle also declares collective slots (section 3.1), the tile's stamper needs the instance base at run time all the same: the **tile** then declares `instance_base_addr_i` itself, the top drives it per instance like any identity port, and the isle keeps receiving its `InstanceBaseAddr` parameter - the two are independent, and the generator sets both whenever the tile exposes them (an isle left at its header default decodes the wrong window, which is how the rule was learnt).
+Inside the block, cast the port back to whatever type the IP wants at the inner instantiation (`snitch_cluster_isle.sv` does `snitch_cluster_pkg::addr_t'(instance_base_addr_i)`). Where the value used to feed a `localparam` that must be elaborated - an address-map struct array, for instance - derive it with an `assign` to a wire and hand it to the IP's port instead: `l2_isle.sv` converts its four localparams and its `mapping_rules` this way. A value that genuinely cannot leave elaboration keeps the parameter form: `pulp_cluster_isle` does, because its base flows into the struct parameter `Cfg.ClusterBaseAddr` and from there into four child parameter overrides, which would mean modifying upstream IP. When such an isle also declares collective slots (section 3.1), the tile's stamper needs the instance base at run time all the same: the **tile** then declares `instance_base_addr_i` itself, the top drives it per instance like any identity port, and the isle keeps receiving its `InstanceBaseAddr` parameter - the two are independent, and the generator sets both whenever the tile exposes them (an isle left at its header default decodes the wrong window, which is how the rule was learnt).
 
 **An IP that derives its window from an ordinal declares `instance_id_i` instead.** `pulp_cluster` decodes `ClusterBaseAddr + (cluster_id << 22)`, so its isle takes `input logic [5:0] instance_id_i` and states the stride that decode implies as a header localparam, `InstanceIdStride` (`'h0040_0000`). The generator then hands every instance the COMPONENT's base (instance 0's window) in `InstanceBaseAddr` and its index on the port: one parameterisation for the whole array, hence one module under hierarchical verilation, and the IP itself places instance n at `base + n * InstanceIdStride`. The generator takes that stride as the array's `size_per_instance` (the description need not repeat it; one that declares another value is refused, because the IP would decode windows the map never assigned). On a crossbar the port reads zero.
 
-This is a **declared opt-in**, by parameter or by port: the generator acts only on what the header declares, and never matches on component types. Memory components travel the same route (section 1.5) — one convention for every self-mapping component, memories and clusters alike. The subtile consumes the parameters internally (e.g. `cluster_subtile.sv` drives the meta-generated wrapper's `cluster_base_addr_i`/`cluster_base_offset_i` ports from them, and ties `hart_base_id_i` to zero — global hart IDs deliberately repeat across the array, see the alias-region rationale in the offload contract and the open question in `docs/developer/wip/future_evolution_tasks.md`); no identity port appears on the subtile interface.
+This is a **declared opt-in**, by parameter or by port: the generator acts only on what the header declares, and never matches on component types. Memory components travel the same route (section 1.5) — one convention for every self-mapping component, memories and clusters alike. The isle consumes the parameters internally (e.g. `snitch_cluster_isle.sv` drives the meta-generated wrapper's `cluster_base_addr_i`/`cluster_base_offset_i` ports from them, and ties `hart_base_id_i` to zero — global hart IDs deliberately repeat across the array, see the alias-region rationale in the offload contract and the open question in `docs/developer/wip/future_evolution_tasks.md`); no identity port appears on the subtile interface.
 
 ## 2. Supported Interfaces & Port Naming
 Isles abstract away the native interfaces of their underlying IPs. Ollivander automatically maps these interfaces during generation if they are declared in the YAML and match the exact naming conventions below.
@@ -569,7 +569,7 @@ Parameters common to both kinds:
 *   **`OffloadCtrlOffs`** (`int unsigned`): Offset of the IP's control unit (control_wire) or peripheral block (memory_mapped) from the component's `axi_slave` base address.
 *   **`OffloadReturnOffs`** (`int unsigned`): control_wire: offset of the register the payload leaves its result in. memory_mapped: offset, from the component's base, of the FIRST per-core return slot (one 32-bit slot per core, consecutive).
 *   **`OffloadStackOffs`** (`int unsigned`): Top of the IP-local memory the payload may use as its stack, as an offset from the component's base address (memory_mapped payloads carve 512 B per core downward from it).
-*   **`OffloadCollectOffs`** / **`OffloadCollectColOffs`** / **`OffloadBarrierOffs`** / **`OffloadCollMetaOffs`** / **`OffloadMcastOffs`** (`int unsigned`, optional, either contract): offsets, in the IP-local memory, of the collective slots - above the return slots on `cluster_subtile`, in the middle of the TCDM on `pulp_cluster_isle`, whose payload keeps its stack at the top and its scratch below it. The phases ride both start protocols: a memory-mapped cluster runs them from the core the CLINT woke, a wire-released one from its single running core before it signals end-of-computation, and the host initialises the slots and checks the landings after either. One rule follows from the local decode: an isle without an `OffloadLocalBase` alias sees instance 0's addresses as its OWN memory on the core side (pulp_cluster), so the payload's drain read of the final landing is left to the multicast issuer alone there (`OFFLOAD_ROOT_SHADOWED`, set by the build from the contract); the host side, which the slave port decodes with the instance id, is unaffected. Declaring them makes the component eligible for the collective (narrow-reduction) test when it is the NoC's multicast group. FlooNoC's sequential reduction engine merges at most two contributions per node, so the reduction is dimension-ordered and two-phase: every instance's core 0 adds into its own COLUMN head's `CollectColOffs` slot (the tile's stamper derives each writer's head from its own base), the heads then add the column sums along their row into instance 0's `CollectOffs` slot, and the host verifies that final sum against a generator-derived expectation; the full-group `LsbAnd` barrier lands at `BarrierOffs`. `CollMetaOffs` is plain memory, not a stamped window: the host writes each instance's `{y_dim, is_head}` meta word there before waking it (cluster hartids restart per instance, so the head election must come from the side that knows the geometry; a zero meta parks the whole phase, used in the selective-power pass). Which slots a component declares decides which collectives it is tested with, and they are independent: `BarrierOffs` and `CollMetaOffs` are the minimum (barrier alone), `McastOffs` adds the multicast, and the reduction pair `CollectOffs`+`CollectColOffs` additionally requires the narrow channel to be declared in the SoC description. `McastOffs` is unlike the others in one respect: it is not a single destination but a per-member landing - one member writes into the stamped window, the network replicates the beat, and each member receives it at ITS OWN copy of the offset, which is what the host's per-member check verifies. Three further declarations belong to the wide side. **`OffloadWideOffs`** is the wide collective landing: a full 512-bit beat, so aligned to 64 bytes rather than 8, and written by the cluster's DMA rather than by a core. **`OffloadWideSrcOffs`** is the 64-byte source buffer of the instance's contribution, separate from the landing because on the group's instance 0 the two would otherwise coincide. **`OffloadDmaHart`** names the one hart allowed to execute the DMA instructions (they trap as illegal on every other one) and **`OffloadPrimaryHart`** the core that runs the workload and issues the collectives - both facts about THIS component, declared so that the software templates never hardcode an index that belongs to the IP; the DMA hart is checked at elaboration against the cluster's ISA configuration. **`OffloadWideUserLayout`** (`string`, optional) states what the component's wide AXI user MEANS: `"floo_collective"` says it carries FlooNoC's `{collective_mask, collective_op}` - mask on top - on both its wide ports, which is how the tile knows to type the wide isolation cell and the chimney with the collective types and to rebuild inbound requests into the component's own type. It is a semantic, deliberately not a width: the widths are checked in elaboration on the real ports, and a component that leaves it undeclared must keep its wide user no wider than the network's plain one or generation refuses it. Two placement rules the generator enforces: the destination lives inside the group's own region (a reduction's member mask converts to coordinates only through the SAM rule of its destination), and every WINDOWED slot offset is aligned to the narrow channel's beat - the collective machinery consumes the beat at channel width (`LsbAnd` ANDs data bit 0 of the whole beat, the integer ALU computes on the low word), so a sub-width store at an unaligned offset is silently reduced as garbage. The operation the column and row reduction windows stamp is not part of the contract: it is the System Controller's `collective_ctrl` register, reaching the tile through `coll_op_col_i` / `coll_op_row_i` (configuration guide, section 2.2, Topology).
+*   **`OffloadCollectOffs`** / **`OffloadCollectColOffs`** / **`OffloadBarrierOffs`** / **`OffloadCollMetaOffs`** / **`OffloadMcastOffs`** (`int unsigned`, optional, either contract): offsets, in the IP-local memory, of the collective slots - above the return slots on `snitch_cluster_isle`, in the middle of the TCDM on `pulp_cluster_isle`, whose payload keeps its stack at the top and its scratch below it. The phases ride both start protocols: a memory-mapped cluster runs them from the core the CLINT woke, a wire-released one from its single running core before it signals end-of-computation, and the host initialises the slots and checks the landings after either. One rule follows from the local decode: an isle without an `OffloadLocalBase` alias sees instance 0's addresses as its OWN memory on the core side (pulp_cluster), so the payload's drain read of the final landing is left to the multicast issuer alone there (`OFFLOAD_ROOT_SHADOWED`, set by the build from the contract); the host side, which the slave port decodes with the instance id, is unaffected. Declaring them makes the component eligible for the collective (narrow-reduction) test when it is the NoC's multicast group. FlooNoC's sequential reduction engine merges at most two contributions per node, so the reduction is dimension-ordered and two-phase: every instance's core 0 adds into its own COLUMN head's `CollectColOffs` slot (the tile's stamper derives each writer's head from its own base), the heads then add the column sums along their row into instance 0's `CollectOffs` slot, and the host verifies that final sum against a generator-derived expectation; the full-group `LsbAnd` barrier lands at `BarrierOffs`. `CollMetaOffs` is plain memory, not a stamped window: the host writes each instance's `{y_dim, is_head}` meta word there before waking it (cluster hartids restart per instance, so the head election must come from the side that knows the geometry; a zero meta parks the whole phase, used in the selective-power pass). Which slots a component declares decides which collectives it is tested with, and they are independent: `BarrierOffs` and `CollMetaOffs` are the minimum (barrier alone), `McastOffs` adds the multicast, and the reduction pair `CollectOffs`+`CollectColOffs` additionally requires the narrow channel to be declared in the SoC description. `McastOffs` is unlike the others in one respect: it is not a single destination but a per-member landing - one member writes into the stamped window, the network replicates the beat, and each member receives it at ITS OWN copy of the offset, which is what the host's per-member check verifies. Three further declarations belong to the wide side. **`OffloadWideOffs`** is the wide collective landing: a full 512-bit beat, so aligned to 64 bytes rather than 8, and written by the cluster's DMA rather than by a core. **`OffloadWideSrcOffs`** is the 64-byte source buffer of the instance's contribution, separate from the landing because on the group's instance 0 the two would otherwise coincide. **`OffloadDmaHart`** names the one hart allowed to execute the DMA instructions (they trap as illegal on every other one) and **`OffloadPrimaryHart`** the core that runs the workload and issues the collectives - both facts about THIS component, declared so that the software templates never hardcode an index that belongs to the IP; the DMA hart is checked at elaboration against the cluster's ISA configuration. **`OffloadWideUserLayout`** (`string`, optional) states what the component's wide AXI user MEANS: `"floo_collective"` says it carries FlooNoC's `{collective_mask, collective_op}` - mask on top - on both its wide ports, which is how the tile knows to type the wide isolation cell and the chimney with the collective types and to rebuild inbound requests into the component's own type. It is a semantic, deliberately not a width: the widths are checked in elaboration on the real ports, and a component that leaves it undeclared must keep its wide user no wider than the network's plain one or generation refuses it. Two placement rules the generator enforces: the destination lives inside the group's own region (a reduction's member mask converts to coordinates only through the SAM rule of its destination), and every WINDOWED slot offset is aligned to the narrow channel's beat - the collective machinery consumes the beat at channel width (`LsbAnd` ANDs data bit 0 of the whole beat, the integer ALU computes on the low word), so a sub-width store at an unaligned offset is silently reduced as garbage. The operation the column and row reduction windows stamp is not part of the contract: it is the System Controller's `collective_ctrl` register, reaching the tile through `coll_op_col_i` / `coll_op_row_i` (configuration guide, section 2.2, Topology).
 *   **`OffloadNumCores`** (`int unsigned`): Number of cores the boot loop, the wake mask and the payload's hart demux must cover. May reference another literal parameter of the same header (e.g. `= NumCores`): the generator resolves one hop of indirection.
 *   **`OffloadIsa`** / **`OffloadAbi`** (`string`): The `-march` / `-mabi` pair the payload is cross-compiled with. Spell extensions out the way modern binutils want them (`rv32im_zicsr`, not `rv32im`), and keep the ISA conservative: any multilib of the host toolchain must be able to serve it.
 
@@ -582,7 +582,7 @@ Parameters common to both kinds:
 
 *   **`OffloadEntryOffs`** (`int unsigned`): Offset, inside the peripheral block, of the entry-point register the IP's bootrom jumps through.
 *   **`OffloadWakeOffs`** (`int unsigned`): Offset, inside the peripheral block, of the CLINT set register the host writes the wake mask to.
-*   **`OffloadHartBase`** / **`OffloadHartInstStride`** (`int unsigned`, both contracts): the one description of the hart numbering, `mhartid = OffloadHartBase + instance * OffloadHartInstStride + core`. The payload derives its core index and, where the stride is non-zero, its instance ordinal from it - `pulp_cluster` (`{cluster_id, 1'b0, core_id}`: base 0, stride 32) relocates its control-unit accesses by that ordinal. A stride of zero, or none declared, says the harts carry no instance ordinal (the snitch subtile: `hart_base_id_i` tied to zero on every instance, the instance known through the local alias instead).
+*   **`OffloadHartBase`** / **`OffloadHartInstStride`** (`int unsigned`, both contracts): the one description of the hart numbering, `mhartid = OffloadHartBase + instance * OffloadHartInstStride + core`. The payload derives its core index and, where the stride is non-zero, its instance ordinal from it - `pulp_cluster` (`{cluster_id, 1'b0, core_id}`: base 0, stride 32) relocates its control-unit accesses by that ordinal. A stride of zero, or none declared, says the harts carry no instance ordinal (`snitch_cluster_isle`: `hart_base_id_i` tied to zero on every instance, the instance known through the local alias instead).
 
 **Return-code convention (memory_mapped)**: core 0's slot carries the workload checksum; every SECONDARY core returns one distinctive generator-owned code (`offload_secondary_code`, single-sourced into the payload's `-D` set and the host firmware's check), and the host verifies it per-core, exactly. A dead core is caught by the done-bit poll, a wrong-path core by the code check, and the two failures print differently on purpose — gwaihir's exact-accounting practice.
 
@@ -597,7 +597,7 @@ The contract alone does not make a component an offload target: the generated fi
 
 ### 8.3 Reference Implementation
 
-`pulp_cluster_isle.sv` carries the reference `"control_wire"` contract; the authority for its offsets is the wrapped IP's own control unit (`cluster_control_unit.sv` of `cluster_peripherals`), and the header comment of the block records that derivation. `spatz_cluster_isle.sv` and `cluster_subtile.sv` carry the reference `"memory_mapped"` contracts; their authority is the IP's peripheral register description (`spatz_cluster_peripheral_reg.hjson`) plus the cluster bootrom, and their header comments record both the derivation and the bootrom patching it forced (see `patch_spatz.py` in the dependency registry). When wrapping a new cluster IP, derive the offsets the same way — from the RTL or register description behind the slave window, never from a software header of a reference project.
+`pulp_cluster_isle.sv` carries the reference `"control_wire"` contract; the authority for its offsets is the wrapped IP's own control unit (`cluster_control_unit.sv` of `cluster_peripherals`), and the header comment of the block records that derivation. `spatz_cluster_isle.sv` and `snitch_cluster_isle.sv` carry the reference `"memory_mapped"` contracts; their authority is the IP's peripheral register description (`spatz_cluster_peripheral_reg.hjson`) plus the cluster bootrom, and their header comments record both the derivation and the bootrom patching it forced (see `patch_spatz.py` in the dependency registry). When wrapping a new cluster IP, derive the offsets the same way — from the RTL or register description behind the slave window, never from a software header of a reference project.
 
 ### 5.6 Index of the Header Contracts
 
@@ -614,16 +614,59 @@ Every value the generator reads from a wrapper header without elaborating it is 
 
 Two rules bind them all: scalars and strings only (never `localparam type`), and self-contained literals or one-hop references within the header (section 8.1). A family's snake_cased names are what the generator's templates see (`OffloadCtrlOffs` reads as `ctrl_offs`).
 
-# Part 2 - Particularities of an Isle
+# Part 2 - Particularities: Two Networks, the Host, the Macro Boundary
 
-*Only what is specific to an Isle; Part 1 applies unchanged.*
+*Only what applies to an Isle with a given property; Part 1 applies unchanged.*
 
 ## 9. The Isle
-An Isle is the topology-agnostic form, and it is the one to reach for by default: the same wrapper compiles into a Crossbar SoC and, through a generated Tile wrapper, into a NoC one. Everything in Part 1 applies to it unchanged. Three things are specific to this level.
 
-### 9.1 A Single, Unified AXI Network
+Every component is an Isle, and the same wrapper compiles into a crossbar SoC and, through a generated tile, into a NoC one. Part 1 applies to it unchanged. What follows applies only when an isle has a given property: it drives two networks (9.1), it carries a dedicated LLC port (9.2), it is the host (9.3), or it is a whole project exported as a macro (9.4).
 
-An Isle supports only **one** AXI network. The bus-geometry parameters of section 1.1 therefore appear once, unprefixed, and the struct types of section 1.4 come as a single pair. An IP that natively drives physically separate narrow and wide networks cannot be an Isle - that is what a Subtile is for (Part 3).
+### 9.1 One Network by Default, Two on Request
+
+An Isle speaks **one** AXI network by default: the bus-geometry parameters of section 1.1 appear once, unprefixed, and the struct types of section 1.4 come as a single pair; on a NoC with two networks the tile joins or splits that one pair (`noc_mode: joined*`). An IP that natively drives physically separate narrow and wide networks declares both instead - per-network parameters, types and ports as below - and is then usable on a **NoC only**: a crossbar has one AXI network, and the generator refuses such an isle there for the ports its header declares, never for its name.
+
+
+The expected naming depends strictly on the **`noc_mode`** and **`sync_domain`** fields of the YAML. In **joined** mode everything is exactly as in Part 1: a single unprefixed set of parameters, types and ports. In **dual** mode the isle connects to two independent networks at once and every name carries a network prefix.
+
+Bus geometries (section 1.1), dual mode:
+    *   `AxiNarrowDataWidth`, `AxiWideDataWidth`
+    *   `AxiNarrowUserWidth`, `AxiWideUserWidth`
+    *   `AxiNarrowInIdWidth`, `AxiNarrowOutIdWidth`, `AxiWideInIdWidth`, `AxiWideOutIdWidth`
+    *   *(Note: `AxiAddrWidth` is assumed global for the SoC, but `AxiNarrowAddrWidth` is supported).*
+
+Struct types (section 1.4), dual mode:
+    *   `axi_narrow_req_t`, `axi_narrow_resp_t`
+    *   `axi_wide_req_t`, `axi_wide_resp_t`
+
+Ports (section 2), dual mode:
+*   **AXI slave**: `axi_narrow_req_i` / `axi_narrow_resp_o`, `axi_wide_req_i` / `axi_wide_resp_o`
+*   **AXI master**: `axi_narrow_req_o` / `axi_narrow_resp_i`, `axi_wide_req_o` / `axi_wide_resp_i`
+*   **Asynchronous**: the `async_axi_in_*` and `async_axi_out_*` families of Part 1 gain the same prefixes - `async_axi_narrow_in_*`, `async_axi_wide_in_*`, and likewise for `out`.
+
+In dual mode both pairs carry the **input** type of the network — the slave port and the master port alike. FlooNoC compresses IDs across a network (`InIdWidth` > `OutIdWidth`), so the output of one chimney can never be handed straight to the input of the next one: each side widens its own chimney output back to the input width before exporting it, which keeps the adaptation next to the chimney that narrowed the ID and lets the two boundaries connect directly. The widening is field-wise, so that it applies to `id` alone.
+
+```mermaid
+flowchart LR
+    subgraph PARENT["Parent SoC (per network)"]
+        PCH["Border chimney"]
+        PW["widen id<br/>out → in"]
+        PCH -- "out type (compressed)" --> PW
+    end
+    subgraph MACRO["Dual-boundary macro"]
+        MW["widen id<br/>out → in"]
+        MCH["Internal chimney"]
+        MCH -- "out type (compressed)" --> MW
+    end
+    PW -- "boundary: network IN type" --> MCH
+    MW -- "boundary: network IN type" --> PCH
+```
+
+Both arrows crossing the boundary carry the same input-typed struct, which is why the two sides connect directly: every compressed-to-input adaptation stays on the side whose chimney produced the compressed ID.
+
+Typing these ports from the isle's own SoC package instead exports a single ID and user width for both networks and both directions, which matches neither of them: since `id` is the first member of the struct, and therefore occupies its most significant bits, the resulting connection does not merely truncate the ID but misaligns every field of the channel.
+
+A wrapper that does **not** expose these as `parameter type`, typing its ports from its own IP package instead, is left connected to the chimney output directly — that is the width a subordinate side expects, and `snitch_cluster_isle` is the example in the tree.
 
 ### 9.2 Dedicated LLC Port (`llc_port`)
 Certain Hosts (like Cheshire) expose a dedicated asynchronous AXI Master port intended specifically to route high-bandwidth traffic directly to an external memory controller (e.g., HyperBus), bypassing the main system crossbar entirely.
@@ -671,149 +714,13 @@ The Host Isle acts as the central RegBus orchestrator and exposes multi-dimensio
 *   `reg_req_o` (`sync_reg_out_req_t [RegNumSlvSync-1:0]`): Connected to `sys_reg_req`.
 *   `reg_rsp_i` (`sync_reg_out_rsp_t [RegNumSlvSync-1:0]`): Connected to `sys_reg_rsp`.
 
+#### 9.3.4 The Host on a NoC (Hierarchy Flattening)
 
-# Part 3 - Particularities of a Subtile
+On a NoC the host is an isle like every other component, and Ollivander generates its tile: the FlooNoC router, the chimneys that turn the host's AXI traffic into flits, the host isle itself and - here only - the **System Controller** (`_reg_top`). The host isle keeps the RegBus master role of 9.3.3 and exposes the same arrays; inside the generated tile the generator intercepts the **lowest index** of the synchronous RegBus (`reg_req_o[0]`) and routes it to the locally instantiated System Controller, while the remaining slices (`[RegNumSlvSync-1:1]`) leave the tile and reach the other tiles' register slaves from the SoC top. Nothing in the host's header says "NoC": the same `cheshire_isle.sv` hosts the crossbar examples and the mesh ones.
 
-*Only what is specific to a Subtile; Part 1 applies unchanged.*
+### 9.4 A Whole Project Exported as a Macro: the Boundary
 
-## 10. The Subtile
-A Subtile is the NoC-native form: the user provides pure AXI/RegBus interfaces and Ollivander generates the enclosing `*_tile.sv`, instantiating the FlooNoC Router, the Chimneys, the Bus Joins and - for a host - the Central System Controller. It **cannot** be used in a Crossbar topology, and Ollivander rejects it during validation if attempted.
+A project built with `build_mode: "macro"` is exported as an Isle to its parent - the module is `<project.name>_isle` whatever its topology - and its parent wraps it exactly as it wraps a hand-written one, reading the header. What the description chooses is the **shape of the AXI boundary** (`macro_settings.boundary`, SoC configuration guide, section 2.1): `single` is one AXI pair on one network, the only shape a crossbar project or a NoC project with one network declared can export (`crux_isle`); `joined` folds a two-network NoC project into one pair through the narrow/wide join (`mesh_isle`, nested by `super_crossbar`); `dual` exports one pair per network, typed with the network's input types as in 9.1 (`mesh_dual_isle`, nested by `super_noc`). A boundary that does not match the topology is refused at generation. Two exports of one project need two project names, since the macro name derives from the project's.
 
-Everything in Part 1 applies unchanged, with these additions. The reason to write a Subtile rather than an Isle is the dual-network case of section 10.1; if your IP speaks a single AXI network, write an Isle and gain the crossbar topology for free.
+One constraint on a dual boundary comes from outside the project: it plugs its slave ports into the chimneys of the network FlooGen generated for it, so it *accepts* a fixed ID width. Its SoC package publishes that width, a parent reads it back, and a parent network resolving wider is refused rather than truncated at the boundary. The number may therefore have to be declared on the network of the exporting project - see [Network ID width](../soc_configuration_guide.md#22-topology-topology) in the SoC configuration guide, which covers the whole rule and the diagnostics. A single or joined boundary publishes instead the ID width its exported master port *imposes* (the crossbar or join behind it), which the parent network must be at least as wide as.
 
-### 10.1 Dual-Network Mode (`noc_mode`)
-
-The expected naming depends strictly on the **`noc_mode`** and **`sync_domain`** fields of the YAML. In **joined** mode everything is exactly as in Part 1: a single unprefixed set of parameters, types and ports. In **dual** mode the Subtile connects to two independent networks at once and every name carries a network prefix.
-
-Bus geometries (section 1.1), dual mode:
-    *   `AxiNarrowDataWidth`, `AxiWideDataWidth`
-    *   `AxiNarrowUserWidth`, `AxiWideUserWidth`
-    *   `AxiNarrowInIdWidth`, `AxiNarrowOutIdWidth`, `AxiWideInIdWidth`, `AxiWideOutIdWidth`
-    *   *(Note: `AxiAddrWidth` is assumed global for the SoC, but `AxiNarrowAddrWidth` is supported).*
-
-Struct types (section 1.4), dual mode:
-    *   `axi_narrow_req_t`, `axi_narrow_resp_t`
-    *   `axi_wide_req_t`, `axi_wide_resp_t`
-
-Ports (section 2), dual mode:
-*   **AXI slave**: `axi_narrow_req_i` / `axi_narrow_resp_o`, `axi_wide_req_i` / `axi_wide_resp_o`
-*   **AXI master**: `axi_narrow_req_o` / `axi_narrow_resp_i`, `axi_wide_req_o` / `axi_wide_resp_i`
-*   **Asynchronous**: the `async_axi_in_*` and `async_axi_out_*` families of Part 1 gain the same prefixes - `async_axi_narrow_in_*`, `async_axi_wide_in_*`, and likewise for `out`.
-
-### 10.2 Which Type Each Network Pair Carries
-In dual mode both pairs carry the **input** type of the network — the slave port and the master port alike. FlooNoC compresses IDs across a network (`InIdWidth` > `OutIdWidth`), so the output of one chimney can never be handed straight to the input of the next one: each side widens its own chimney output back to the input width before exporting it, which keeps the adaptation next to the chimney that narrowed the ID and lets the two boundaries connect directly. The widening is field-wise, so that it applies to `id` alone.
-
-```mermaid
-flowchart LR
-    subgraph PARENT["Parent SoC (per network)"]
-        PCH["Border chimney"]
-        PW["widen id<br/>out → in"]
-        PCH -- "out type (compressed)" --> PW
-    end
-    subgraph MACRO["Subtile macro"]
-        MW["widen id<br/>out → in"]
-        MCH["Internal chimney"]
-        MCH -- "out type (compressed)" --> MW
-    end
-    PW -- "boundary: network IN type" --> MCH
-    MW -- "boundary: network IN type" --> PCH
-```
-
-Both arrows crossing the boundary carry the same input-typed struct, which is why the two sides connect directly: every compressed-to-input adaptation stays on the side whose chimney produced the compressed ID.
-
-Typing these ports from the Subtile's own SoC package instead exports a single ID and user width for both networks and both directions, which matches neither of them: since `id` is the first member of the struct, and therefore occupies its most significant bits, the resulting connection does not merely truncate the ID but misaligns every field of the channel.
-
-A wrapper that does **not** expose these as `parameter type`, typing its ports from its own IP package instead, is left connected to the chimney output directly — that is the width a subordinate side expects, and the `snitch_cluster` subtile is the example in the tree.
-
-### 10.3 A Subtile Exported as a Whole Project
-A whole project exported with `export_type: "subtile"` is a distinct case from a hand-written wrapper, and one constraint on it comes from outside the project: it plugs its slave ports into the chimneys of the network FlooGen generated for it, so it *accepts* a fixed ID width. Its SoC package publishes that width, a parent reads it back, and a parent network resolving wider is refused rather than truncated at the boundary. The number may therefore have to be declared on the network of the exporting project — see [Network ID width](../soc_configuration_guide.md#22-topology-topology) in the SoC configuration guide, which covers the whole rule and the diagnostics.
-
-### 10.4 The Host Subtile Exception (Hierarchy Flattening)
-The Host component (e.g., `cheshire_subtile.sv`) is treated specially by Ollivander to avoid unnecessary hierarchy levels.
-
-When a Subtile is defined as the `host` in the YAML configuration, Ollivander generates a `*_tile.sv` wrapper that does **four** things:
-
-1.  Instantiates the **FlooNoC Router**.
-2.  Instantiates the **Chimneys** to convert the Host's AXI traffic to NoC packets.
-3.  Instantiates the **Host Subtile** itself.
-4.  Instantiates the **System Controller (`_reg_top`)**.
-
-#### 10.4.1 RegBus Orchestration
-The Host Subtile must act as the RegBus master for the entire SoC. It should expose multi-dimensional arrays for the RegBus:
-
-*   `reg_req_o` (`sync_reg_out_req_t [RegNumSlvSync-1:0]`)
-*   `reg_rsp_i` (`sync_reg_out_rsp_t [RegNumSlvSync-1:0]`)
-*   *(And corresponding `reg_async_mst_*` arrays for asynchronous slaves).*
-
-**The Flattening Mechanism:**
-Inside the generated Tile wrapper, Ollivander intercepts the **lowest index** of the synchronous RegBus (`reg_req_o[0]`) and routes it directly to the locally instantiated System Controller (`_reg_top`). 
-The remaining RegBus array slices (`[RegNumSlvSync-1:1]`) are routed out of the Tile and up to the SoC Top-Level, where they are distributed to the other Subtiles/Tiles in the system.
-
-# Part 4 - Particularities of a Custom Tile
-
-*Only what is specific to a Custom Tile; Part 1 applies unchanged.*
-
-## 11. The Custom Tile
-A Custom Tile is a hand-written NoC node: instead of letting Ollivander wrap an IP, the wrapper *itself* instantiates the `floo_nw_router` or connects directly to the 2D mesh. Write one only for the cases that need it:
-1.  **Dummy Tiles** (`dummy_tile.sv`): Empty routing nodes used to bridge physical distances in the mesh floorplan.
-2.  **Custom Offload Nodes**: Tiles that manipulate custom NoC packets (e.g., multicast or reductions) directly at the router level without going through standard AXI Chimneys.
-3.  **Third-Party Pre-Packaged Tiles**: IPs that already include a FlooNoC-compatible router inside their top-level RTL.
-
-Everything in Part 1 applies unchanged - including the interrupt contract, the dependency mechanism, the memory-preloading parameters and the generic port export driven by `export_interfaces`. Four things are specific to this level.
-
-### 11.1 Mandatory NoC Boundary Interfaces
-Because a Custom Tile is instantiated directly within the NoC 2D mesh array by the `noc_soc_top.sv.mako` template, it **MUST** expose the exact FlooNoC routing interfaces in all four cardinal directions (`[West:North]`).
-
-The following ports are mandatory and strictly checked by the generator:
-
-```systemverilog
-import floo_pkg::*;
-// Note: You should also import your project-specific NoC package 
-// (e.g., floo_gwaihir_noc_pkg::*) to get the correct struct definitions.
-
-// Narrow Network
-output floo_req_t  [West:North] floo_req_o,
-input  floo_rsp_t  [West:North] floo_rsp_i,
-input  floo_req_t  [West:North] floo_req_i,
-output floo_rsp_t  [West:North] floo_rsp_o,
-
-// Wide Network (Required even if internally tied to zero)
-output floo_wide_t [West:North] floo_wide_o,
-input  floo_wide_t [West:North] floo_wide_i
-```
-
-### 11.2 The Tile's Coordinate Identity
-*   **`id_i`** (`id_t`): the physical X/Y coordinate assigned to this Tile by the mesh generator, and a mandatory port. The internal router needs it to know its position; nothing else in the contract carries it.
-
-### 11.3 Clock and Reset Control Under an Auto Control Group
-
-A Tile subject to an `auto_control_group` receives its gating controls at the tile boundary, where an Isle would receive the System Controller signals of section 4:
-*   **`tile_clk_en_i`** (`logic`): Software-controlled clock enable, active high (`1` = clock enabled). Driven by bit `i` of the group's `<group>_clk_en` register, where `i` is the instance index of this Tile within the group.
-*   **`tile_rst_ni`** (`logic`): Software-controlled reset, **active low** at the pin. It is driven by the *inverse* of bit `i` of the group's `<group>_rst` register, which is active high (`1` = held in reset); the inversion happens in the SoC top-level.
-*   **`clk_rst_bypass_i`** (`logic`): Hardware override to bypass clock gating and software resets during test modes. It is also the escape hatch that allows a Tile to be used before any CSR has been written.
-
-The power-on value of both registers is set by `system_controller.power_on_state`, which defaults to `"gated"`: the Tile comes up with its clock disabled and its reset asserted, and must be brought up explicitly. See the [System Controller section](../soc_configuration_guide.md#25-system-controller-system_controller) of the SoC configuration guide.
-
-Gating a Tile must never break traffic that merely routes *through* it. Keep the NoC router (and, preferably, the chimney) on the ungated `clk_i` / `rst_ni`, and confine `tile_clk` and `tile_rst_n` to the payload IP.
-
-### 11.4 NoC Struct Parameter Types
-Because Custom Tiles natively interact with the NoC router, the quickest integration method is to hardcode the import of the local NoC package (e.g., `import floo_gwaihir_noc_pkg::*;`) inside the wrapper to access the `floo_req_t` and `id_t` structs.
-
-However, if you are designing a **truly reusable** Custom Tile meant to be instantiated across different SoCs (or exported within different Macros), hardcoding the package will cause strict type equivalence errors during compilation. To make the Custom Tile fully portable, you should expose the NoC structs as `parameter type` in the module header:
-*   `floo_req_t`, `floo_rsp_t`, `floo_wide_t`
-*   `id_t`
-*   `sam_rule_t` (if handling address mapping directly)
-
-*(Note: Because Ollivander currently auto-injects AXI types but not NoC types into Custom Tiles, you must explicitly map these NoC types in the `parameters` block of your YAML configuration if you choose to parameterize them).*
-
-*Note: Because Custom Tiles natively instantiate the NoC router, they must often rely on the auto-generated NoC configuration package (e.g., `AxiCfgN`, `AxiCfgW`, `RouteCfg`) provided by FlooGen, rather than relying solely on scalar parameters.*
-
-### 5.5 Host PLIC Contract (`HostPlic*` localparams)
-
-What the generated firmware needs to OBSERVE an external interrupt line at the host's PLIC without an interrupt handler, declared by the host isle as literals and checked against the pinned IP at elaboration (`cheshire_isle.sv` does both, so a bump of Cheshire that moves a value fails the self-check rather than the test). The generator reads them like the `Offload*` contract and emits the interrupt route witness of the offload test (configuration guide, section 5.1) only when the block exists.
-
-| Localparam | Meaning |
-| :--- | :--- |
-| `HostPlicBase` (`longint unsigned`) | Base address of the PLIC in the host's map. |
-| `HostPlicPrioOffs`, `HostPlicPendingOffs`, `HostPlicEnableOffs`, `HostPlicClaimOffs` (`int unsigned`) | Offsets of the priority array, the pending words, the enable words of context 0 and the claim/complete register of context 0. |
-| `HostPlicExtIrqBase` (`int unsigned`) | PLIC source id of `intr_ext_i[0]`: the host concatenates `{external, internal}`, so external line k is source `HostPlicExtIrqBase + k`. |

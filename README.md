@@ -32,7 +32,7 @@ Ollivander bridges the gap between high-level architectural exploration and low-
 In Ollivander, every hardware IP (whether it's a RISC-V host, a neural network accelerator, or a simple SPI controller) is encapsulated in a standardized SystemVerilog wrapper called an **Isle**. 
 Isles abstract away IP-specific dialects, exposing only standardized interfaces (AXI4, RegBus, APB, JTAG, level-sensitive interrupts, and standard clock/reset pins). This allows the generator to stitch together incredibly complex, heterogeneous systems using a unified routing matrix without needing to "know" the internal details of any specific IP.
 
-For Network-on-Chip topologies, this concept is extended to **Subtiles** (standard IPs automatically wrapped with NoC routers and chimneys) and **Tiles** (custom NoC nodes).
+For Network-on-Chip topologies the same Isles are wrapped automatically in generated **Tiles** (FlooNoC router, chimneys and every network-side cell the description implies); an Isle that drives the narrow and the wide network separately is NoC-only.
 
 ### 1.2 "Hardware-First" Validation
 Ollivander refuses to generate broken RTL. Before generating the top-level SoC, it reads the physical SystemVerilog headers of your Isles and validates them against your YAML configuration. If you attempt to configure a 64-bit bus on an IP that strictly requires 32 bits, or map an interrupt to a pin that doesn't exist, Ollivander will halt and point out the architectural error before any code is generated.
@@ -75,7 +75,7 @@ Either topology can also be exported as a reusable **macro** and instantiated as
 
 ```mermaid
 flowchart LR
-    ANY["Any SoC project<br/>(crossbar or NoC)"] -- "build_mode: macro" --> M(["Macro<br/>isle or subtile export,<br/>published AXI boundary"]) -- "instantiated as a component" --> PARENT["Any parent SoC<br/>(crossbar or NoC)"]
+    ANY["Any SoC project<br/>(crossbar or NoC)"] -- "build_mode: macro" --> M(["Macro<br/>single, joined or dual boundary,<br/>published AXI geometry"]) -- "instantiated as a component" --> PARENT["Any parent SoC<br/>(crossbar or NoC)"]
 ```
 
 ### Example Projects (`soc_cfg_examples/`)
@@ -90,13 +90,13 @@ Every example runs its firmware end-to-end in simulation — hello world on the 
 | [`crossbar_isle`](soc_cfg_examples/crossbar_isle/) | `crux_isle.yml` | Crossbar | The same SoC exported as an **isle macro** with a unified AXI boundary |
 | [`noc`](soc_cfg_examples/noc/) | `mesh.yml` | NoC | 2D mesh with multicast, booting on its own from an always-on scratchpad |
 | [`noc_isle`](soc_cfg_examples/noc_isle/) | `mesh_isle.yml` | NoC | Mesh exported as an **isle macro**; boots from the **host's internal scratchpad** |
-| [`noc_subtile`](soc_cfg_examples/noc_subtile/) | `mesh_subtile.yml` | NoC | Mesh exported as a **subtile macro**: native dual narrow/wide NoC boundary |
+| [`noc_dual`](soc_cfg_examples/noc_dual/) | `mesh_dual_isle.yml` | NoC | Mesh exported as a **dual-boundary macro**: one AXI pair per NoC network |
 | [`super_crossbar`](soc_cfg_examples/super_crossbar/) | `super_crux.py` (Python) | Crossbar | Parent SoC nesting the **Mesh** macro — a NoC inside a crossbar |
-| [`super_noc`](soc_cfg_examples/super_noc/) | `super_mesh.py` (Python) | NoC | Parent SoC nesting the **Crux** isle macro and a mesh subtile — a crossbar inside a NoC |
+| [`super_noc`](soc_cfg_examples/super_noc/) | `super_mesh.py` (Python) | NoC | Parent SoC nesting the **Crux** macro (single boundary) and the mesh dual-boundary macro — a crossbar inside a NoC |
 
 The two `super_*` projects deliberately cross the topologies, so each of them resolves, compiles and simulates the external IPs of **both** families in a single Bender dependency graph.
 
-The set also spreads the **boot roads** so that every one of them has a witness: `force` (`crossbar_isle`, `noc_subtile`), the debug-module boot (`crossbar`, `noc`), the same composed with a serial-link image transport (`noc_isle`, `super_crossbar`), the self-sufficient serial-link boot that never touches the TAP (`super_noc`), the bootrom's own UART debug server (`crossbar_mini`), and the autonomous fetch from an external flash, where nothing drives the chip at all (`crossbar_micro`). Where the boot **image** lives is spread on purpose too — an always-on scratchpad, a gated L2 tile brought up by the testbench, the host's own internal scratchpad — because each of those exercises a different power-up dependency.
+The set also spreads the **boot roads** so that every one of them has a witness: `force` (`crossbar_isle`, `noc_dual`), the debug-module boot (`crossbar`, `noc`), the same composed with a serial-link image transport (`noc_isle`, `super_crossbar`), the self-sufficient serial-link boot that never touches the TAP (`super_noc`), the bootrom's own UART debug server (`crossbar_mini`), and the autonomous fetch from an external flash, where nothing drives the chip at all (`crossbar_micro`). Where the boot **image** lives is spread on purpose too — an always-on scratchpad, a gated L2 tile brought up by the testbench, the host's own internal scratchpad — because each of those exercises a different power-up dependency.
 
 ---
 

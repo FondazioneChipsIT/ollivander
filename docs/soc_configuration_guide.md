@@ -49,7 +49,7 @@ Basic metadata used to name the generated packages and top-level modules.
 | `version`        | String | *Optional*. Version string for IP-XACT component metadata (default: `"1.0"`).     |
 
 **Macro Settings (`macro_settings`)**: Defines the interfaces exported at the top-level boundaries when the SoC is generated as a macro.
-*   `export_type`: String. `"isle"` (default, exposes a single unified standard AXI interface) or `"subtile"` (exposes the native narrow and wide networks separately). Note: `"subtile"` is only valid for `"noc"` topologies.
+*   `boundary`: String. The shape of the exported AXI boundary - the macro is an Isle to its parent whatever the value, module `<name>_isle`. `"single"` (default) is one AXI pair on one network, the only shape a crossbar project or a NoC project with one network declared can export; `"joined"` folds a two-network NoC project into one pair through the narrow/wide join; `"dual"` exports one pair per network, typed with the network's input types, for NoC parents. A value that does not match the topology is refused at generation, and two exports of one project need two project names.
 *   `masters` / `slaves`: List of objects defining the AXI interfaces exported by the macro.
 
 **Macro Export Object**:
@@ -119,7 +119,7 @@ Only a **nested macro** can raise it. A hand-written isle is told which ID width
 Declaring `id_width` explicitly makes it fixed rather than derived, and it is then checked in both directions:
 
 *   a value **smaller** than a nested macro's exported master port is refused — retyping that port narrower would alias its IDs;
-*   a value (declared or derived) **larger** than what a nested subtile macro accepts is also refused, since that macro feeds its slave ports straight into the chimneys of its own network and the extra bits would be truncated at the boundary.
+*   a value (declared or derived) **larger** than what a nested dual-boundary macro accepts is also refused, since that macro feeds its slave ports straight into the chimneys of its own network and the extra bits would be truncated at the boundary.
 
 The second case is the one worth understanding, because it reaches across projects. The ID width of a network is shared by every macro attached to it, while the macros are generated independently and none of them can see the others: a macro imposing 6 bits forces the network to 6, and any other macro on that same network must have been generated wide enough to accept 6. When it was not, the generator says which project to change:
 
@@ -130,7 +130,7 @@ The second case is the one worth understanding, because it reaches across projec
         generates 'ai_mesh_macro' and regenerate it.
 ```
 
-This is why `noc_subtile` declares `id_width: 6` while needing only 4 for itself — it shares a network with a Crux macro in `super_noc`. The output side of each network (2 narrow, 1 wide) is the compressed side that FlooNoC chooses for itself and is not configurable.
+This is why `noc_dual` declares `id_width: 6` while needing only 4 for itself — it shares a network with a Crux macro in `super_noc`. The output side of each network (2 narrow, 1 wide) is the compressed side that FlooNoC chooses for itself and is not configurable.
 
 ### 2.3 System Settings (`system_settings`)
 Microarchitectural definitions for system-wide coherence.
@@ -501,7 +501,7 @@ Requirements for `"jtag"`, both checked or supplied by the generator:
 
 The `jtag` boot composes with the `slink` *preload* into a hybrid the references do not have: the TAP liveness check (`jtag_init`: IDCODE, dmactive, SBA readiness) still runs, keeping the debug path under per-project regression, while every write rides the link. Choose the hybrid when the chip exports JTAG anyway (the liveness comes free); choose `slink` boot for reference parity or when modeling a debugger-less bring-up.
 
-Among the example projects, four run `boot_mode: "jtag"` (`crossbar`, `noc`, `noc_isle`, `super_crossbar` — the last two as the hybrid with `preload_mode: slink`), `super_noc` runs the self-sufficient `"slink"` boot, `crux_mini` runs the `"uart"` debug boot, `crux_micro` runs the autonomous `"spi_flash"` boot (its `"i2c_eeprom"` twin is a one-line flip, pilot-verified at 24 ms simulated), and `crossbar_isle` and `noc_subtile` deliberately stay on `"force"`: it is the schema default and a supported feature, and it would lose regression coverage if no example exercised it. Every boot mode has at least one fleet witness.
+Among the example projects, four run `boot_mode: "jtag"` (`crossbar`, `noc`, `noc_isle`, `super_crossbar` — the last two as the hybrid with `preload_mode: slink`), `super_noc` runs the self-sufficient `"slink"` boot, `crux_mini` runs the `"uart"` debug boot, `crux_micro` runs the autonomous `"spi_flash"` boot (its `"i2c_eeprom"` twin is a one-line flip, pilot-verified at 24 ms simulated), and `crossbar_isle` and `noc_dual` deliberately stay on `"force"`: it is the schema default and a supported feature, and it would lose regression coverage if no example exercised it. Every boot mode has at least one fleet witness.
 
 ### 4.2 Preload modes: `readmemh`, `jtag`, `slink` and `uart`
 
@@ -517,7 +517,7 @@ With `preload_verify: true` the testbench re-reads the whole image through the s
 
 **ELF images.** With `image: elf` on a preload region, the testbench reads the file through the vendored cheshire `elfloader` DPI (`components/tb/elfloader.cpp`, compiled unconditionally by both simulator flows) and streams **every loadable segment** through whichever transport the project configured — the loaders never learn the source format. Two things change with respect to a hex image: the **entry point comes from the ELF header at runtime** instead of the generator's map-derived literal (with a multi-segment ELF the linker owns that truth), and the sections pass through a **static staging buffer** whose capacity is the `elf_max_section_bytes` knob (default 4 MiB) — static because Verilator cannot yet pass dynamic arrays to DPI open arrays. A segment larger than the buffer stops the run with a fatal that names the knob; nothing is streamed partially. The first section's address is checked against the configured region's base with a loud message (not a fatal): an ELF may legitimately scatter loadable segments across several memories, which is precisely its advantage over the flat hex.
 
-Among the examples the two axes compose into a deliberate coverage matrix: `crossbar_isle` and `noc_subtile` stay on `readmemh` (the schema default), `mesh` runs `jtag`+hex and `crux` runs `jtag`+ELF, the serial-link trio runs `slink` — `super_noc` and `super_crux` with hex, `noc_isle` with ELF — and `crux_mini` runs `uart`+hex.
+Among the examples the two axes compose into a deliberate coverage matrix: `crossbar_isle` and `noc_dual` stay on `readmemh` (the schema default), `mesh` runs `jtag`+hex and `crux` runs `jtag`+ELF, the serial-link trio runs `slink` — `super_noc` and `super_crux` with hex, `noc_isle` with ELF — and `crux_mini` runs `uart`+hex.
 
 ### 4.3 `bring_up`: how much of the SoC the testbench powers up
 

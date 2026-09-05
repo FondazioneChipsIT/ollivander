@@ -93,7 +93,7 @@
   wide_red_on = colls.wide_reduction.enable
 
   
-  # Determine the underlying IP to instantiate (restoring the original _subtile or _isle suffix)
+  # Determine the underlying IP to instantiate (restoring the original _isle suffix)
   _orig_type = context.get('original_type', c_type.replace('_tile', '_isle'))
   isle_name = f"{p_name}_{_orig_type}"
 
@@ -122,7 +122,7 @@
   # (spatz_cluster_isle, ethernet_isle), which is why the tile only forwards the pair when the
   # isle declares it: an isle that owns its cell keeps it, and the tile adds nothing.
   #
-  # For an isle that declares no cell - sram_isle, cluster_subtile - the tile instantiates one
+  # For an isle that declares no cell - sram_isle, snitch_cluster_isle - the tile instantiates one
   # per master network here. It is the only place that can: the isle is hand-written and would
   # need editing per component, while the tile is generated and the wires on both sides of the
   # insertion point are already its own.
@@ -213,7 +213,7 @@
           # parameter value is a DISTINCT MODULE for Verilator: sixteen identical
           # cluster tiles became sixteen hierarchical specializations, each elaborated
           # and compiled separately, with elaboration accounting for half of a cold
-          # build (docs/developer/wip, section 5.2.-1). A subtile that needs the base
+          # build (docs/developer/wip, section 5.2.-1). An isle that needs the base
           # only at run time therefore takes it as the port below, and the generator
           # drives the constant from the top. The parameter path stays for everything
           # not converted yet: l2_isle, for one, is convertible on inspection (its
@@ -377,7 +377,7 @@
           if 'AxiDataWidth' in all_params: all_params['AxiDataWidth'] = cfg_field(cfg_slv_pfx, 'DataWidth')
           if 'AxiAddrWidth' in all_params: all_params['AxiAddrWidth'] = cfg_field(cfg_slv_pfx, 'AddrWidth')
           
-  # A subtile macro exports one AXI pair per network, both typed with the input
+  # A dual-boundary macro exports one AXI pair per network, both typed with the input
   # type of the network (see the boundary comment in noc_soc_top.sv.mako). Hand it
   # this parent's own per-direction types, so the boundary follows the network the
   # macro is plugged into rather than the one it was generated against: left alone,
@@ -386,7 +386,7 @@
   #
   # Only a generated macro exposes these as type parameters, and the condition is
   # load-bearing: a hand-written dual isle types its ports from its own IP package,
-  # and the snitch cluster subtile takes OutIdWidth on its subordinate side, which
+  # and the snitch cluster isle takes OutIdWidth on its subordinate side, which
   # is exactly what the chimney output already carries. Hence macro_boundary_*
   # below, which keeps the two decisions together - an isle gets the input-typed
   # signals if and only if its port types were overridden to match.
@@ -409,7 +409,7 @@
   macro_boundary_wide   = 'axi_wide_req_t'   in isle_type_overrides and noc_mode == "dual"
 
   # A dual isle whose master ports we could not retype - a hand-written wrapper takes
-  # them from its own IP package, as the snitch cluster subtile does - produces the ID
+  # them from its own IP package, as the snitch cluster isle does - produces the ID
   # width that IP was built with, which may be narrower than the network's input width.
   # The zero-extension is done field-wise here: a wire when the widths already agree,
   # and the correct adaptation when they do not, where before it was a silent aliasing
@@ -1129,7 +1129,7 @@ module ${p_name}_${c_type}
 % endfor
 % if has_slave and (macro_boundary_narrow or macro_boundary_wide):
 
-  // A subtile macro presents the network's input type on both of its AXI ports,
+  // A dual-boundary macro presents the network's input type on both of its AXI ports,
   // while the chimney output carries OutIdWidth: the ID is widened back here, next
   // to the chimney that narrowed it. Field-wise, so that the extension applies to
   // 'id' alone; a whole-struct assignment would misalign every field, 'id' being

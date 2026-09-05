@@ -124,7 +124,7 @@ config = OllivanderConfig(
         # Auto Control Groups elegantly pack clock-gating and reset isolation signals 
         # for massive arrays of identical tiles into a single register array.
         auto_control_groups=[
-            AutoControlGroup(name="cluster_ctrl", type="clk_rst_control", target_component_type="cluster_subtile"),
+            AutoControlGroup(name="cluster_ctrl", type="clk_rst_control", target_component_type="snitch_cluster_isle"),
             AutoControlGroup(name="mem_tile_ctrl", type="clk_rst_control", target_component_type="sram_isle")
         ]
     ),
@@ -224,7 +224,7 @@ config = OllivanderConfig(
         Component(
             name="ai_mesh_macro",
             description="Nested AI Mesh Subsystem Macro (NoC-native IP)",
-            type="mesh_subtile", # Uses 'subtile' dual NoC ports
+            type="mesh_dual_isle", # dual boundary: one AXI pair per NoC network
             clock_domain="system",
             placement={"logical": {"x": 2, "y": 0}}, # Single instance; the rest of the grid gets dummy tiles
             interfaces={
@@ -238,7 +238,7 @@ config = OllivanderConfig(
         Component(
             name="compute_clusters",
             description="AI and Machine Learning compute clusters",
-            type="cluster_subtile",
+            type="snitch_cluster_isle",
             clock_domain="system",
             # A 'box' defines a 2D array. X[4..7] x Y[0..3] creates exactly 16 cluster instances.
             placement={"logical": {"box": {"x_start": 4, "x_end": 7, "y_start": 0, "y_end": 3}}}, # 16 instances!
@@ -327,7 +327,7 @@ config = OllivanderConfig(
         "boot_memory": "l2_shared_memory",
         # The offload app is a strict superset of hello_world: same greeting first, then
         # payload offload onto every component declaring an Offload* contract (here: the
-        # 16 directly-instantiated cluster_subtile instances, launched in parallel; the
+        # 16 directly-instantiated snitch_cluster_isle instances, launched in parallel; the
         # nested macros are opaque tops and correctly resolve as non-candidates). No
         # 'payload_memory': the boot L2 is reachable from both networks, so the default
         # carve (second quarter of its instance-0 window) is fetchable by the clusters.

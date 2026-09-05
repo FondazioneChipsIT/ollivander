@@ -315,14 +315,14 @@ def get_top_level_ports(config, generator, comp_info):
         slaves = config.project.macro_settings.slaves or []
         masters = config.project.macro_settings.masters or []
         
-        if config.project.macro_settings.export_type == "custom" or config.project.macro_settings.export_type == "isle":
+        if config.project.macro_settings.boundary != "dual":
             if slaves:
                 ports.append({"name": "axi_req_i", "dir": "in", "left": None, "right": None})
                 ports.append({"name": "axi_resp_o", "dir": "out", "left": None, "right": None})
             if masters:
                 ports.append({"name": "axi_req_o", "dir": "out", "left": None, "right": None})
                 ports.append({"name": "axi_resp_i", "dir": "in", "left": None, "right": None})
-        else: # subtile mode
+        else: # dual boundary: one pair per network
             if slaves:
                 for slv in slaves:
                     pfx = "narrow" if slv.bus_type == "narrow" else "wide"
@@ -486,12 +486,12 @@ def add_axi_interfaces(bus_interfaces_list, config, ports):
         )
         bus_interfaces_list.append(bi)
 
-    if config.project.macro_settings.export_type == "custom" or config.project.macro_settings.export_type == "isle":
+    if config.project.macro_settings.boundary != "dual":
         if slaves:
             add_axi_intf("axi_slave", "slave", "axi_req_i", "axi_resp_o")
         if masters:
             add_axi_intf("axi_master", "master", "axi_req_o", "axi_resp_i")
-    else: # subtile mode
+    else: # dual boundary: one pair per network
         if slaves:
             for slv in slaves:
                 pfx = "narrow" if slv.bus_type == "narrow" else "wide"

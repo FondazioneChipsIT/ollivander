@@ -7,7 +7,7 @@
 # ==============================================================================
 
 project:
-  name: "mesh"
+  name: "mesh_dual"          # exported as `mesh_dual_isle`: a second name, since noc_isle already exports `mesh_isle`
   description: "AI and Machine Learning acceleration platform (Gwaihir clone)"
   author: "Ollivander Generator"
   build_mode: "macro"
@@ -15,7 +15,7 @@ project:
   library: "SoC"              # IP-XACT component library name metadata
   version: "1.0.0"            # IP-XACT component version metadata
   macro_settings:
-    export_type: "subtile"
+    boundary: "dual"         # one AXI pair per network (macro `mesh_dual_isle`)
     # Export the native narrow and wide AXI interfaces for direct integration into another NoC
     slaves:
       - bus_type: "narrow"
@@ -139,7 +139,7 @@ system_controller:
   auto_control_groups:
     - name: "cluster_ctrl"
       type: "clk_rst_control"
-      target_component_type: "cluster_subtile" # Ollivander auto-sizes this based on count
+      target_component_type: "snitch_cluster_isle" # Ollivander auto-sizes this based on count
     - name: "mem_tile_ctrl"
       type: "clk_rst_control"
       target_component_type: "sram_isle"
@@ -200,7 +200,7 @@ components:
   # -- COMPUTE CLUSTERS (Snitch) --
   - name: "compute_clusters"
     description: "AI and Machine Learning compute clusters"
-    type: "cluster_subtile"
+    type: "snitch_cluster_isle"
     clock_domain: "system"
     # A 'box' placement automatically generates a 2D array of instances.
     # Here: X from 4 to 7 (4 columns), Y from 0 to 3 (4 rows) = 16 clusters total!
@@ -318,7 +318,7 @@ software_stack:
   test_app:
     # The offload app is a strict superset of hello_world: same greeting first,
     # then payload offload onto every component declaring an Offload* contract
-    # (here: the 16 snitch cluster_subtile instances, launched in parallel).
+    # (here: the 16 snitch snitch_cluster_isle instances, launched in parallel).
     name: "offload"
     # The payload cannot live in the (narrow-only) boot SPM: the snitch clusters
     # refill their instruction caches through their WIDE master, so the payload

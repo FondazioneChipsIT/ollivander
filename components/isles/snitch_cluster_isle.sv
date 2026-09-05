@@ -2,7 +2,7 @@
 // Solderpad Hardware License, Version 0.51, see LICENSE for details.
 // SPDX-License-Identifier: SHL-0.51
 //
-// Cluster Subtile (NoC-Specific)
+// Snitch cluster isle (dual-network: one AXI pair per NoC network, narrow and wide)
 // Extracted and generalized from Gwaihir's cluster_tile.sv
 
 // BENDER: name="floo_noc"
@@ -16,7 +16,7 @@
 `include "axi/typedef.svh"
 `include "tcdm_interface/typedef.svh"
 
-module cluster_subtile
+module snitch_cluster_isle
   import floo_pkg::*;
   import floo_ollivander_noc_pkg::*;
   import snitch_cluster_pkg::*;
@@ -24,7 +24,7 @@ module cluster_subtile
   parameter bit UseHWPE = 1'b0,
   // The wide offload interface's types. They exist in the NoC package only when
   // the SoC declares a wide reduction channel (FlooGen emits them with it), so a
-  // project without that channel must still be able to instantiate this subtile:
+  // project without that channel must still be able to instantiate this isle:
   // the tile passes the package types when the channel is declared and leaves
   // these defaults - and the ports tied off - when it is not. The adapter below
   // is generated only when the network's collective configuration enables an FP
@@ -33,7 +33,7 @@ module cluster_subtile
   parameter type offload_wide_rsp_t = logic,
   // -------------------------------------------------------------------------------
   // INSTANCE IDENTITY (see docs/hw/component_standardization.md, "Instance identity
-  // parameters"). A subtile that decodes its own slave window declares this pair and
+  // parameters"). An isle that decodes its own slave window declares this pair and
   // Ollivander fills it PER INSTANCE at tile instantiation (rtl_ir_builder.py):
   // base_addr + index * size_per_instance for the base, size_per_instance for the
   // size - the same x-major enumeration the FlooGen address map and the auto control
@@ -46,17 +46,17 @@ module cluster_subtile
   // change. The window SIZE stays a parameter - it is identical across the
   // instances of one component, so it costs no extra specialization.
   parameter longint unsigned InstanceWindowSize = 64'h0,
-  // The geometry this subtile cannot depart from, stated as literals so that Ollivander
-  // can read it and validate the connection to the bus this subtile is attached to
+  // The geometry this isle cannot depart from, stated as literals so that Ollivander
+  // can read it and validate the connection to the bus this isle is attached to
   // (soc_schema.py, HARDWARE CONSTRAINTS CHECK). Literal rather than a reference to
   // snitch_cluster_pkg because the check reads the value as written and cannot resolve
   // an expression; the elaboration checks in the body keep the literals honest against
   // the IP that actually defines them.
   //
   // Address and data demand equality: no adaptation exists for them. The ID widths
-  // state a direction instead - what this subtile emits (Out) and what it accepts (In)
+  // state a direction instead - what this isle emits (Out) and what it accepts (In)
   // - and the generator verifies capacity along the direction of travel: an ID this
-  // subtile emits is zero-extended by the tile if the network is wider, but a network
+  // isle emits is zero-extended by the tile if the network is wider, but a network
   // ID wider than the In width here would be truncated, aliasing transactions. All
   // four used to be wrong, the two directions swapped, while nothing read them.
   localparam int unsigned AxiAddrWidth        = 48,  // snitch_cluster_pkg::AddrWidth
@@ -74,7 +74,7 @@ module cluster_subtile
   // peripherals, wakes every hart through cl_clint_set, and collects per-core
   // (value << 1) | 1 results from a slot array in the cluster TCDM.
   //
-  // Authority for the offsets: the meta-generated RTL this subtile wraps, produced by
+  // Authority for the offsets: the meta-generated RTL this isle wraps, produced by
   // the registry pre-build from the amended default cfg. Peripherals sit after the
   // napot-rounded TCDM (128 KiB) plus the 4 KiB internal bootrom, hence 'h2_1000;
   // scratch[1] and cl_clint_set offsets come from the generated register decoder
@@ -222,36 +222,36 @@ module cluster_subtile
 );
 
   // The address and data widths above are literals because that is what Ollivander can
-  // read and validate against the bus this subtile is attached to; these elaboration
+  // read and validate against the bus this isle is attached to; these elaboration
   // checks are what keeps the literals honest against the IP that actually defines them.
   // Written as generate-scope $fatal rather than assertions on purpose: the regression
   // runs with -nosva -noimmedassert, which would silence an immediate assert, while an
   // elaboration-time error cannot be waived.
   if (AxiAddrWidth != snitch_cluster_pkg::AddrWidth)
-    $fatal(1, "cluster_subtile: AxiAddrWidth (%0d) contradicts snitch_cluster_pkg::AddrWidth (%0d)",
+    $fatal(1, "snitch_cluster_isle: AxiAddrWidth (%0d) contradicts snitch_cluster_pkg::AddrWidth (%0d)",
            AxiAddrWidth, snitch_cluster_pkg::AddrWidth);
   if (AxiNarrowDataWidth != snitch_cluster_pkg::NarrowDataWidth)
-    $fatal(1, "cluster_subtile: AxiNarrowDataWidth (%0d) contradicts snitch_cluster_pkg::NarrowDataWidth (%0d)",
+    $fatal(1, "snitch_cluster_isle: AxiNarrowDataWidth (%0d) contradicts snitch_cluster_pkg::NarrowDataWidth (%0d)",
            AxiNarrowDataWidth, snitch_cluster_pkg::NarrowDataWidth);
   if (AxiWideDataWidth != snitch_cluster_pkg::WideDataWidth)
-    $fatal(1, "cluster_subtile: AxiWideDataWidth (%0d) contradicts snitch_cluster_pkg::WideDataWidth (%0d)",
+    $fatal(1, "snitch_cluster_isle: AxiWideDataWidth (%0d) contradicts snitch_cluster_pkg::WideDataWidth (%0d)",
            AxiWideDataWidth, snitch_cluster_pkg::WideDataWidth);
   if (AxiNarrowInIdWidth != snitch_cluster_pkg::NarrowIdWidthIn)
-    $fatal(1, "cluster_subtile: AxiNarrowInIdWidth (%0d) contradicts snitch_cluster_pkg::NarrowIdWidthIn (%0d)",
+    $fatal(1, "snitch_cluster_isle: AxiNarrowInIdWidth (%0d) contradicts snitch_cluster_pkg::NarrowIdWidthIn (%0d)",
            AxiNarrowInIdWidth, snitch_cluster_pkg::NarrowIdWidthIn);
   if (AxiNarrowOutIdWidth != snitch_cluster_pkg::NarrowIdWidthOut)
-    $fatal(1, "cluster_subtile: AxiNarrowOutIdWidth (%0d) contradicts snitch_cluster_pkg::NarrowIdWidthOut (%0d)",
+    $fatal(1, "snitch_cluster_isle: AxiNarrowOutIdWidth (%0d) contradicts snitch_cluster_pkg::NarrowIdWidthOut (%0d)",
            AxiNarrowOutIdWidth, snitch_cluster_pkg::NarrowIdWidthOut);
   if (AxiWideInIdWidth != snitch_cluster_pkg::WideIdWidthIn)
-    $fatal(1, "cluster_subtile: AxiWideInIdWidth (%0d) contradicts snitch_cluster_pkg::WideIdWidthIn (%0d)",
+    $fatal(1, "snitch_cluster_isle: AxiWideInIdWidth (%0d) contradicts snitch_cluster_pkg::WideIdWidthIn (%0d)",
            AxiWideInIdWidth, snitch_cluster_pkg::WideIdWidthIn);
   if (OffloadDmaHart >= OffloadNumCores || !snitch_cluster_pkg::IsaCfg[OffloadDmaHart].Xdma)
-    $fatal(1, "cluster_subtile: OffloadDmaHart (%0d) is not the hart this cluster gives the DMA instructions to (its IsaCfg entry has Xdma = 0). Ollivander reads this literal to decide which core issues wide transfers, so a wrong value would surface as an illegal-instruction trap in simulation instead of failing here.", OffloadDmaHart);
+    $fatal(1, "snitch_cluster_isle: OffloadDmaHart (%0d) is not the hart this cluster gives the DMA instructions to (its IsaCfg entry has Xdma = 0). Ollivander reads this literal to decide which core issues wide transfers, so a wrong value would surface as an illegal-instruction trap in simulation instead of failing here.", OffloadDmaHart);
   if (OffloadPrimaryHart >= OffloadNumCores)
-    $fatal(1, "cluster_subtile: OffloadPrimaryHart (%0d) is outside the %0d cores of this cluster.",
+    $fatal(1, "snitch_cluster_isle: OffloadPrimaryHart (%0d) is outside the %0d cores of this cluster.",
            OffloadPrimaryHart, OffloadNumCores);
   if (AxiWideOutIdWidth != snitch_cluster_pkg::WideIdWidthOut)
-    $fatal(1, "cluster_subtile: AxiWideOutIdWidth (%0d) contradicts snitch_cluster_pkg::WideIdWidthOut (%0d)",
+    $fatal(1, "snitch_cluster_isle: AxiWideOutIdWidth (%0d) contradicts snitch_cluster_pkg::WideIdWidthOut (%0d)",
            AxiWideOutIdWidth, snitch_cluster_pkg::WideIdWidthOut);
 
   snitch_cluster_pkg::narrow_out_req_t  cluster_narrow_ext_req;

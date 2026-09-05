@@ -26,7 +26,7 @@ A component enters the generator through a standardized SystemVerilog wrapper. W
 | Guide | Wrapper kind |
 | :--- | :--- |
 | [Testbench Guide](testbench_guide.md) | The generated verification environment: testbench anatomy, VIP agents, boot sequences per mode, preload mechanics, monitors, pass criterion, and what the test applications execute. |
-| [Component Standardization](hw/component_standardization.md) | The single contract for `*_isle.sv`, `*_subtile.sv` and `*_tile.sv`: one common part, then the particularities of each level. Start here to wrap an IP. |
+| [Component Standardization](hw/component_standardization.md) | The single contract an Isle (`*_isle.sv`) must satisfy: one common part, then what applies to two-network isles, hosts and macro boundaries. Start here to wrap an IP. |
 | [Clocking, Reset & CDC Requirements](hw/clocking_reset_cdc_requirements.md) | The clock/reset interface every wrapper must honour, and where the CDC boundaries sit |
 | [APB Subsystem Isle](hw/apb_subsystem_isle.md) | The one dynamically *generated* isle: how the peripheral subsystem is assembled and which IPs it knows |
 

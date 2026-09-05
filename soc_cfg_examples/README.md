@@ -12,13 +12,13 @@ The nine projects in this directory serve two purposes: they showcase every usag
 | [`crossbar_mini`](crossbar_mini/) | `crux_mini` | AXI crossbar, minimal | `uart` | `uart` | no | the smallest configuration that boots — read its YAML first |
 | [`noc`](noc/) | `mesh` | 2D-mesh NoC (inspired by **Gwaihir**) | `jtag` | `jtag` (SBA) | no | Gwaihir's exact address map; boot from the always-on scratchpad; per-instance power control |
 | [`noc_isle`](noc_isle/) | `mesh_isle` | 2D-mesh NoC, **macro** build | `jtag` | `slink` | no | the NoC macro export, the gated-L2 boot the testbench must bring up, a wire-started PULP array and interrupt routing on the mesh |
-| [`noc_subtile`](noc_subtile/) | `mesh_subtile` | 2D-mesh NoC, **subtile macro** | `force` | `readmemh` | no | the subtile export (dual-network AXI ports), on the force path |
+| [`noc_dual`](noc_dual/) | `mesh_dual_isle` | 2D-mesh NoC, **dual-boundary macro** | `force` | `readmemh` | no | the dual boundary (one AXI pair per network), on the force path |
 | [`super_crossbar`](super_crossbar/) | `super_crux` | crossbar parent nesting the **`mesh_isle`** macro | `jtag` | `slink` | yes — Python padlist | cross-topology nesting: a NoC SoC compiled inside a crossbar parent |
-| [`super_noc`](super_noc/) | `super_mesh` | NoC parent nesting **`crux_isle`** and **`mesh_subtile`** | `slink` | `slink` | no | cross-topology nesting the other way, package coexistence, deepest gated boot |
+| [`super_noc`](super_noc/) | `super_mesh` | NoC parent nesting **`crux_isle`** and **`mesh_dual_isle`** | `slink` | `slink` | no | cross-topology nesting the other way, package coexistence, deepest gated boot |
 
 Two facts about the fleet's shape are deliberate and must not be "unified":
 
-* **Boot memory is distributed on purpose.** `noc` and `noc_subtile` boot from the always-on narrow scratchpad (the SoC starts on its own, as silicon would); `noc_isle` and `super_noc` keep the boot image in a gated L2 tile and depend on the generated testbench to bring that tile up. Both power-on paths stay covered this way.
+* **Boot memory is distributed on purpose.** `noc` and `noc_dual` boot from the always-on narrow scratchpad (the SoC starts on its own, as silicon would); `noc_isle` and `super_noc` keep the boot image in a gated L2 tile and depend on the generated testbench to bring that tile up. Both power-on paths stay covered this way.
 * **The two super examples cross the topologies.** `super_crossbar` nests the Mesh macro, `super_noc` nests the Crux macro, so each resolves and simulates the external IPs of **both** families in one Bender graph — the standing regression test of the dependency catalogue in `ollivander_config.yml`.
 
 ## The projects, one by one
@@ -51,9 +51,9 @@ A 2D-mesh NoC of compute, memory and peripheral tiles routed by **FlooNoC**. The
 
 The Mesh SoC exported as a macro (`build_mode: "macro"`, `mesh_isle` prefix on every generated name). Its firmware is deliberately placed in a **gated L2 tile**: the host cannot fetch until the testbench enables that tile, keeping the gated boot path and the 4-group × 128-bit interleaved preload covered by the regression. Its compute area is heterogeneous on purpose: a 2×4 box of Snitch clusters (memory-mapped start, the collectives on an asymmetric group) above a 2×2 box of **PULP clusters** started by wire - fetch enable and EoC one bit per instance, the isle's asynchronous AXI closed inside the tile, the array in a clock domain of its own at half the network speed - and a **mailbox** tile whose lines are routed to the host's PLIC and to the PULP array, the interrupt-routing witness of the mesh.
 
-### `noc_subtile` — mesh_subtile, the subtile macro
+### `noc_dual` — mesh_dual_isle, the dual-boundary macro
 
-The Mesh SoC exported as a **subtile** macro: the variant whose dual AXI ports plug straight into both of a parent's networks (see the [subtile contract](../docs/hw/component_standardization.md)). Boots from the always-on scratchpad like `mesh`, on the force path.
+The Mesh SoC exported with a **dual** boundary: one AXI pair per network, plugging straight into both of a parent's networks (component standardization, section 9.4). Boots from the always-on scratchpad like `mesh`, on the force path.
 
 ### `super_crossbar` — super_crux, the crossbar parent
 
@@ -61,7 +61,7 @@ Identical to `crux`, plus the pre-generated **`mesh_isle`** macro as a nested su
 
 ### `super_noc` — super_mesh, the NoC parent
 
-A NoC parent nesting **two** macros: `crux_isle` (joined through a narrow/wide adapter) and `mesh_subtile` (dual ports straight into both networks). **Generate `crossbar_isle` and `noc_subtile` first.** It also proves the naming rules: `super_mesh` and `mesh_subtile` both stem from "mesh", yet their packages coexist in one library because every name derives from the top-level module. A **single** `mesh_subtile` instance is instantiated — each one is a complete SoC (Cheshire host, 16 Snitch clusters, 8 L2 tiles), and an array exceeded what the simulator could map; dummy tiles (pure FlooNoC routers) keep the grid rectangular. The boot image lives in one of the parent's own gated L2 tiles: the deepest testbench bring-up of the set.
+A NoC parent nesting **two** macros: `crux_isle` (joined through a narrow/wide adapter) and `mesh_dual_isle` (dual ports straight into both networks). **Generate `crossbar_isle` and `noc_dual` first.** It also proves the naming rules: `super_mesh` and `mesh_dual_isle` both stem from "mesh", yet their packages coexist in one library because every name derives from the top-level module. A **single** `mesh_dual_isle` instance is instantiated — each one is a complete SoC (Cheshire host, 16 Snitch clusters, 8 L2 tiles), and an array exceeded what the simulator could map; dummy tiles (pure FlooNoC routers) keep the grid rectangular. The boot image lives in one of the parent's own gated L2 tiles: the deepest testbench bring-up of the set.
 
 ## Environment and reproducibility
 
@@ -75,7 +75,7 @@ Each collective mechanism the generator supports has exactly one example that ex
 | --- | --- | --- | --- |
 | `noc` | wide (FP) | FpAdd wide (two dimension-ordered phases), multicast, barrier | the gwaihir-like profile: DMA-issued, `dmuser` sets `{mask, op}`, routers offload to the cores' FPUs through the DCA |
 | `noc_isle` | narrow (integer) | IntAdd two-phase on a 2×4 group, then IntMaxS programmed at runtime (second power cycle), multicast, barrier | the stamper: address windows stamp the mask on core stores, `collective_ctrl` supplies the op |
-| `noc_subtile` | none | multicast, barrier | the collectives that need no reduction channel; also the macro `super_crossbar` nests |
+| `noc_dual` | none | multicast, barrier | the collectives that need no reduction channel; also the macro `super_crossbar` nests |
 | `super_noc` | wide (FP) | as `noc`, inside a macro consumer | the DCA path across a nested boundary |
 
-The barrier and the multicast are network capabilities always present in the emission and follow the component's contract slots, so every project with `cluster_subtile` carries them; the reduction channels are what the SoC description distributes.
+The barrier and the multicast are network capabilities always present in the emission and follow the component's contract slots, so every project with `snitch_cluster_isle` carries them; the reduction channels are what the SoC description distributes.

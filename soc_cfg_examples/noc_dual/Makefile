@@ -4,8 +4,8 @@
 #
 
 OLLIVANDER_ROOT := ../..
-SOC_YAML        := $(OLLIVANDER_ROOT)/soc_cfg_examples/noc_subtile/mesh_subtile.yml
-ENV_YAML        := $(OLLIVANDER_ROOT)/soc_cfg_examples/noc_subtile/mesh_subtile_env.yml
+SOC_YAML        := $(OLLIVANDER_ROOT)/soc_cfg_examples/noc_dual/mesh_dual.yml
+ENV_YAML        := $(OLLIVANDER_ROOT)/soc_cfg_examples/noc_dual/mesh_dual_env.yml
 OUT_DIR         := generated
 
 include $(OLLIVANDER_ROOT)/ollivander.mk

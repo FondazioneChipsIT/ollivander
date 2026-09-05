@@ -49,7 +49,14 @@ class MacroSettings(StrictModel):
     """
     Defines how the SoC should be wrapped when exported as a macro IP.
     """
-    export_type: Literal["isle", "subtile"] = "isle"
+    # THE SHAPE OF THE EXPORTED BOUNDARY, not a kind of component: every macro is an
+    # isle to its parent (module `<name>_isle`), which reads the boundary from the
+    # header. 'single' is one AXI pair on one network - the only shape a crossbar
+    # project, or a NoC project with one network declared, can export; 'joined' is a
+    # two-network NoC project folded into one pair through the narrow/wide join;
+    # 'dual' one pair per network, typed with the network's input types. The
+    # consistency with the topology is checked in validate_soc_components.
+    boundary: Literal["single", "joined", "dual"] = "single"
     masters: Optional[list[MacroExport]] = Field(default_factory=list)
     slaves: Optional[list[MacroExport]] = Field(default_factory=list)
     
@@ -76,10 +83,13 @@ class Project(StrictModel):
     @property
     def top_level_module_name(self) -> str:
         """
-        Dynamically computes the top-level module name based on build_mode and export_type.
+        Dynamically computes the top-level module name based on build_mode: a macro is
+        exported as an isle, `<name>_isle`, whatever the shape of its boundary - the
+        parent reads that from the header. Two exports of one project therefore need
+        two project names (noc_isle exports `mesh_isle`, noc_dual `mesh_dual_isle`).
         """
         if self.build_mode == "macro" and self.macro_settings:
-            return f"{self.name}_{self.macro_settings.export_type}"
+            return f"{self.name}_isle"
         return self.name
 
     @property
@@ -90,7 +100,7 @@ class Project(StrictModel):
         It follows the same suffixing rule as `top_level_module_name`, so that a
         "macro" build never collides with the "standalone" build of the same
         project: `crux` yields `crux_soc_pkg`, while the same project built as a
-        macro with export_type "isle" yields `crux_isle_soc_pkg`. Both the emitted
+        macro yields `crux_isle_soc_pkg`. Both the emitted
         file name and every reference to the package are derived from this single
         property, so the two builds can coexist in one simulation library.
         """
@@ -117,10 +127,10 @@ class Project(StrictModel):
         Name of the FlooNoC package generated for this SoC.
 
         Follows the same suffixing rule as `soc_pkg_name` and for the same reason: a
-        parent SoC may instantiate two macros exported from the same project (an "isle"
-        and a "subtile" variant, say) and must compile both into one library. Deriving
-        the name from the bare project name would give them identical package names with
-        different contents, and only one would survive.
+        parent SoC may instantiate a macro next to the standalone build of the same
+        project and must compile both into one library. Deriving the name from the
+        bare project name would give them identical package names with different
+        contents, and only one would survive.
 
         FlooGen builds the package name from the `name` field of its own configuration,
         so that field must be fed this value rather than the project name.
@@ -856,7 +866,7 @@ class OllivanderConfig(StrictModel):
         for comp in (self.components or []):
             orig_type = original_isle_types.get(comp.name, comp.type)
             candidates = [comp.type, orig_type,
-                          orig_type.replace('_isle', '_tile').replace('_subtile', '_tile')]
+                          orig_type.replace('_isle', '_tile')]
             targets = {group.target_component_type, group.target_tile_type} - {None}
             if targets & set(candidates):
                 members.append((comp, offset))
@@ -1378,21 +1388,48 @@ def validate_soc_components(config: OllivanderConfig, search_paths: list[Path] =
         c_type = original_types.get(comp.name, comp.type) if original_types else comp.type
 
         if config.project.build_mode == "macro" and config.project.macro_settings:
-            if config.topology.type == "crossbar" and config.project.macro_settings.export_type != "isle":
-                raise ValueError("Projects with 'crossbar' topology can only be exported as 'isle' macros.")
-        
-        # TOPOLOGY ENFORCEMENT: Crossbar cannot use NoC-specific components
-        if config.topology.type == "crossbar":
-            if c_type.endswith('_subtile') or c_type.endswith('_tile'):
-                raise ValueError(
-                    f"\n[ARCHITECTURAL ERROR] Component '{comp.name}' is declared as '{c_type}'.\n"
-                    f"Components ending in '_subtile' or '_tile' are exclusively for NoC topologies.\n"
-                    f"For Crossbar topologies, please use universal components ending in '_isle'."
-                )
-        
+            # THE BOUNDARY MUST MATCH THE TOPOLOGY. A crossbar project has one AXI network
+            # and exports one pair; so does a NoC project with one network declared. Only
+            # a NoC project with both networks has a choice: fold them into one pair
+            # ('joined') or export one pair per network ('dual').
+            _b = config.project.macro_settings.boundary
+            _nets = set((config.topology.noc_settings.networks or {}).keys()) \
+                if config.topology.type == "noc" and config.topology.noc_settings else set()
+            if config.topology.type == "crossbar" and _b != "single":
+                raise ValueError(f"\n[MACRO] boundary '{_b}': a crossbar project exports one AXI pair on one "
+                                 f"network, so its boundary can only be 'single'.")
+            if config.topology.type == "noc" and len(_nets) >= 2 and _b == "single":
+                raise ValueError(f"\n[MACRO] boundary 'single': this NoC project declares both networks "
+                                 f"({', '.join(sorted(_nets))}); export them folded into one pair ('joined') "
+                                 f"or one pair per network ('dual').")
+            if config.topology.type == "noc" and len(_nets) < 2 and _b != "single":
+                raise ValueError(f"\n[MACRO] boundary '{_b}': this NoC project declares one network, so its "
+                                 f"boundary can only be 'single'.")
+
         info = get_isle_info(c_type, search_paths, exclude_dir)
         if not info:
             continue # Skip if file not found
+
+        # TOPOLOGY ENFORCEMENT BY CAPABILITY, not by name: a component that speaks two
+        # networks - per-network ports in its header, or 'noc_mode: dual' in the
+        # description - needs a NoC. The former '_subtile' suffix said the same thing a
+        # second time and drifted (component standardization, chapter on the Isle).
+        if config.topology.type == "crossbar":
+            _per_net = [name for name, flag in (
+                ("axi_narrow_req_i", "has_sync_axi_narrow_slave"), ("axi_narrow_req_o", "has_sync_axi_narrow_master"),
+                ("axi_wide_req_i", "has_sync_axi_wide_slave"), ("axi_wide_req_o", "has_sync_axi_wide_master"),
+                ("async_axi_narrow_in_*", "has_async_axi_narrow_slave"), ("async_axi_narrow_out_*", "has_async_axi_narrow_master"),
+                ("async_axi_wide_in_*", "has_async_axi_wide_slave"), ("async_axi_wide_out_*", "has_async_axi_wide_master"))
+                if info.get(flag)]
+            _nn = (comp.interfaces or {}).get('noc_networks', {})
+            _nmode = _nn.get('noc_mode', 'joined') if isinstance(_nn, dict) else 'joined'
+            if _per_net or _nmode == "dual":
+                _why = (f"its header declares per-network ports ({', '.join(_per_net)})" if _per_net
+                        else "its description says noc_mode: dual")
+                raise ValueError(
+                    f"\n[ARCHITECTURAL ERROR] Component '{comp.name}' ('{c_type}') speaks two NoC networks - {_why} -\n"
+                    f"and a crossbar topology has one AXI network. Use it on a NoC, or an isle with a single AXI port here."
+                )
 
         # 0. AN ISLE THAT DERIVES ITS WINDOW FROM AN ORDINAL FEEDS THE ADDRESS MAP. Such an isle
         #    (instance_id_i, component standardization 1.6) states the stride its IP decodes as
@@ -1459,7 +1496,7 @@ def validate_soc_components(config: OllivanderConfig, search_paths: list[Path] =
         #    the tile boundary (universal_tile.sv.mako), and a user field wider than the
         #    network loses only the bits above the meaningful span, refused separately in
         #    macro_boundary.py when that span would not survive. Gating those here would
-        #    reject working components - 'cluster_subtile' declares a narrow ID width of 5
+        #    reject working components - 'snitch_cluster_isle' declares a narrow ID width of 5
         #    while snitch_cluster gives it 4, which is precisely why the adaptation exists.
         #
         #    It used to run only when 'global_bus' existed, i.e. never for a NoC, which is
@@ -1476,8 +1513,8 @@ def validate_soc_components(config: OllivanderConfig, search_paths: list[Path] =
             # Both networks share the address space, so the plain name is unambiguous.
             if "narrow" in nets:
                 geometry_checks["AxiAddrWidth"] = (nets["narrow"].addr_width, "the NoC network geometry")
-            # A component on both networks names its data widths per network, per the
-            # subtile standardization; one on a single network uses the plain name.
+            # A component on both networks names its data widths per network (component
+            # standardization, dual-network isles); one on a single network uses the plain name.
             for net_name, prefix in (("narrow", "Narrow"), ("wide", "Wide")):
                 if net_name in nets and net_name in attached:
                     geometry_checks[f"Axi{prefix}DataWidth"] = (nets[net_name].data_width,

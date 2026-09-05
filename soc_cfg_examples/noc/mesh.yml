@@ -38,7 +38,7 @@ topology:
     collectives:
       # The gwaihir-like profile: FP reduction on the wide channel (DMA-issued,
       # dmuser), multicast and barrier. The narrow stamper reduction lives in
-      # noc_isle; the reduction-free profile in noc_subtile. Distributed on
+      # noc_isle; the reduction-free profile in noc_dual. Distributed on
       # purpose (2026-09-02) so that every collective mechanism has one witness.
       wide_reduction: { enable: true, rd_pipeline_depth: 5, cut_offload_intf: true }
 
@@ -118,7 +118,7 @@ system_controller:
   auto_control_groups:
     - name: "cluster_ctrl"
       type: "clk_rst_control"
-      target_component_type: "cluster_subtile" # Ollivander auto-sizes this based on count
+      target_component_type: "snitch_cluster_isle" # Ollivander auto-sizes this based on count
     - name: "mem_tile_ctrl"
       type: "clk_rst_control"
       target_component_type: "sram_isle"
@@ -179,7 +179,7 @@ components:
   # -- COMPUTE CLUSTERS (Snitch) --
   - name: "compute_clusters"
     description: "AI and Machine Learning compute clusters"
-    type: "cluster_subtile"
+    type: "snitch_cluster_isle"
     clock_domain: "system"
     # A 'box' placement automatically generates a 2D array of instances.
     # Here: X from 4 to 7 (4 columns), Y from 0 to 3 (4 rows) = 16 clusters total!
@@ -203,7 +203,7 @@ components:
       multicast_target: true  
     system_config:
       # THE FLEET'S WITNESS FOR AXI ISOLATION ON A NoC TOPOLOGY, and for the per-instance form
-      # of it. 'cluster_subtile' declares no isolation cell of its own, so the generated tile
+      # of it. 'snitch_cluster_isle' declares no isolation cell of its own, so the generated tile
       # instantiates one per master network - two here, since 'noc_mode: dual' keeps narrow and
       # wide separate - and reports a single 'isolated' bit per instance, asserted only when
       # both have drained. The clusters are the only mesh component that can host an OUTBOUND
@@ -343,7 +343,7 @@ software_stack:
   test_app:
     # The offload app is a strict superset of hello_world: same greeting first,
     # then payload offload onto every component declaring an Offload* contract
-    # (here: the 16 snitch cluster_subtile instances, launched in parallel).
+    # (here: the 16 snitch snitch_cluster_isle instances, launched in parallel).
     name: "offload"
     # The payload cannot live in the (narrow-only) boot SPM: the snitch clusters
     # refill their instruction caches through their WIDE master, so the payload

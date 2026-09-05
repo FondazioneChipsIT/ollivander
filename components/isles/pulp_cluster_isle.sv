@@ -94,7 +94,7 @@ module pulp_cluster_isle
   // Top of the cluster-local memory the payload may use as its stack, as an offset
   // from the component's base address (the TCDM size, ClusterCfg.TcdmSize below).
   localparam int unsigned OffloadStackOffs      = 'h0002_0000,
-  // COLLECTIVE SLOTS (same family as cluster_subtile's, component standardization 3.1):
+  // COLLECTIVE SLOTS (same family as snitch_cluster_isle's, component standardization 3.1):
   // the tile stamps the payload's writes into the alias range below with the group's
   // collective mask and opcode, so the narrow barrier (LsbAnd), the dimension-ordered
   // integer reduction and the multicast reach this array too. The slots live in the

@@ -370,7 +370,7 @@ dependencies:
     # The generated cluster's PMA (its FETCHABLE regions) comes from this cfg: the
     # default marks only [0x8000_0000, +2G) cacheable, but the mesh examples hold
     # their boot images and offload payloads in SPM/L2 windows the default misses:
-    # noc at [0x6000_0000, +512M), noc_subtile and noc_isle at [0x2000_0000, +512M).
+    # noc at [0x6000_0000, +512M), noc_dual and noc_isle at [0x2000_0000, +512M).
     # Without these regions the snitch cores cannot fetch the payload (the spatz PMA
     # lesson replayed at cfg level). Patches apply before pre_build_cmds,
     # so the 'make rtl' below generates from the amended cfg.
@@ -536,7 +536,7 @@ overrides:
   # four times per NoC run as message 2732. That is BENIGN here, and the reason is worth keeping: this
   # revision hardcodes a 32-bit bank word - .DATA_WIDTH(32) in hci_core_source, byte-granular
   # realignment - and datamover passes ELEMENT_WIDTH=8 with ELEMENTS_PER_BANK=4, which is the same
-  # geometry, because components/tiles/snitch_hwpe_subsystem.sv leaves both at their defaults. The
+  # geometry, because components/isles/snitch_cluster/snitch_hwpe_subsystem.sv leaves both at their defaults. The
   # warnings would stop being benign the moment a tile asked for a different bank word, i.e. for the
   # multi-precision the upstream revision exists to provide. Do not silence them: they are the only
   # signal that such a request has been discarded.

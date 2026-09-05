@@ -257,7 +257,7 @@ def warn_boot_memory_gated(soc_config, original_isle_types=None):
     if soc_config.system_controller and soc_config.system_controller.auto_control_groups:
         orig_type = original_isle_types.get(boot_comp.name, boot_comp.type)
         candidates = [boot_comp.type, orig_type,
-                      orig_type.replace('_isle', '_tile').replace('_subtile', '_tile')]
+                      orig_type.replace('_isle', '_tile')]
         for group in soc_config.system_controller.auto_control_groups:
             if group.target_component_type in candidates:
                 reason = f"it is controlled by the '{group.name}' auto control group"

@@ -20,7 +20,7 @@
 
 SHELL := /bin/bash
 
-TEST_PROJECTS    ?= crossbar crossbar_isle crossbar_micro crossbar_mini noc noc_isle noc_subtile super_crossbar super_noc
+TEST_PROJECTS    ?= crossbar crossbar_isle crossbar_micro crossbar_mini noc noc_isle noc_dual super_crossbar super_noc
 TEST_CLEAN       ?= 0
 TEST_CLEAN_SETUP ?= 0
 # Enable full testbench simulation run (compiles firmware, compiles simulator models,

@@ -489,7 +489,7 @@ ${coll_verdict(t_name, t, _cyc, expected, offload_verbose)}\
      * do not immediately contradict - and the first transaction addressed to the instance
      * that IS running never completes. The bench cannot express the difference, so the
      * phase would not be a witness there, only a hang: 8.4 ms of simulated silence on
-     * noc_subtile until the testbench timeout, with no diagnostic possible because a hung
+     * noc_dual until the testbench timeout, with no diagnostic possible because a hung
      * AXI read has nothing to time out against (a hang, not a wrong result: the guard below exists for this). Everything above moves the whole group at once, which is why a control group
      * whose bit indices ALIASED went unnoticed for as long as it did: with one write covering
      * every bit, two instances sharing a bit behave exactly like two instances on their own.

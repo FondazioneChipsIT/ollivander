@@ -8,7 +8,7 @@ paths:
   bender_manifest: "Bender.yml"
   components:
     - "../crossbar_isle/generated/hw"
-    - "../noc_subtile/generated/hw"
+    - "../noc_dual/generated/hw"
   rdl_includes:
     - "../crossbar_isle/generated/reg"
-    - "../noc_subtile/generated/reg"
+    - "../noc_dual/generated/reg"

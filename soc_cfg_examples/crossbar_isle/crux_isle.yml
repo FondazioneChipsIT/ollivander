@@ -15,7 +15,7 @@ project:
   library: "SoC"              # IP-XACT component library name metadata
   version: "1.0.0"            # IP-XACT component version metadata
   macro_settings:
-    export_type: "isle"
+    boundary: "single"       # one network, one AXI pair (macro `crux_isle`)
     # Export one AXI slave port to allow the parent SoC to access this macro's memory map.
     slaves:
       - bus_type: "standard"

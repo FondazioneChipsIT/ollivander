@@ -297,7 +297,7 @@ class RTLGenerator:
         if self.soc_config.topology.type == "noc":
             all_comps_for_type_tracking = [self.soc_config.host] + (self.soc_config.components if self.soc_config.components else [])
             for c in all_comps_for_type_tracking:
-                if c.type.endswith('_isle') or c.type.endswith('_subtile'):
+                if c.type.endswith('_isle'):
                     self.original_isle_types[c.name] = c.type
 
         if self.soc_config.topology.type == "crossbar":
@@ -430,43 +430,8 @@ class RTLGenerator:
             for c in all_comps:
                 if is_external(c):
                     continue
-                if c.type.endswith('_tile'):
-                    # If the component is already a fully formed Tile, just stage it.
-                    existing_tile = None
-                    for cp in self.env.component_paths:
-                        if cp.is_dir():
-                            try:
-                                existing_tile = next(cp.rglob(f"{c.type}.sv"))
-                                break
-                            except StopIteration:
-                                pass
-                        elif cp.is_file() and cp.name == f"{c.type}.sv":
-                            existing_tile = cp
-                            break
-                    if existing_tile:
-                        print(f"  -> Processing custom Tile {existing_tile.name} (Staging to output)")
-                        out_file = hw_dir / f"{self.soc_config.project.module_prefix}_{c.type}.sv"
-                        rel_name = os.path.relpath(out_file, self.env.bender_dir).replace('\\', '/')
-                        if rel_name not in self.generated_module_files:
-                            self.generated_module_files.append(rel_name)
-                        try:
-                            content = existing_tile.read_text(encoding='utf-8')
-                            self.required_local_files.update(self.req_pattern.findall(content))
-                            content = re.sub(r'\bollivander_soc_pkg\b', f'{self.soc_config.project.soc_pkg_name}', content)
-                            content = re.sub(r'\bfloo_ollivander_noc_pkg\b', f'{self.soc_config.project.noc_pkg_name}', content)
-                            content = re.sub(rf'\bmodule\s+{c.type}\b', f'module {self.soc_config.project.module_prefix}_{c.type}', content)
-                            content = re.sub(rf'\bendmodule\s*:\s*{c.type}\b', f'endmodule : {self.soc_config.project.module_prefix}_{c.type}', content)
-                            write_if_changed(out_file, content)
-                        except Exception as e:
-                            print(f"\n[ERROR] Failed to stage {existing_tile.name}:\n{e}")
-                            sys.exit(1)
-                        continue
-                    else:
-                        print(f"\n[ERROR] Component '{c.name}' requests '{c.type}', but no '{c.type}.sv' was found in component paths.")
-                        sys.exit(1)
-                        
-                elif c.type.endswith('_isle') or c.type.endswith('_subtile'):
-                    # If the component is an Isle, it must be wrapped inside a Universal Tile
+                if c.type.endswith('_isle'):
+                    # Every component is an Isle, and an Isle is wrapped inside a Universal Tile
                     # to be able to connect to the NoC routers. This auto-conversion provides
                     # topology abstraction: the same Isle can be used in a Crossbar or a NoC 
                     # without any modifications to the IP wrapper itself.
@@ -576,7 +541,7 @@ class RTLGenerator:
                         print(f"\n[ERROR] Failed to render {tpl_path.name}:\n{e}")
                         sys.exit(1)
                 else:
-                    print(f"\n[ERROR] Component '{c.name}' has invalid type '{c.type}'. In NoC topology, components must be either '*_tile' or '*_isle'.")
+                    print(f"\n[ERROR] Component '{c.name}' has invalid type '{c.type}'. In a NoC topology every component is an '*_isle': the generator builds the tile around it.")
                     sys.exit(1)
 
     def extract_wiring_metadata(self):
@@ -1845,10 +1810,10 @@ class RTLGenerator:
         # own .vlt - is read by a different testbench, with its own boot mode and its
         # own preload list: propagating my testbench's exclusions there would let a
         # force-mode donor silently cost its parent a promoted block (super_noc
-        # promotes mesh_subtile_manager_tile today only because the donor happens to
+        # promotes mesh_dual_isle_manager_tile today only because the donor happens to
         # boot by jtag). So the export carries the structural exclusions alone, and
         # the PARENT decides what its own testbench forbids. Tested by construction:
-        # mesh_subtile boots by force while super_noc boots by jtag,
+        # mesh_dual_isle boots by force while super_noc boots by jtag,
         # so a regression here shows up as a drop in the parent's block count.
         tb_excluded = set()
         if host_reachable_by_tb:

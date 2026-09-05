@@ -14,10 +14,10 @@ crossbar_soc_pkg.sv.mako and noc_soc_pkg.sv.mako), and this module reads them ba
 
 Two kinds of number cross the boundary, and the distinction drives everything here:
 
-  * what a macro **imposes**. The exported master port of an isle macro carries the
+  * what a macro **imposes**. The exported master port of a single or joined boundary carries the
     ID width of the crossbar behind it. Nothing can retype it narrower without
     aliasing IDs, so the network it plugs into must be at least that wide.
-  * what a macro **accepts**. A subtile macro plugs its slave ports straight into
+  * what a macro **accepts**. A dual-boundary macro plugs its slave ports straight into
     its own internal chimneys, which accept the InIdWidth of the network FlooGen
     generated for it. A parent network wider than that would be truncated at the
     boundary, so this is an upper bound, not something to adapt.

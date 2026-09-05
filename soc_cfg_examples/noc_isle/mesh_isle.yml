@@ -15,7 +15,7 @@ project:
   library: "SoC"              # IP-XACT component library name metadata
   version: "1.0.0"            # IP-XACT component version metadata
   macro_settings:
-    export_type: "isle"
+    boundary: "joined"       # two networks folded into one AXI pair (macro `mesh_isle`)
     # Export a single unified standard AXI interface (narrow+wide merged via the join adapter)
     slaves:
       - bus_type: "standard"
@@ -149,7 +149,7 @@ system_controller:
   auto_control_groups:
     - name: "cluster_ctrl"
       type: "clk_rst_control"
-      target_component_type: "cluster_subtile" # Ollivander auto-sizes this based on count
+      target_component_type: "snitch_cluster_isle" # Ollivander auto-sizes this based on count
     - name: "pulp_ctrl"
       type: "clk_rst_control"
       target_component_type: "pulp_cluster_isle" # the 2x2 PULP array below, one bit per tile
@@ -229,7 +229,7 @@ components:
   # -- COMPUTE CLUSTERS (Snitch) --
   - name: "compute_clusters"
     description: "AI and Machine Learning compute clusters"
-    type: "cluster_subtile"
+    type: "snitch_cluster_isle"
     clock_domain: "cluster"   # its own domain (clock_tree above): synchronous isle, crossed by the tile
     # A 'box' placement automatically generates a 2D array of instances.
     # Here: X from 4 to 7 (4 columns), Y from 2 to 3 (2 rows) = 8 clusters, the upper
@@ -439,7 +439,7 @@ software_stack:
   test_app:
     # The offload app is a strict superset of hello_world: same greeting first,
     # then payload offload onto every component declaring an Offload* contract
-    # (here: the 8 snitch cluster_subtile instances launched in parallel, then the
+    # (here: the 8 snitch snitch_cluster_isle instances launched in parallel, then the
     # 2x2 pulp_cluster array started by wire).
     # 'payload_memory' is MANDATORY here, and the reason is the same one that makes
     # the internal scratchpad a good boot memory: it lives inside the host, on the

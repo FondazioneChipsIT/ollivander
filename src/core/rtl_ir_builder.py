@@ -539,7 +539,7 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                 # the host.
                 supported = c_info.get("supported_params", {})
                 # THE BASE MAY ARRIVE AS A PORT INSTEAD OF A PARAMETER.
-                # A subtile that needs the window base only at run time declares
+                # An isle that needs the window base only at run time declares
                 # 'instance_base_addr_i' and the constant is DRIVEN, not elaborated:
                 # every instance then shares one module, where a per-instance
                 # parameter made Verilator specialize the tile once per instance

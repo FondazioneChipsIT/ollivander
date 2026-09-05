@@ -29,9 +29,9 @@ module tb_${top_level_module_name}();
   # The top-level port declarations copied below refer to the module's *type parameters*
   # (axi_req_t, axi_narrow_req_t, ...). Those names exist only inside the module, so an
   # equivalent typedef must be declared here for each of them. Deriving the list from the
-  # parsed top-level keeps this correct for every export variant: a "subtile" macro, for
-  # instance, exposes the native narrow and wide NoC interfaces and therefore carries type
-  # parameters that a standard or "isle" export does not have.
+  # parsed top-level keeps this correct for every boundary: a macro with a dual boundary,
+  # for instance, exposes the native narrow and wide NoC interfaces and therefore carries
+  # type parameters that a standalone build or a single/joined boundary does not have.
   top_typedefs = [(n, t) for n, t in (top_level_type_params or {}).items() if t and "::" in t]
 %>\
 % if top_typedefs:
@@ -460,8 +460,6 @@ elf_sec_max = int(str(testbench_cfg.get("elf_max_section_bytes", 0x400000)), 0)
           instance_path = preload_template.format(group=g, bank=b)
           if comp_name.endswith('.i_isle') and instance_path.startswith('i_isle.'):
               instance_path = instance_path[len('i_isle.'):]
-          elif comp_name.endswith('.i_subtile') and instance_path.startswith('i_subtile.'):
-              instance_path = instance_path[len('i_subtile.'):]
           %>
           $display("[TB] Preloading interleaved memory G${g}B${b} with ${basename}_g${g}_b${b}.${ext}...");
           $readmemh("${basename}_g${g}_b${b}.${ext}", dut.${comp_name}.${instance_path});

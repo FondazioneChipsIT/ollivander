@@ -16,7 +16,7 @@ The nine example projects under `soc_cfg_examples/` are also a map of what the g
 | `super_crossbar` | `super_crux` | A crossbar SoC that **nests** the mesh macro — the two families in one Bender graph. |
 | `noc` | `mesh` | The 2D-mesh NoC family: FlooNoC, tiles, placement, self-sufficient boot from an always-on scratchpad. |
 | `noc_isle` | `mesh` | The mesh exported as a macro, the serial-link preload, and boot from the **host's internal scratchpad**. |
-| `noc_subtile` | `mesh_subtile` | Macro export as a *subtile* instead of an isle, and the second `force`-boot witness. |
+| `noc_dual` | `mesh_dual_isle` | Macro export with a *dual* boundary (one AXI pair per NoC network), and the second `force`-boot witness. |
 | `super_noc` | `super_mesh` | A mesh SoC nesting the crux macro, and the boot image in a gated L2 tile. |
 
 Each project's own `README.md` states why it exists and what would be lost by changing it.
@@ -273,7 +273,7 @@ project:
   name: "prometheus"
   build_mode: "macro"
   macro_settings:
-    export_type: "isle" # Exposes a standard AXI interface
+    boundary: "single"  # one AXI pair on one network (a NoC project with both networks says "joined" or "dual")
     slaves:
       - bus_type: "standard"
         target: "host"

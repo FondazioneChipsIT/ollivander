@@ -92,7 +92,7 @@ module l2_isle
   input  logic                            clk_i            ,
   input  logic                            rst_ni           ,
   input  logic                            pwr_on_rst_ni    ,
-  // INSTANCE IDENTITY AS A PORT (for uniformity with cluster_subtile).
+  // INSTANCE IDENTITY AS A PORT (for uniformity with snitch_cluster_isle).
   // A differing parameter value is a distinct module for Verilator, so a memory
   // instantiated N times would be elaborated and compiled N times; nothing here
   // needs the base at elaboration time - the mapping rules below are DRIVEN into

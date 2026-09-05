@@ -464,7 +464,7 @@ def main():
     if soc_config.topology.type == "noc":
         all_comps_for_type_tracking = [soc_config.host] + (soc_config.components if soc_config.components else [])
         for c in all_comps_for_type_tracking:
-            if c.type.endswith('_isle') or c.type.endswith('_subtile'):
+            if c.type.endswith('_isle'):
                 original_isle_types[c.name] = c.type
                 
     # Data structures to track generated files and dependencies.
