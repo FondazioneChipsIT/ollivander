@@ -207,6 +207,78 @@ int main(void) {
 % endif
     }
 % endif
+<%def name="coll_verdict(t_name, t, _cyc, expected, offload_verbose)">\
+## The collective verdict of one target, emitted after its return check under
+## EITHER contract: the payload runs the same phases whether it was woken by
+## the CLINT (memory_mapped) or released by wire (control_wire).
+% if t.get("collective_test"):
+<%
+  # The reduced sum, derived INDEPENDENTLY of the payload from the same two
+  # constants it is compiled with - the collective twin of 'expected' above.
+  exp_sum = (t["num_instances"] * expected) & 0xFFFFFFFF
+  # The second power cycle reprograms the row window to IntMaxS: every column
+  # still adds y_dim identical values, and the maximum over identical column
+  # sums is that sum (the sign of a signed max is irrelevant between equals).
+  # Derived from 'expected', not from the 32-bit-wrapped exp_sum.
+  _rows = t.get("y_dim") if (t.get("two_phase") and t.get("collective_reduce")) else 1
+  exp_max = ((_rows or 1) * expected) & 0xFFFFFFFF
+  if t["coll_empty"] in (exp_sum, exp_max):
+      raise ValueError(f"[COLLECTIVE] {t_name}: an expected result equals the EMPTY sentinel "
+                       f"{t['coll_empty']:#x}; pick another workload value")
+%>\
+        /* Collective phase: the group's core-0 stores were stamped LsbAnd and
+         * the reduction opcode (IntAdd at reset, IntMaxS in the second power
+         * cycle) by the tile windows; the network merged them into instance
+         * 0's slots. Sum and barrier are checked against generator-derived
+         * values, so a lost member, a ghost member or a wrong merge can never
+         * pass by accident. */
+        progress(6);
+        if (${t_name}_wait_collective(${_cyc} == 1u ? ${hex(exp_max)}u : ${hex(exp_sum)}u) != 0) {
+            /* Dump every slot the run was supposed to fill: which phase is
+             * short localizes the failure without a second run. */
+            print_str("[COLLECTIVE] ${t_name}");
+% if t.get("collective_reduce"):
+            print_str(" collect=");
+            print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_COLLECT_ADDR);
+            print_str(" (expected ");
+            print_hex(${_cyc} == 1u ? ${hex(exp_max)}u : ${hex(exp_sum)}u);
+            print_str(")");
+% endif
+            print_str(" barrier=");
+            print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_BARRIER_ADDR);
+            print_str(" (expected 0x1)");
+% if t.get("collective_mcast"):
+% if t.get("collective_wide"):
+            print_str(" wide:");
+            for (uint32_t k = 0; k < 8u; k++) {
+                print_str(" ");
+                print_hex((uint32_t)(*(volatile uint64_t *)(uintptr_t)(${t_name.upper()}_OFFLOAD_WIDE_ADDR + 8u * k) >> 32));
+            }
+% endif
+            print_str(" mcast:");
+            for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
+                print_str(" ");
+                print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_MCAST_ADDR(n));
+            }
+% endif
+            print_str("\n");
+            offload_fail("${t_name}", "collective phase");
+        }
+        progress(7);
+        progress(11);   /* collective phase PASS, as a code */
+% if offload_verbose:
+        print_str("[COLLECTIVE] ${t_name} ");
+% if t.get("collective_reduce"):
+        /* The reduction label names the opcode the cycle actually ran with. */
+        print_str(${_cyc} == 1u ? "IntMaxS max (collective_ctrl) + " : "IntAdd sum + ");
+% endif
+        print_str("${" + ".join(
+            ["LsbAnd barrier"]
+            + (["FpAdd wide"] if t.get("collective_wide") else [])
+            + (["Multicast"] if t.get("collective_mcast") else []))} PASS\n");
+% endif
+% endif
+</%def>\
 % for t_name, t in offload_targets.items():
 <%
   # The power-cycle counter exists only when the loop below is emitted; a bench
@@ -244,6 +316,15 @@ int main(void) {
     for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
         ${t_name}_set_bootaddress(n, OFFLOAD_PAYLOAD_BASE);
     }
+% if t.get("collective_test"):
+% if t.get("collective_reduce"):
+    /* Runtime opcode path, as on the memory-mapped contract: the second power cycle
+     * reduces the row with IntMaxS (see coll_verdict for the expected values). */
+    if (${_cyc} == 1u)
+        OFFLOAD_SYS_REGS->collective_ctrl.f.${t_name}_coll_row_op = 0xBu; /* IntMaxS */
+% endif
+    ${t_name}_init_collective();
+% endif
     ${t_name}_start();
     progress(4);
     if (${t_name}_wait_eoc() != 0) {
@@ -278,6 +359,7 @@ int main(void) {
                 offload_fail("${t_name}", "wrong return value");
             }
         }
+${coll_verdict(t_name, t, _cyc, expected, offload_verbose)}\
         progress(12);
 % if offload_verbose:
         print_str("[OFFLOAD] ${t_name} PASS (ret=");
@@ -352,73 +434,7 @@ int main(void) {
                 }
             }
         }
-% if t.get("collective_test"):
-<%
-  # The reduced sum, derived INDEPENDENTLY of the payload from the same two
-  # constants it is compiled with - the collective twin of 'expected' above.
-  exp_sum = (t["num_instances"] * expected) & 0xFFFFFFFF
-  # The second power cycle reprograms the row window to IntMaxS: every column
-  # still adds y_dim identical values, and the maximum over identical column
-  # sums is that sum (the sign of a signed max is irrelevant between equals).
-  # Derived from 'expected', not from the 32-bit-wrapped exp_sum.
-  _rows = t.get("y_dim") if (t.get("two_phase") and t.get("collective_reduce")) else 1
-  exp_max = ((_rows or 1) * expected) & 0xFFFFFFFF
-  if t["coll_empty"] in (exp_sum, exp_max):
-      raise ValueError(f"[COLLECTIVE] {t_name}: an expected result equals the EMPTY sentinel "
-                       f"{t['coll_empty']:#x}; pick another workload value")
-%>\
-        /* Collective phase: the group's core-0 stores were stamped LsbAnd and
-         * the reduction opcode (IntAdd at reset, IntMaxS in the second power
-         * cycle) by the tile windows; the network merged them into instance
-         * 0's slots. Sum and barrier are checked against generator-derived
-         * values, so a lost member, a ghost member or a wrong merge can never
-         * pass by accident. */
-        progress(6);
-        if (${t_name}_wait_collective(${_cyc} == 1u ? ${hex(exp_max)}u : ${hex(exp_sum)}u) != 0) {
-            /* Dump every slot the run was supposed to fill: which phase is
-             * short localizes the failure without a second run. */
-            print_str("[COLLECTIVE] ${t_name}");
-% if t.get("collective_reduce"):
-            print_str(" collect=");
-            print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_COLLECT_ADDR);
-            print_str(" (expected ");
-            print_hex(${_cyc} == 1u ? ${hex(exp_max)}u : ${hex(exp_sum)}u);
-            print_str(")");
-% endif
-            print_str(" barrier=");
-            print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_BARRIER_ADDR);
-            print_str(" (expected 0x1)");
-% if t.get("collective_mcast"):
-% if t.get("collective_wide"):
-            print_str(" wide:");
-            for (uint32_t k = 0; k < 8u; k++) {
-                print_str(" ");
-                print_hex((uint32_t)(*(volatile uint64_t *)(uintptr_t)(${t_name.upper()}_OFFLOAD_WIDE_ADDR + 8u * k) >> 32));
-            }
-% endif
-            print_str(" mcast:");
-            for (uint32_t n = 0; n < ${t_name.upper()}_OFFLOAD_NUM_INSTANCES; n++) {
-                print_str(" ");
-                print_hex(*(volatile uint32_t *)(uintptr_t)${t_name.upper()}_OFFLOAD_MCAST_ADDR(n));
-            }
-% endif
-            print_str("\n");
-            offload_fail("${t_name}", "collective phase");
-        }
-        progress(7);
-        progress(11);   /* collective phase PASS, as a code */
-% if offload_verbose:
-        print_str("[COLLECTIVE] ${t_name} ");
-% if t.get("collective_reduce"):
-        /* The reduction label names the opcode the cycle actually ran with. */
-        print_str(${_cyc} == 1u ? "IntMaxS max (collective_ctrl) + " : "IntAdd sum + ");
-% endif
-        print_str("${" + ".join(
-            ["LsbAnd barrier"]
-            + (["FpAdd wide"] if t.get("collective_wide") else [])
-            + (["Multicast"] if t.get("collective_mcast") else []))} PASS\n");
-% endif
-% endif
+${coll_verdict(t_name, t, _cyc, expected, offload_verbose)}\
         progress(5);
         progress(12);   /* offload PASS for this cycle, as a code */
 % if offload_verbose:
@@ -436,8 +452,26 @@ int main(void) {
      * cycle (and the next target) does not pay for this one (isolate first,
      * then reset and clock - see the helper's rationale). */
     ${t_name}_disable();
+% if offload_power_cycles and t.get("domain_reg"):
+    /* THE DIVIDER'S RUNTIME PATH. The target's clock domain has a programmable divider;
+     * between the two cycles, with the group isolated, gated and in reset (the disable
+     * above), its ratio is changed from ${t["domain_default_div"]} to ${t["domain_default_div"] * 2}: the value leaves the
+     * register as a valid/ready stream, crosses to the domain clock and reconfigures
+     * clk_int_div without a glitch - logic every crossbar domain carries and no test
+     * had ever driven. Cycle 1 then runs at the new ratio and must pass exactly as
+     * cycle 0 did; the default is restored afterwards so later phases keep their pace. */
+    if (${t_name}_cycle == 0u) {
+        OFFLOAD_SYS_REGS->${t["domain_reg"]}_clk_div_value.w = ${t["domain_default_div"] * 2}u;
+        (void)OFFLOAD_SYS_REGS->${t["domain_reg"]}_clk_div_value.w;
+        progress(17);
+    }
+% endif
 % if offload_power_cycles:
     }
+% if t.get("domain_reg"):
+    OFFLOAD_SYS_REGS->${t["domain_reg"]}_clk_div_value.w = ${t["domain_default_div"]}u;
+    (void)OFFLOAD_SYS_REGS->${t["domain_reg"]}_clk_div_value.w;
+% endif
     progress(8);
     progress(13);   /* power-cycle PASS, as a code */
 % if offload_verbose:

@@ -150,13 +150,23 @@
 
   // The actual integer divider and clock gating block.
   ${require_file("olli_clk_int_div.sv")}
+  // THE DIVIDER IS RESET BY THE SoC's POWER-ON RESET, NOT THE DOMAIN's. The domain's
+  // power-on reset is synchronised on the DIVIDED clock (soc_rstgen), and clk_int_div
+  // delivers no output clock while its own reset is asserted unless it divides by one
+  // (common_cells: "for all other DEFAULT_DIV_VALUEs the output clock will not be
+  // available until rst_ni is deasserted"). Reset by the domain's POR, a divider with
+  // default_div > 1 therefore waited for a reset that waited for its clock: the first
+  // divided domain on a mesh (pulp, /2, 2026-09-05) never left power-on reset. The
+  // crossbar family never saw it because every one of its dividers boots at 1, where
+  // the cell bypasses in reset. The divider is clock infrastructure, like the debug
+  // divider, which always took the root reset.
   olli_clk_int_div #(
     .DIV_VALUE_WIDTH(DomainClkDivValueWidth),
     .DEFAULT_DIV_VALUE(${dom.default_div}),
     .ENABLE_CLOCK_IN_RESET(1)
   ) i_${dom.name}_div (
     .clk_i          ( ${dom.name}_muxed ),
-    .rst_ni         ( pwr_on_rsts_n[DomainIdx_${fmt_dom(dom.name)}] ),
+    .rst_ni         ( host_pwr_on_rst_n ),  // root reset, see the note on the domain dividers
     .en_i           ( sys_regs_hwif_out.${fmt_reg(dom.name)}_clk_en.${fmt_reg(dom.name)}_clk_en.value ),
     .test_mode_en_i ( test_mode_i ),
     .div_i          ( ${dom.name}_div_synced ),
@@ -174,7 +184,7 @@
     .ENABLE_CLOCK_IN_RESET(1)
   ) i_${dom.name}_static_div (
     .clk_i          ( ${dom.name}_muxed ),
-    .rst_ni         ( pwr_on_rsts_n[DomainIdx_${fmt_dom(dom.name)}] ),
+    .rst_ni         ( host_pwr_on_rst_n ),  // root reset, see the note on the domain dividers
     .en_i           ( 1'b1 ),
     .test_mode_en_i ( test_mode_i ),
     .div_i          ( 24'd${dom.static_div} ),

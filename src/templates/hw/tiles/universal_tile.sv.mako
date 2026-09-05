@@ -70,6 +70,18 @@
   # supported" in floo_route_select) and wormhole-parks the flit - so every router
   # receives the emitted CollectiveCfg, with only the FP reduction set following the
   # component (the FPU behind the wide offload exists only where has_offload).
+  # A TILE WITH A CLOCK DOMAIN OF ITS OWN (wip 3.11). The routers and chimneys of the mesh
+  # must share one clock, so a component placed in another domain than the host's gets
+  # TWO clocks: 'clk_i' becomes the domain clock (divided, muxed, gated by the group bit)
+  # and drives the isle only; the network side - router, chimney, stamper, isolation
+  # cells, error slaves, the asynchronous bridge - runs on 'sys_clk_i', the network clock,
+  # and takes the network's POWER-ON reset on 'sys_rst_ni': never the domain's reset,
+  # whose software half would otherwise reset the router and cut the mesh. The crossing
+  # between the two is the isle's own asynchronous AXI (closed by the bridge below); a
+  # synchronous isle in its own domain is refused until the tile carries a full axi_cdc
+  # pair for it. The host itself stays on the network clock by definition.
+  _host_dom = config.host.clock_domain or "system_clk"
+  tile_own_domain = bool(comp.clock_domain) and comp.clock_domain != _host_dom and not is_host
   use_mcast = comp.features and comp.features.get('multicast_target')
   route_cfg = "RouteCfg" if use_mcast else "RouteCfgNoMcast"
   colls = config.topology.noc_settings.collectives
@@ -137,6 +149,32 @@
                        f"network only, not in '{noc_mode}' mode")
   if (isle_async_slave or isle_async_master) and 'LogDepth' not in (isle_info or {}).get('supported_params', {}):
       raise ValueError(f"{c_name}: the asynchronous AXI bridge needs the isle's 'LogDepth' parameter")
+  # SYNCHRONOUS ISLES IN A DOMAIN OF THEIR OWN cross through full axi_cdc cells the tile
+  # instantiates at the isle boundary, on the network-typed segment of each data path:
+  # master side after the type adaptation (which is combinational and stays on the isle's
+  # clock), slave side before the inbound wide adapter. 'dom_<net>_in' is the domain-clock
+  # copy of what feeds the chimney (or the isolation cell), 'dom_<net>_out' the domain-clock
+  # copy of what the chimney (or the join, or the macro border) delivers. Both halves of
+  # every cell sit on the power-on reset of their side (cdc_fifo_gray is not warm-reset
+  # capable), and the domain-side half runs on the UNGATED domain clock so that the FIFO
+  # keeps moving whatever the group's gate does to the isle.
+  dom_sync_mst_nets = []
+  dom_sync_slv_nets = []
+  if tile_own_domain:
+      if has_master and not isle_async_master:
+          dom_sync_mst_nets = [n for n, on in (("narrow", has_master_narrow), ("wide", has_master_wide)) if on] \
+              if noc_mode == "dual" else [("narrow" if has_master_narrow else "wide")]
+      if has_slave and not isle_async_slave:
+          if use_join:
+              dom_sync_slv_nets = ["join"]
+          elif noc_mode == "dual":
+              dom_sync_slv_nets = [n for n, on in (("narrow", has_slave_narrow), ("wide", has_slave_wide)) if on]
+          else:
+              dom_sync_slv_nets = [("wide" if has_slave_wide else "narrow")]
+      if 'offload_wide_req_i' in known_ports and wide_red_on:
+          raise ValueError(f"{c_name}: clock_domain '{comp.clock_domain}' differs from the host's, but the isle "
+                           f"takes the wide reduction offload, an interface on the network clock with no "
+                           f"crossing: keep the component in the host's domain or disable wide_reduction")
   iso_nets = []
   if tile_owns_isolate:
       if has_master_narrow: iso_nets.append("narrow")
@@ -495,7 +533,7 @@
                         and slv_wide_req_t and slv_wide_rsp_t)
   # In a macro build the network-side signal is the boundary one (input-typed,
   # see the widening next to the chimney); otherwise it is the chimney output.
-  slv_wide_src = "border_wide" if macro_boundary_wide else "wide_out"
+  slv_wide_src = "dom_wide_out" if (tile_own_domain and has_slave and not isle_async_slave and noc_mode == "dual" and has_slave_wide) else ("border_wide" if macro_boundary_wide else "wide_out")
 
   # Collective-injection stamper (the narrow-reduction test): only the collective
   # group's own tiles inject - the reduction is write-side (members write, the
@@ -512,6 +550,7 @@
   stamper_on = False
   stamper_windows = []
   coll_csr = False
+  tile_base_port = False
   # The stamper follows the SLOTS the isle declares (a barrier slot and the alias
   # base at least), not the wide offload port: the narrow collectives need no
   # FPU-backed offload, and an isle with slots but without the wide port - the
@@ -533,13 +572,11 @@
           stamper_on = True
           # The stamper takes the instance base at run time from the identity PORT
           # (component standardization 2.6, the form that keeps sixteen identical
-          # tiles one hierarchical block): an isle with slots but without the
-          # port would elaborate with a dangling base - refused here instead.
-          if 'instance_base_addr_i' not in known_ports:
-              raise ValueError(
-                  f"[COLLECTIVE] component '{comp.name}': its isle declares collective slots but "
-                  f"no 'instance_base_addr_i' port - the stamper needs the instance base at run "
-                  f"time. Declare the identity port (component standardization 2.6).")
+          # tiles one hierarchical block). An isle whose IP derives its window from
+          # an ordinal (pulp_cluster: 'instance_id_i', base + id << 22) has no base
+          # port of its own - the TILE then declares it, driven per instance by the
+          # top like every identity port, and the isle never sees it.
+          tile_base_port = 'instance_base_addr_i' not in known_ports
   # Reduction windows take their opcode from the system controller (see coll_csr).
   coll_csr = bool(stamper_on and any(w[7] in ("col", "row") for w in stamper_windows))
   # The plain (SoC-wide) user width, to rebuild {mask, op, user} at the chimney.
@@ -622,6 +659,24 @@ module ${p_name}_${c_type}
   input  logic clk_i,
   input  logic rst_ni,
   input  logic test_mode_i,
+% if tile_own_domain and 'sys_clk_i' not in known_ports:
+  // THE NETWORK CLOCK AND ITS POWER-ON RESET: this tile's component lives in the
+  // '${comp.clock_domain}' domain, so clk_i / rst_ni above are the DOMAIN's (isle only)
+  // and the router, chimney and every network-side cell run on these two.
+  input  logic sys_clk_i,
+  input  logic sys_rst_ni,
+% endif
+% if tile_base_port:
+  // THIS INSTANCE'S BASE ADDRESS, for the collective stamper: the isle derives its own
+  // window from an ordinal and declares no base port, so the tile carries the identity
+  // port itself (component standardization 2.6). Driven per instance by the top.
+  input  logic [63:0] instance_base_addr_i,
+% endif
+% if tile_own_domain and 'pwr_on_rst_ni' not in known_ports:
+  // The domain's POWER-ON reset: what the domain-side halves of the tile's crossings
+  // are reset by (never the software reset above, see the crossing note).
+  input  logic pwr_on_rst_ni,
+% endif
 % if coll_csr:
   // COLLECTIVE OPCODES, from the system controller's collective_ctrl register:
   // what operation the column and the row reduction windows stamp. Runtime
@@ -750,6 +805,24 @@ module ${p_name}_${c_type}
   assign tile_clk   = clk_i;
   assign tile_rst_n = rst_ni;
 % endif
+% if tile_own_domain:
+
+  // THE ISLE'S RESET, RELEASED ON THE ISLE'S CLOCK. The reset above is a flop in the
+  // host's domain (the group register bit) or the domain reset from the tree; with the
+  // isle on a clock of its own, its release must be synchronised to that clock or the
+  // isle's flops leave reset on different cycles. Asserted asynchronously, released
+  // through three stages of the domain clock; bypassed under DFT like every reset
+  // synchroniser of the tree. Only where the clocks differ: on the host's domain the
+  // release is synchronous by construction and the net stays as it was.
+  logic tile_rst_n_domain;
+  rstgen i_tile_rst_sync (
+    .clk_i       ( tile_clk ),
+    .rst_ni      ( tile_rst_n ),
+    .test_mode_i ( test_mode_i ),
+    .rst_no      ( tile_rst_n_domain ),
+    .init_no     ( )
+  );
+% endif
 
   // =======================================================================
   // 0. NOC CLOCK DOMAIN ASSIGNMENT
@@ -759,7 +832,7 @@ module ${p_name}_${c_type}
   // clock, but it gracefully falls back to the local clock if isolated.
   logic noc_clk;
   logic noc_rst_n;
-% if 'sys_clk_i' in known_ports:
+% if 'sys_clk_i' in known_ports or tile_own_domain:
   assign noc_clk   = sys_clk_i;
   assign noc_rst_n = sys_rst_ni;
 % else:
@@ -956,6 +1029,22 @@ module ${p_name}_${c_type}
   ${noc_pkg}::axi_narrow_in_rsp_t  narrow_in_rsp;
   ${noc_pkg}::axi_narrow_out_req_t narrow_out_req;
   ${noc_pkg}::axi_narrow_out_rsp_t narrow_out_rsp;
+% for _n in dom_sync_mst_nets:
+<%
+  # The network's ingress type, collective wide included: the crossing must carry the
+  # {collective_mask, collective_op} user the isle writes, else the plain 1-bit user
+  # of the non-collective type truncates it (the tile's width guard caught this).
+  _dom_in_t = f"{noc_pkg}::collective_axi_wide_in" if (_n == "wide" and wide_coll_user) else f"{noc_pkg}::axi_{_n}_in"
+%>\
+  // Domain-clock side of the ${_n} master path (crossed below, see the domain note)
+  ${_dom_in_t}_req_t  dom_${_n}_in_req;
+  ${_dom_in_t}_rsp_t  dom_${_n}_in_rsp;
+% endfor
+% for _n in [n for n in dom_sync_slv_nets if n == "narrow"]:
+  // Domain-clock side of the narrow slave path
+  ${noc_pkg}::axi_narrow_${'in' if macro_boundary_narrow else 'out'}_req_t dom_narrow_out_req;
+  ${noc_pkg}::axi_narrow_${'in' if macro_boundary_narrow else 'out'}_rsp_t dom_narrow_out_rsp;
+% endfor
 % if stamper_on:
 
   // =======================================================================
@@ -1033,6 +1122,11 @@ module ${p_name}_${c_type}
   ${noc_pkg}::${'collective_axi_wide_in_rsp_t' if wide_coll_user else 'axi_wide_in_rsp_t'}    wide_in_rsp;
   ${noc_pkg}::axi_wide_out_req_t   wide_out_req;
   ${noc_pkg}::axi_wide_out_rsp_t   wide_out_rsp;
+% for _n in [n for n in dom_sync_slv_nets if n == "wide"]:
+  // Domain-clock side of the wide slave path (feeds the inbound wide adapter, if any)
+  ${noc_pkg}::axi_wide_${'in' if macro_boundary_wide else 'out'}_req_t dom_wide_out_req;
+  ${noc_pkg}::axi_wide_${'in' if macro_boundary_wide else 'out'}_rsp_t dom_wide_out_rsp;
+% endfor
 % if has_slave and (macro_boundary_narrow or macro_boundary_wide):
 
   // A subtile macro presents the network's input type on both of its AXI ports,
@@ -1130,8 +1224,8 @@ module ${p_name}_${c_type}
  % for net, req_t, rsp_t in mst_adapt:
   ${req_t} isle_${net}_req;
   ${rsp_t} isle_${net}_rsp;
-<% _dst = ("iso_" + net + "_req") if net in iso_nets else (net + "_in_req") %>\
-<% _src_rsp = ("iso_" + net + "_rsp") if net in iso_nets else (net + "_in_rsp") %>\
+<% _dst = ("dom_" + net + "_in_req") if net in dom_sync_mst_nets else (("iso_" + net + "_req") if net in iso_nets else (net + "_in_req")) %>\
+<% _src_rsp = ("dom_" + net + "_in_rsp") if net in dom_sync_mst_nets else (("iso_" + net + "_rsp") if net in iso_nets else (net + "_in_rsp")) %>\
 %   if net == 'wide' and not wide_coll_user:
   // No collective layout declared: the isle's wide user is copied into the
   // network's plain one, which zero-extends a narrower user harmlessly but would
@@ -1563,6 +1657,10 @@ module ${p_name}_${c_type}
                       nw_join_id_t, nw_join_data_t, nw_join_strb_t, nw_join_user_t)
 
   axi_nw_join_req_t join_req;
+% if "join" in dom_sync_slv_nets:
+  axi_nw_join_req_t dom_join_out_req;   // domain-clock side of the joined slave path
+  axi_nw_join_rsp_t dom_join_out_rsp;
+% endif
   axi_nw_join_rsp_t join_rsp;
   
   floo_nw_join #(
@@ -1659,10 +1757,72 @@ module ${p_name}_${c_type}
   );
 % endif
 
+% if dom_sync_mst_nets or dom_sync_slv_nets:
+
+  // =======================================================================
+  // DOMAIN CROSSINGS FOR A SYNCHRONOUS ISLE (see the domain note in the header)
+  // =======================================================================
+  // One full axi_cdc per data path: the domain-clock side on the UNGATED domain clock
+  // and the domain's power-on reset, the network side on the network clock and its
+  // power-on reset. Software resets never reach these cells; the isolation drain the
+  // firmware performs before every reset keeps their FIFOs empty across it.
+  localparam int unsigned DomCdcLogDepth   = 3;
+  localparam int unsigned DomCdcSyncStages = 3;
+ % for _n in dom_sync_mst_nets:
+<%
+  # Same type family as the dom_<n>_in declaration: the collective wide user travels whole.
+  _t_pfx = f"{noc_pkg}::collective_axi_wide_in" if (_n == "wide" and wide_coll_user) else f"{noc_pkg}::axi_{_n}_in"
+  # The cell drives what the isle (or its type adapter, which now writes dom_<n>_in) used
+  # to drive: the isolation cell's input when the tile owns one, else the chimney's.
+  _dst_sig = ("iso_" + _n) if _n in iso_nets else (_n + "_in")
+%>\
+  axi_cdc #(
+    .aw_chan_t  ( ${_t_pfx}_aw_chan_t ), .w_chan_t ( ${_t_pfx}_w_chan_t ), .b_chan_t ( ${_t_pfx}_b_chan_t ),
+    .ar_chan_t  ( ${_t_pfx}_ar_chan_t ), .r_chan_t ( ${_t_pfx}_r_chan_t ),
+    .axi_req_t  ( ${_t_pfx}_req_t ), .axi_resp_t ( ${_t_pfx}_rsp_t ),
+    .LogDepth   ( DomCdcLogDepth ), .SyncStages ( DomCdcSyncStages )
+  ) i_dom_cdc_${_n}_mst (
+    .src_clk_i  ( clk_i ),
+    .src_rst_ni ( pwr_on_rst_ni ),
+    .src_req_i  ( dom_${_n}_in_req ),
+    .src_resp_o ( dom_${_n}_in_rsp ),
+    .dst_clk_i  ( noc_clk ),
+    .dst_rst_ni ( noc_rst_n ),
+    .dst_req_o  ( ${_dst_sig}_req ),
+    .dst_resp_i ( ${_dst_sig}_rsp )
+  );
+ % endfor
+ % for _n in dom_sync_slv_nets:
+<%
+  if _n == "join":
+      _t_pfx, _src_sig = "axi_nw_join", "join"
+  else:
+      _border = macro_boundary_narrow if _n == "narrow" else macro_boundary_wide
+      _t_pfx = f"{noc_pkg}::axi_{_n}_{'in' if _border else 'out'}"
+      _src_sig = f"border_{_n}" if _border else f"{_n}_out"
+%>\
+  axi_cdc #(
+    .aw_chan_t  ( ${_t_pfx}_aw_chan_t ), .w_chan_t ( ${_t_pfx}_w_chan_t ), .b_chan_t ( ${_t_pfx}_b_chan_t ),
+    .ar_chan_t  ( ${_t_pfx}_ar_chan_t ), .r_chan_t ( ${_t_pfx}_r_chan_t ),
+    .axi_req_t  ( ${_t_pfx}_req_t ), .axi_resp_t ( ${_t_pfx}_rsp_t ),
+    .LogDepth   ( DomCdcLogDepth ), .SyncStages ( DomCdcSyncStages )
+  ) i_dom_cdc_${_n}_slv (
+    .src_clk_i  ( noc_clk ),
+    .src_rst_ni ( noc_rst_n ),
+    .src_req_i  ( ${_src_sig}_req ),
+    .src_resp_o ( ${_src_sig}_rsp ),
+    .dst_clk_i  ( clk_i ),
+    .dst_rst_ni ( pwr_on_rst_ni ),
+    .dst_req_o  ( dom_${_n}_out_req ),
+    .dst_resp_i ( dom_${_n}_out_rsp )
+  );
+ % endfor
+% endif
+
 <%
   isle_connections = [
     ".clk_i  ( tile_clk )",
-    ".rst_ni ( tile_rst_n )"
+    ".rst_ni ( tile_rst_n_domain )" if tile_own_domain else ".rst_ni ( tile_rst_n )"
   ]
   if 'test_mode_i' in known_ports: isle_connections.append(".test_mode_i ( test_mode_i )")
   if 'id_i' in known_ports: isle_connections.append(".id_i ( id_i )")
@@ -1708,11 +1868,13 @@ module ${p_name}_${c_type}
           # bypassed by a connection made here.
           if has_master_narrow:
               nsig = ("isle_narrow" if "narrow" in adapted_mst_nets
+                      else "dom_narrow_in" if "narrow" in dom_sync_mst_nets
                       else "iso_narrow" if "narrow" in iso_nets else "narrow_in")
               isle_connections.append(f".axi_narrow_req_o  ( {nsig}_req )")
               isle_connections.append(f".axi_narrow_resp_i ( {nsig}_rsp )")
           if has_master_wide:
               wsig = ("isle_wide" if "wide" in adapted_mst_nets
+                      else "dom_wide_in" if "wide" in dom_sync_mst_nets
                       else "iso_wide" if "wide" in iso_nets else "wide_in")
               isle_connections.append(f".axi_wide_req_o  ( {wsig}_req )")
               isle_connections.append(f".axi_wide_resp_i ( {wsig}_rsp )")
@@ -1720,7 +1882,7 @@ module ${p_name}_${c_type}
           # Single-network master: the isolation cell, when the tile owns one, replaces the
           # chimney's input as the isle's destination for the same reason as above.
           _mnet = "narrow" if has_master_narrow else "wide"
-          _mpfx = f"iso_{_mnet}" if _mnet in iso_nets else f"{_mnet}_in"
+          _mpfx = f"dom_{_mnet}_in" if _mnet in dom_sync_mst_nets else (f"iso_{_mnet}" if _mnet in iso_nets else f"{_mnet}_in")
           mst_req_sig = f"{_mpfx}_req"
           mst_rsp_sig = f"{_mpfx}_rsp"
           if isle_async_master:
@@ -1770,14 +1932,14 @@ module ${p_name}_${c_type}
           # the chimney declarations; any other dual isle takes the chimney output
           # directly, which already carries the width its subordinate side expects.
           if has_slave_narrow:
-              nsig = "border_narrow" if macro_boundary_narrow else "narrow_out"
+              nsig = "dom_narrow_out" if "narrow" in dom_sync_slv_nets else ("border_narrow" if macro_boundary_narrow else "narrow_out")
               isle_connections.append(f".axi_narrow_req_i  ( {nsig}_req )")
               isle_connections.append(f".axi_narrow_resp_o ( {nsig}_rsp )")
               _slv_guard("narrow", "axi_narrow_req_i", "axi_narrow_resp_o",
                          f"{noc_pkg}::axi_narrow_{'in' if macro_boundary_narrow else 'out'}_req_t",
                          f"{noc_pkg}::axi_narrow_{'in' if macro_boundary_narrow else 'out'}_rsp_t")
           if has_slave_wide:
-              wsig = "isle_wide_slv" if slv_wide_adapt else ("border_wide" if macro_boundary_wide else "wide_out")
+              wsig = "isle_wide_slv" if slv_wide_adapt else ("dom_wide_out" if "wide" in dom_sync_slv_nets else ("border_wide" if macro_boundary_wide else "wide_out"))
               isle_connections.append(f".axi_wide_req_i  ( {wsig}_req )")
               isle_connections.append(f".axi_wide_resp_o ( {wsig}_rsp )")
               if not slv_wide_adapt:
@@ -1787,6 +1949,8 @@ module ${p_name}_${c_type}
       else:
           req_sig = "join_req" if use_join else ("wide_out_req" if has_slave_wide else "narrow_out_req")
           rsp_sig = "join_rsp" if use_join else ("wide_out_rsp" if has_slave_wide else "narrow_out_rsp")
+          if dom_sync_slv_nets:
+              req_sig, rsp_sig = f"dom_{dom_sync_slv_nets[0]}_out_req", f"dom_{dom_sync_slv_nets[0]}_out_rsp"
           
           if isle_async_slave:
               for _ch in ("aw", "w", "ar"):

@@ -74,13 +74,21 @@ def placement_items(comp) -> list:
     return logical if isinstance(logical, list) else ([logical] if logical else [])
 
 
-def instance_bases_and_coords(comp) -> tuple[Optional[list[int]], list[tuple[int, int]]]:
+def instance_bases_and_coords(comp, fixed_params: dict = None) -> tuple[Optional[list[int]], list[tuple[int, int]]]:
     """Per-instance bases and coordinates, in the enumeration order the generator uses.
 
     Bases come in both schema forms - an explicit list, or a scalar base plus
     size_per_instance repeated over the placement box - and the box enumerates
     column-fastest (y varies first), which is what makes the 1D chains geometric
     columns. Returns (None, coords) when the component has no per-instance form.
+
+    The stride may also come from the isle header: an IP that derives its window from
+    an ordinal declares 'InstanceIdStride', and the schema copies it into
+    size_per_instance - but only in the validation phase, AFTER the tiles are rendered
+    (ollivander.py, phase 1 before phase 2). The tile template therefore passes the
+    header's fixed parameters here and the same rule is applied directly, so the
+    stamper decision does not depend on the phase order (found 2026-09-05: the PULP
+    array's stamper was silently skipped and its alias writes reached the chimney).
     """
     items = placement_items(comp)
     coords: list[tuple[int, int]] = []
@@ -97,11 +105,12 @@ def instance_bases_and_coords(comp) -> tuple[Optional[list[int]], list[tuple[int
     bases = slv.get("base_addr") if slv else None
     if isinstance(bases, list):
         return [_to_int(b) for b in bases], coords
-    if bases is not None and slv.get("size_per_instance"):
+    stride_src = (slv.get("size_per_instance") if slv else None) or (fixed_params or {}).get("InstanceIdStride")
+    if bases is not None and stride_src:
         n = sum((it["box"]["x_end"] - it["box"]["x_start"] + 1) * (it["box"]["y_end"] - it["box"]["y_start"] + 1)
                 for it in items if isinstance(it, dict) and it.get("box"))
         if n > 1:
-            b0, stride = _to_int(bases), _to_int(slv["size_per_instance"])
+            b0, stride = _to_int(bases), _to_int(stride_src)
             return [b0 + i * stride for i in range(n)], coords
     return None, coords
 
@@ -118,7 +127,7 @@ def collective_geometry(comp, fixed_params: dict, narrow_red_on: bool,
     boff = fx.get("OffloadBarrierOffs")
     if boff is None:
         return None
-    bases, coords = instance_bases_and_coords(comp)
+    bases, coords = instance_bases_and_coords(comp, fx)
     if bases is None or len(bases) < 2:
         return None
     mask = 0

@@ -1599,7 +1599,10 @@ def validate_soc_components(config: OllivanderConfig, search_paths: list[Path] =
                         if is_sync:
                             if not info.get("has_sync_axi_slave"):
                                 raise ValueError(f"\n[{comp.name}] Component '{comp.type}' does not expose synchronous AXI ports (axi_req_i/axi_resp_o), but YAML defines it as sync_domain: true.")
-                            if c_clk != host_clk:
+                            # On a mesh the universal tile crosses a synchronous isle into its own
+                            # domain with a full axi_cdc pair (wave B); the crossbar has no such
+                            # cell and keeps refusing the combination.
+                            if c_clk != host_clk and config.topology.type != "noc":
                                 raise ValueError(f"\n[{comp.name}] Component '{comp.type}' is sync_domain: true, but its clock domain ('{c_clk}') differs from host ('{host_clk}').")
                         else:
                             if not info.get("has_async_axi_slave"):
@@ -1757,6 +1760,18 @@ def resolve_offload_targets(config: OllivanderConfig, search_paths: list[Path] =
             contract["sys_isolate"] = bool(sys_cfg.get("isolate"))
             contract["sys_boot_enable"] = bool(sys_cfg.get("boot_enable"))
             contract["sys_busy_status"] = bool(sys_cfg.get("has_busy_status"))
+            # The target's clock domain, when it is a managed one with a programmable divider:
+            # the offload test then reprograms that divider between its two power cycles, the
+            # runtime path of the clock tree (register -> handshake -> CDC -> clk_int_div) that
+            # no test had ever driven. None for a target on the host's domain.
+            contract["domain_reg"] = None
+            contract["domain_default_div"] = 1
+            _dom_name = comp.clock_domain
+            for _d in (config.managed_clock_domains if config.clock_tree else []):
+                if _dom_name and _d.name == _dom_name and _d.has_divider:
+                    from core.utils import fmt_reg
+                    contract["domain_reg"] = fmt_reg(_d.name)
+                    contract["domain_default_div"] = int(_d.default_div or 1)
             # Auto control group membership: when the component's type is the
             # target of a clk_rst_control group, its instances power on gated
             # (or not - the POR value is a policy detail) and the firmware owns

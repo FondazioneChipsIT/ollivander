@@ -104,95 +104,103 @@ else:
         # single-source comment); the host firmware checks it per-core, exactly.
         f'-DOFFLOAD_SECONDARY_CODE={hex(offload_secondary_code)}',
     ]
-    if t.get("collective_test"):
-        # Global addresses of instance 0's stamped windows: writing them makes
-        # the network reduce (IntAdd) or barrier (LsbAnd) across the group.
+# The collective phases ride EITHER contract: the defines below select them for the
+# payload regardless of how the cluster is started.
+if t.get("collective_test"):
+    # Global addresses of instance 0's stamped windows: writing them makes
+    # the network reduce (IntAdd) or barrier (LsbAnd) across the group.
+    specific += [
+        # One switch the payload keys the whole collective section on: the
+        # phases inside it are then selected by their own defines.
+        '-DOFFLOAD_COLLECTIVE_PHASE=1',
+        f'-DOFFLOAD_BARRIER_ADDR={hex(t["coll_alias_base"] + t["barrier_offs"])}',
+        # Local (own-range) view of the meta word: every core0 reads its
+        # role without touching the network.
+        f'-DOFFLOAD_COLL_META_LOCAL={hex(local_base + t["coll_meta_offs"])}',
+    ]
+    if t.get("collective_reduce"):
         specific += [
-            # One switch the payload keys the whole collective section on: the
-            # phases inside it are then selected by their own defines.
-            '-DOFFLOAD_COLLECTIVE_PHASE=1',
-            f'-DOFFLOAD_BARRIER_ADDR={hex(t["coll_alias_base"] + t["barrier_offs"])}',
-            # Local (own-range) view of the meta word: every core0 reads its
-            # role without touching the network.
-            f'-DOFFLOAD_COLL_META_LOCAL={hex(local_base + t["coll_meta_offs"])}',
+            f'-DOFFLOAD_COLLECT_ADDR={hex(t["coll_alias_base"] + t["collect_offs"])}',
+            f'-DOFFLOAD_COLL_COL_LOCAL={hex(local_base + t["collect_col_offs"])}',
+            # REAL global address of the final slot, for the pre-barrier read
+            # poll: reads must NOT travel through the alias (the stamper only
+            # rewrites AW hits, and an aliased AR would reach the SAM undecoded).
+            f'-DOFFLOAD_COLLECT_READ_ADDR={hex(t["base_addr"] + t["collect_offs"])}',
+            # The landings' initial value: the payload waits for a landing to
+            # leave it, whatever operation the collective_ctrl register holds.
+            f'-DOFFLOAD_COLL_EMPTY={hex(t["coll_empty"])}u',
         ]
-        if t.get("collective_reduce"):
+        if t.get("two_phase"):
+            # Only a real 2D grid gets the column window; a degenerate (1D)
+            # group reduces straight onto the final slot.
             specific += [
-                f'-DOFFLOAD_COLLECT_ADDR={hex(t["coll_alias_base"] + t["collect_offs"])}',
-                f'-DOFFLOAD_COLL_COL_LOCAL={hex(local_base + t["collect_col_offs"])}',
-                # REAL global address of the final slot, for the pre-barrier read
-                # poll: reads must NOT travel through the alias (the stamper only
-                # rewrites AW hits, and an aliased AR would reach the SAM undecoded).
-                f'-DOFFLOAD_COLLECT_READ_ADDR={hex(t["base_addr"] + t["collect_offs"])}',
-                # The landings' initial value: the payload waits for a landing to
-                # leave it, whatever operation the collective_ctrl register holds.
-                f'-DOFFLOAD_COLL_EMPTY={hex(t["coll_empty"])}u',
+                f'-DOFFLOAD_COLLECT_COL_ADDR={hex(t["coll_alias_base"] + t["collect_col_offs"])}',
             ]
-            if t.get("two_phase"):
-                # Only a real 2D grid gets the column window; a degenerate (1D)
-                # group reduces straight onto the final slot.
-                specific += [
-                    f'-DOFFLOAD_COLLECT_COL_ADDR={hex(t["coll_alias_base"] + t["collect_col_offs"])}',
-                ]
-        if t.get("collective_wide"):
-            # The wide reduction, in TWO dimension-ordered phases like the narrow
-            # one (a sequential reduction merges at most two contributions per
-            # router): every member sends its lanes to its column head's landing
-            # with the COLUMN mask, then the heads send the column sums to
-            # instance 0 with the ROW mask, a barrier in between. No alias on this
-            # channel: a write whose user carries a non-zero mask leaves the
-            # cluster through the SoC port whatever its address, so the DMA
-            # targets REAL landings and instance 0's own contribution enters the
-            # network too. The column head's address comes from a host-written
-            # mailbox, the payload knowing neither its base nor its column.
-            _two = t.get("two_phase") and t.get("y_mask")
-            _user_col = ((t["y_mask"] if _two else t["group_mask"]) << 4) | 0x3   # {mask, FpAdd}
-            _user_row = (t["x_mask"] << 4) | 0x3
-            _lane_hi = [struct.unpack('<II', struct.pack('<d', float(k + 1)))[1] for k in range(8)]
-            _ydim = t.get("y_dim") or 1
-            _exp_col0_hi = struct.unpack('<II', struct.pack('<d', float(_ydim if _two else t["num_instances"])))[1]
-            _exp0_hi = struct.unpack('<II', struct.pack('<d', float(t["num_instances"])))[1]
-            specific += [
-                '-DOFFLOAD_WIDE_RED=1',
-                f'-DOFFLOAD_DMA_HART={t["dma_hart"]}',
-                f'-DOFFLOAD_WIDE_SRC_LOCAL={hex(local_base + t["wide_src_offs"])}',
-                f'-DOFFLOAD_WIDE_LANDING_LOCAL={hex(local_base + t["wide_offs"])}',
-                f'-DOFFLOAD_WIDE_COLDST_LOCAL={hex(local_base + t["wide_col_dst_offs"])}',
-                f'-DOFFLOAD_WIDE_DST_ADDR={hex(t["base_addr"] + t["wide_offs"])}',
-                '-DOFFLOAD_WIDE_BYTES=64',
-                f'-DOFFLOAD_WIDE_USER_COL_LO={hex(_user_col & 0xFFFFFFFF)}',
-                f'-DOFFLOAD_WIDE_USER_COL_HI={hex(_user_col >> 32)}',
-                f'-DOFFLOAD_WIDE_USER_ROW_LO={hex(_user_row & 0xFFFFFFFF)}',
-                f'-DOFFLOAD_WIDE_USER_ROW_HI={hex(_user_row >> 32)}',
-                # Handshake words: the upper halves of the meta and multicast beats,
-                # otherwise unwritten (they were the source of the dcache X reads).
-                f'-DOFFLOAD_WIDE_GO_LOCAL={hex(local_base + t["coll_meta_offs"] + 4)}',
-                f'-DOFFLOAD_WIDE_DONE_LOCAL={hex(local_base + t["mcast_offs"] + 4)}',
-                f'-DOFFLOAD_WIDE_EXP_COL0_HI={hex(_exp_col0_hi)}',
-                f'-DOFFLOAD_WIDE_EXP0_HI={hex(_exp0_hi)}',
-            ] + [f'-DOFFLOAD_WIDE_LANE_HI_{k}={hex(v)}' for k, v in enumerate(_lane_hi)]
-            if _two:
-                specific += ['-DOFFLOAD_WIDE_TWO_PHASE=1']
-        elif t.get("dma_hart") is not None:
-            # B1 probe: a bare 512-bit burst, no collective. Both ends are the
-            # contract's wide slot - the cluster's own copy through the alias
-            # (every instance sees itself there) and instance 0's through its
-            # window - so the transfer stays inside memory the contract owns and
-            # both ends are 64-byte aligned, which is what makes iDMA emit one
-            # full wide beat instead of strobed narrow ones.
-            specific += [
-                f'-DOFFLOAD_WIDE_PROBE=1',
-                f'-DOFFLOAD_DMA_HART={t["dma_hart"]}',
-                f'-DOFFLOAD_WIDE_SRC_LOCAL={hex(local_base + t["wide_offs"])}',
-                f'-DOFFLOAD_WIDE_DST_ADDR={hex(t["base_addr"] + t["wide_offs"])}',
-                '-DOFFLOAD_WIDE_BYTES=64',
-            ]
-        if t.get("collective_mcast"):
-            specific += [
-                f'-DOFFLOAD_MCAST_ADDR={hex(t["coll_alias_base"] + t["mcast_offs"])}',
-                f'-DOFFLOAD_MCAST_LOCAL={hex(local_base + t["mcast_offs"])}',
-                '-DOFFLOAD_MCAST_VALUE=0x5A11ED00',
-            ]
+    if t.get("collective_wide"):
+        # The wide reduction, in TWO dimension-ordered phases like the narrow
+        # one (a sequential reduction merges at most two contributions per
+        # router): every member sends its lanes to its column head's landing
+        # with the COLUMN mask, then the heads send the column sums to
+        # instance 0 with the ROW mask, a barrier in between. No alias on this
+        # channel: a write whose user carries a non-zero mask leaves the
+        # cluster through the SoC port whatever its address, so the DMA
+        # targets REAL landings and instance 0's own contribution enters the
+        # network too. The column head's address comes from a host-written
+        # mailbox, the payload knowing neither its base nor its column.
+        _two = t.get("two_phase") and t.get("y_mask")
+        _user_col = ((t["y_mask"] if _two else t["group_mask"]) << 4) | 0x3   # {mask, FpAdd}
+        _user_row = (t["x_mask"] << 4) | 0x3
+        _lane_hi = [struct.unpack('<II', struct.pack('<d', float(k + 1)))[1] for k in range(8)]
+        _ydim = t.get("y_dim") or 1
+        _exp_col0_hi = struct.unpack('<II', struct.pack('<d', float(_ydim if _two else t["num_instances"])))[1]
+        _exp0_hi = struct.unpack('<II', struct.pack('<d', float(t["num_instances"])))[1]
+        specific += [
+            '-DOFFLOAD_WIDE_RED=1',
+            f'-DOFFLOAD_DMA_HART={t["dma_hart"]}',
+            f'-DOFFLOAD_WIDE_SRC_LOCAL={hex(local_base + t["wide_src_offs"])}',
+            f'-DOFFLOAD_WIDE_LANDING_LOCAL={hex(local_base + t["wide_offs"])}',
+            f'-DOFFLOAD_WIDE_COLDST_LOCAL={hex(local_base + t["wide_col_dst_offs"])}',
+            f'-DOFFLOAD_WIDE_DST_ADDR={hex(t["base_addr"] + t["wide_offs"])}',
+            '-DOFFLOAD_WIDE_BYTES=64',
+            f'-DOFFLOAD_WIDE_USER_COL_LO={hex(_user_col & 0xFFFFFFFF)}',
+            f'-DOFFLOAD_WIDE_USER_COL_HI={hex(_user_col >> 32)}',
+            f'-DOFFLOAD_WIDE_USER_ROW_LO={hex(_user_row & 0xFFFFFFFF)}',
+            f'-DOFFLOAD_WIDE_USER_ROW_HI={hex(_user_row >> 32)}',
+            # Handshake words: the upper halves of the meta and multicast beats,
+            # otherwise unwritten (they were the source of the dcache X reads).
+            f'-DOFFLOAD_WIDE_GO_LOCAL={hex(local_base + t["coll_meta_offs"] + 4)}',
+            f'-DOFFLOAD_WIDE_DONE_LOCAL={hex(local_base + t["mcast_offs"] + 4)}',
+            f'-DOFFLOAD_WIDE_EXP_COL0_HI={hex(_exp_col0_hi)}',
+            f'-DOFFLOAD_WIDE_EXP0_HI={hex(_exp0_hi)}',
+        ] + [f'-DOFFLOAD_WIDE_LANE_HI_{k}={hex(v)}' for k, v in enumerate(_lane_hi)]
+        if _two:
+            specific += ['-DOFFLOAD_WIDE_TWO_PHASE=1']
+    elif t.get("dma_hart") is not None:
+        # B1 probe: a bare 512-bit burst, no collective. Both ends are the
+        # contract's wide slot - the cluster's own copy through the alias
+        # (every instance sees itself there) and instance 0's through its
+        # window - so the transfer stays inside memory the contract owns and
+        # both ends are 64-byte aligned, which is what makes iDMA emit one
+        # full wide beat instead of strobed narrow ones.
+        specific += [
+            f'-DOFFLOAD_WIDE_PROBE=1',
+            f'-DOFFLOAD_DMA_HART={t["dma_hart"]}',
+            f'-DOFFLOAD_WIDE_SRC_LOCAL={hex(local_base + t["wide_offs"])}',
+            f'-DOFFLOAD_WIDE_DST_ADDR={hex(t["base_addr"] + t["wide_offs"])}',
+            '-DOFFLOAD_WIDE_BYTES=64',
+        ]
+    if t.get("collective_mcast"):
+        specific += [
+            f'-DOFFLOAD_MCAST_ADDR={hex(t["coll_alias_base"] + t["mcast_offs"])}',
+            f'-DOFFLOAD_MCAST_LOCAL={hex(local_base + t["mcast_offs"])}',
+            '-DOFFLOAD_MCAST_VALUE=0x5A11ED00',
+        ]
+    # WHO CAN SEE INSTANCE 0'S LANDING. A target without a local alias base decodes
+    # instance 0's addresses as its OWN memory on the core side (pulp_cluster), so a
+    # read of the final landing at its real address is local everywhere but on instance
+    # 0: the payload then leaves that drain read to the multicast issuer alone.
+    if local_base == t["base_addr"] and t["num_instances"] > 1:
+        specific += ['-DOFFLOAD_ROOT_SHADOWED=1']
 payload_defines = " ".join(common + specific)
 %>\
 # Target '${t_name}': ${t["isa"]}/${t["abi"]}, registers via the '${t["contract"]}' contract.

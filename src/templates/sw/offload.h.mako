@@ -419,6 +419,7 @@ static inline void ${t_name}_init_returns(uint32_t inst) {
         *(volatile uint32_t *)(uintptr_t)(${T}_OFFLOAD_RETURN_BASE(inst) + i * 4u) = 0;
     }
 }
+% endif
 % if t.get("collective_test"):
 
 /* Collective (narrow-reduction) slots: instance 0's collect and barrier words,
@@ -559,6 +560,7 @@ static inline int ${t_name}_wait_collective(uint32_t exp_red) {
     return -1;
 }
 % endif
+% if t["contract"] == "memory_mapped":
 
 /* Publish the payload entry point where the instance's bootrom will read it. */
 static inline void ${t_name}_set_entry(uint32_t inst, uint32_t entry) {

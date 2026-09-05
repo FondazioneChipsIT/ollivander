@@ -97,6 +97,29 @@ clock_tree:
       has_mux: false
       has_divider: false
       has_debug_divider: false
+    # A DOMAIN OF ITS OWN FOR THE PULP ARRAY, at half the network speed: sourced from the
+    # SoC clock (no generator), divided by 2 at reset and reprogrammable through its
+    # divider register. Its tiles keep router and chimney on the network clock and cross
+    # into the cluster through the isle's own asynchronous AXI (universal tile); the
+    # array's power-on reset and software reset come from this domain's reset tree.
+    - name: "pulp"
+      description: "PULP cluster array, half the network clock"
+      is_real_time: false
+      has_mux: false
+      has_divider: true
+      default_div: 2
+      has_debug_divider: false
+    # THE SNITCH GROUP TOO, in a domain of its own: these isles are synchronous, so the tile
+    # crosses them with full axi_cdc pairs at the isle boundary (narrow and wide, both
+    # directions), and the two-phase collectives, the multicast and the barrier travel
+    # through those cells in both directions - the hardest traffic the tile carries.
+    - name: "cluster"
+      description: "Snitch cluster array, half the network clock"
+      is_real_time: false
+      has_mux: false
+      has_divider: true
+      default_div: 2
+      has_debug_divider: false
 
 # ------------------------------------------------------------------------------
 # 4. GLOBAL SYSTEM CONTROLLER & REGISTERS
@@ -207,7 +230,7 @@ components:
   - name: "compute_clusters"
     description: "AI and Machine Learning compute clusters"
     type: "cluster_subtile"
-    clock_domain: "system"
+    clock_domain: "cluster"   # its own domain (clock_tree above): synchronous isle, crossed by the tile
     # A 'box' placement automatically generates a 2D array of instances.
     # Here: X from 4 to 7 (4 columns), Y from 2 to 3 (2 rows) = 8 clusters, the upper
     # half of the compute area; the lower-left quarter is the PULP array below and the
@@ -239,7 +262,7 @@ components:
   - name: "pulp_cluster"
     description: "PULP multicore clusters (RI5CY), a 2x2 array started by wire"
     type: "pulp_cluster_isle"
-    clock_domain: "system"
+    clock_domain: "pulp"      # its own domain (clock_tree above): the tile runs on two clocks
     # THE WIRE-CONTROLLED WITNESS OF THE MESH. Unlike the Snitch clusters (memory-mapped
     # start), these are released by the System Controller's fetch-enable wire and report
     # completion on their eoc_o wire: one bit per instance in both registers. The isle
@@ -258,8 +281,20 @@ components:
         # base + (instance_id << 22)): the isle declares it (InstanceIdStride, 4 MB) and
         # the generator takes it as size_per_instance; a different value here is refused.
         - name: "pulp_tcdm_and_periph"
-          base_addr: 0x30000000
+          # BELOW the host's CIE window ([0x2200_0000, 0x8000_0000) here, Cva6ExtCie*): the
+          # host polls this memory and reads the collective landings the network writes
+          # into it, and CVA6 caches the CIE window - at 0x3000_0000 the second power
+          # cycle read its own initialisation back from the cache while the landings sat
+          # in the TCDM (2026-09-05). The generator now refuses an offload window inside
+          # a cached region; the Snitch box at 0x2100_0000 was outside by luck.
+          base_addr: 0x18000000
           sync_domain: false     # the isle's ports are asynchronous (its own CDC half); the tile closes them
+    features:
+      # A second collective group, on a wire-started array: the isle declares the slots
+      # (pulp_cluster_isle, Offload*Offs / OffloadCollAliasBase), the tile stamps the
+      # payload's writes, and the same barrier, two-phase integer reduction and multicast
+      # the Snitch box runs are checked here at the PULP domain's ratio.
+      multicast_target: true
     system_config:
       isolate: true
       fetch_enable: true

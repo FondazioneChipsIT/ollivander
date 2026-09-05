@@ -65,69 +65,16 @@ static uint32_t offload_workload(uint32_t inst_offs) {
     return acc ^ (uint32_t)OFFLOAD_CHECK_XOR;
 }
 
-#ifdef OFFLOAD_MM
-
-int main(void) {
-    /* Core index within the cluster: snitch-family harts are numbered globally. */
-    uint32_t hartid;
-    __asm__ volatile("csrr %0, mhartid" : "=r"(hartid));
-    uint32_t idx = hartid - (uint32_t)OFFLOAD_HART_BASE;
-
-    volatile uint32_t *slots = (volatile uint32_t *)OFFLOAD_RETURN_ADDR;
-    /* Core 0 carries the checksum; every OTHER core returns the distinctive
-     * secondary code, NOT zero - zero is what a wrong code path would store,
-     * so the host's exact per-core check could never tell them apart. */
-    uint32_t value = (idx == 0) ? offload_workload(0u) : (uint32_t)OFFLOAD_SECONDARY_CODE;
-
-    /* One store closes the protocol: result in the upper bits, done in bit 0. */
-    slots[idx] = (value << 1) | 1u;
-
-#ifdef OFFLOAD_WIDE_PROBE
-    /* WIDE BURST PROBE (no collective involved). The Snitch cores store 64
-     * bits, so the only master that can put a 512-bit beat on the wide channel
-     * is the cluster iDMA - and it is driven by CUSTOM INSTRUCTIONS that only
-     * one hart may execute (the contract names it; on any other hart they trap
-     * as illegal). The mnemonics live in the Snitch LLVM only, so they are
-     * emitted through `.insn r` on opcode 0x2b, which plain rv32im assembles:
-     *   funct7 0x00 dmsrc  rs1=lo rs2=hi     source address
-     *   funct7 0x01 dmdst  rs1=lo rs2=hi     destination address
-     *   funct7 0x02 dmcpyi rd=txid rs1=size  rs2 field is an IMMEDIATE: bits
-     *                                        [21:20] config (0 = 1D), [24:22] channel
-     *   funct7 0x04 dmstati rd=status        rs2 immediate: [21:20] 2 = busy
-     * The size must be a MULTIPLE OF 64 BYTES or iDMA emits strobed narrow
-     * beats instead of full wide ones - which would make this probe pass while
-     * proving nothing. */
-    if (idx == (uint32_t)OFFLOAD_DMA_HART) {
-        register uint32_t slo = (uint32_t)OFFLOAD_WIDE_SRC_LOCAL;
-        register uint32_t dlo = (uint32_t)OFFLOAD_WIDE_DST_ADDR;
-        register uint32_t zero_hi = 0u;
-        register uint32_t size = (uint32_t)OFFLOAD_WIDE_BYTES;
-        register uint32_t txid, busy;
-        /* dmuser (funct7 0x08): the AXI user the transfers will carry. There is no
-         * separate user register in the frontend - the instruction writes the user
-         * field of the request being built - so it is set EXPLICITLY to zero
-         * (Unicast, empty mask) before a plain transfer, never left to whatever the
-         * request register held: with the wide collectives generated in, the
-         * chimney READS this field. The reduction step will set {mask, op} here. */
-        __asm__ volatile(".insn r 0x2b, 0, 0x08, x0, %[ulo], %[uhi]" ::
-                         [ulo] "r"(zero_hi), [uhi] "r"(zero_hi));
-        __asm__ volatile(".insn r 0x2b, 0, 0x00, x0, %[slo], %[shi]" ::
-                         [slo] "r"(slo), [shi] "r"(zero_hi));
-        __asm__ volatile(".insn r 0x2b, 0, 0x01, x0, %[dlo], %[dhi]" ::
-                         [dlo] "r"(dlo), [dhi] "r"(zero_hi));
-        __asm__ volatile(".insn r 0x2b, 0, 0x02, %[txid], %[size], x0"
-                         : [txid] "=r"(txid) : [size] "r"(size));
-        do {
-            __asm__ volatile(".insn r 0x2b, 0, 0x04, %[busy], x0, x2" : [busy] "=r"(busy));
-        } while (busy != 0u);
-        (void)txid;
-    }
-#endif
 #ifdef OFFLOAD_COLLECTIVE_PHASE
-    /* Every core reads the meta word: core 0 to run the phases, the DMA hart to
-     * know whether a wide phase happens this run, the other cores to know how
-     * long they must stay awake (see the end of this function). */
-    uint32_t coll_meta = *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLL_META_LOCAL;
+/*
+ * THE COLLECTIVE PHASES, shared by both contracts. 'idx' is the core index within the
+ * cluster, 'value' this instance's contribution (its checksum) and 'coll_meta' the
+ * meta word the host wrote before the wake ({num_instances, y_dim, is_mcast_issuer,
+ * is_column_head}; zero parks the whole block). Every core of a memory-mapped cluster
+ * calls it - core 0 runs the narrow phases, the DMA hart the wide one - while a
+ * wire-released cluster calls it from its single running core.
+ */
+static void offload_collective_phases(uint32_t idx, uint32_t value, uint32_t coll_meta) {
 #ifdef OFFLOAD_WIDE_RED
     /* WIDE REDUCTION, DMA HART - two dimension-ordered phases, like the narrow
      * one: a sequential reduction merges at most TWO contributions per router, so
@@ -243,6 +190,13 @@ int main(void) {
 #ifdef OFFLOAD_COLLECT_READ_ADDR
         /* Everyone waits for the final landing (op-agnostic, as above) before
          * the next phase: the observable drain the phase order rests on. */
+#ifdef OFFLOAD_ROOT_SHADOWED
+        /* This cluster decodes instance 0's addresses as its OWN memory (no local alias
+         * base in the contract), so only instance 0 - the multicast issuer, meta bit 1 -
+         * can observe the landing; the others would spin on their own unwritten slot.
+         * The drain still holds: the issuer of the next phase is the one that waits. */
+        if (coll_meta & 2u)
+#endif
         while (*(volatile uint32_t *)(uintptr_t)OFFLOAD_COLLECT_READ_ADDR == OFFLOAD_COLL_EMPTY) {}
 #endif
 #ifdef OFFLOAD_WIDE_RED
@@ -285,6 +239,73 @@ int main(void) {
 #endif
         }
     }
+}
+#endif
+
+#ifdef OFFLOAD_MM
+
+int main(void) {
+    /* Core index within the cluster: snitch-family harts are numbered globally. */
+    uint32_t hartid;
+    __asm__ volatile("csrr %0, mhartid" : "=r"(hartid));
+    uint32_t idx = hartid - (uint32_t)OFFLOAD_HART_BASE;
+
+    volatile uint32_t *slots = (volatile uint32_t *)OFFLOAD_RETURN_ADDR;
+    /* Core 0 carries the checksum; every OTHER core returns the distinctive
+     * secondary code, NOT zero - zero is what a wrong code path would store,
+     * so the host's exact per-core check could never tell them apart. */
+    uint32_t value = (idx == 0) ? offload_workload(0u) : (uint32_t)OFFLOAD_SECONDARY_CODE;
+
+    /* One store closes the protocol: result in the upper bits, done in bit 0. */
+    slots[idx] = (value << 1) | 1u;
+
+#ifdef OFFLOAD_WIDE_PROBE
+    /* WIDE BURST PROBE (no collective involved). The Snitch cores store 64
+     * bits, so the only master that can put a 512-bit beat on the wide channel
+     * is the cluster iDMA - and it is driven by CUSTOM INSTRUCTIONS that only
+     * one hart may execute (the contract names it; on any other hart they trap
+     * as illegal). The mnemonics live in the Snitch LLVM only, so they are
+     * emitted through `.insn r` on opcode 0x2b, which plain rv32im assembles:
+     *   funct7 0x00 dmsrc  rs1=lo rs2=hi     source address
+     *   funct7 0x01 dmdst  rs1=lo rs2=hi     destination address
+     *   funct7 0x02 dmcpyi rd=txid rs1=size  rs2 field is an IMMEDIATE: bits
+     *                                        [21:20] config (0 = 1D), [24:22] channel
+     *   funct7 0x04 dmstati rd=status        rs2 immediate: [21:20] 2 = busy
+     * The size must be a MULTIPLE OF 64 BYTES or iDMA emits strobed narrow
+     * beats instead of full wide ones - which would make this probe pass while
+     * proving nothing. */
+    if (idx == (uint32_t)OFFLOAD_DMA_HART) {
+        register uint32_t slo = (uint32_t)OFFLOAD_WIDE_SRC_LOCAL;
+        register uint32_t dlo = (uint32_t)OFFLOAD_WIDE_DST_ADDR;
+        register uint32_t zero_hi = 0u;
+        register uint32_t size = (uint32_t)OFFLOAD_WIDE_BYTES;
+        register uint32_t txid, busy;
+        /* dmuser (funct7 0x08): the AXI user the transfers will carry. There is no
+         * separate user register in the frontend - the instruction writes the user
+         * field of the request being built - so it is set EXPLICITLY to zero
+         * (Unicast, empty mask) before a plain transfer, never left to whatever the
+         * request register held: with the wide collectives generated in, the
+         * chimney READS this field. The reduction step will set {mask, op} here. */
+        __asm__ volatile(".insn r 0x2b, 0, 0x08, x0, %[ulo], %[uhi]" ::
+                         [ulo] "r"(zero_hi), [uhi] "r"(zero_hi));
+        __asm__ volatile(".insn r 0x2b, 0, 0x00, x0, %[slo], %[shi]" ::
+                         [slo] "r"(slo), [shi] "r"(zero_hi));
+        __asm__ volatile(".insn r 0x2b, 0, 0x01, x0, %[dlo], %[dhi]" ::
+                         [dlo] "r"(dlo), [dhi] "r"(zero_hi));
+        __asm__ volatile(".insn r 0x2b, 0, 0x02, %[txid], %[size], x0"
+                         : [txid] "=r"(txid) : [size] "r"(size));
+        do {
+            __asm__ volatile(".insn r 0x2b, 0, 0x04, %[busy], x0, x2" : [busy] "=r"(busy));
+        } while (busy != 0u);
+        (void)txid;
+    }
+#endif
+#ifdef OFFLOAD_COLLECTIVE_PHASE
+    /* Every core reads the meta word: core 0 to run the phases, the DMA hart to
+     * know whether a wide phase happens this run, the other cores to know how
+     * long they must stay awake (see the end of this function). */
+    uint32_t coll_meta = *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLL_META_LOCAL;
+    offload_collective_phases(idx, value, coll_meta);
 #endif
 #if defined(OFFLOAD_COLLECTIVE_PHASE) && defined(OFFLOAD_WIDE_RED)
     /* The DCA computes the wide reduction on THE CORES' FPUs, one lane each: a
@@ -353,7 +374,16 @@ int main(void) {
     volatile uint32_t *ret_reg = (volatile uint32_t *)(OFFLOAD_RETURN_ADDR + inst_offs);
     volatile uint32_t *eoc_reg = (volatile uint32_t *)(OFFLOAD_EOC_ADDR + inst_offs);
 
-    *ret_reg = offload_workload(0u);   /* local memory: canonical, see above */
+    const uint32_t value = offload_workload(0u);   /* local memory: canonical, see above */
+    *ret_reg = value;
+
+#ifdef OFFLOAD_COLLECTIVE_PHASE
+    /* The collective phases, BEFORE the end-of-computation: the host polls the landings
+     * only after every instance has signalled, so a phase that never completes shows up
+     * as an EoC timeout, and one that completes wrong as a collective verdict. */
+    offload_collective_phases(0u, value,
+                              *(volatile uint32_t *)(uintptr_t)OFFLOAD_COLL_META_LOCAL);
+#endif
 
     /* Signal completion: the write below reaches the cluster control unit and
      * drives the eoc_o wire sampled by the System Controller. */

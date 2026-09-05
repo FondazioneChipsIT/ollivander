@@ -94,6 +94,25 @@ module pulp_cluster_isle
   // Top of the cluster-local memory the payload may use as its stack, as an offset
   // from the component's base address (the TCDM size, ClusterCfg.TcdmSize below).
   localparam int unsigned OffloadStackOffs      = 'h0002_0000,
+  // COLLECTIVE SLOTS (same family as cluster_subtile's, component standardization 3.1):
+  // the tile stamps the payload's writes into the alias range below with the group's
+  // collective mask and opcode, so the narrow barrier (LsbAnd), the dimension-ordered
+  // integer reduction and the multicast reach this array too. The slots live in the
+  // MIDDLE of the TCDM: the payload's stack grows down from the top (OffloadStackOffs)
+  // and its scratch sits 32 KB below it, so the top words the Snitch contract uses are
+  // live memory here. Beat-aligned (8 bytes), as the network reduces whole beats. The
+  // host reaches instance n's copies at base + n * InstanceIdStride (the slave side of
+  // cluster_bus_wrap decodes with the id); the cores see instance 0's addresses as
+  // their OWN TCDM (the core side decodes without it), which is why the alias must be
+  // a range neither decode claims: 'h4800_0000 falls in the "everything else" rule and
+  // leaves the cluster, the tile rewrites it before the chimney. No wide slot: this
+  // isle has no wide port and no DMA hart, so the FP reduction stays Snitch's.
+  localparam int unsigned OffloadCollMetaOffs   = 'h0001_0000,
+  localparam int unsigned OffloadBarrierOffs    = 'h0001_0008,
+  localparam int unsigned OffloadCollectColOffs = 'h0001_0010,
+  localparam int unsigned OffloadCollectOffs    = 'h0001_0018,
+  localparam int unsigned OffloadMcastOffs      = 'h0001_0020,
+  localparam int unsigned OffloadCollAliasBase  = 'h4800_0000,
   // How mhartid encodes (instance, core): mhartid = OffloadHartBase + instance *
   // OffloadHartInstStride + core, here {cluster_id[5:0], 1'b0, core_id[3:0]} so base 0
   // and stride 32. The one payload image built for an array of these clusters relocates

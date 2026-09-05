@@ -292,6 +292,79 @@ def _first_axi_slave_window(comp):
     return base, size
 
 
+def _host_cached_windows(host):
+    """The address windows a cheshire-class host's core CACHES: the CIE window (anchored
+    under 0x8000_0000 when OnTop, at 0x2000_0000 otherwise - cheshire's gen_cva6_cfg) and
+    the LLC-out window. Reconstructed from the parameters THIS project declares; an
+    empty list means the host publishes neither, and the callers say what they could
+    not check. Shared by the boot-memory check (which also needs the internal
+    scratchpad) and the offload-window check below."""
+    params = host.parameters or {}
+
+    def param_int(key):
+        val = params.get(key)
+        if val is None:
+            return None
+        if isinstance(val, bool):
+            return int(val)
+        return int(val, 0) if isinstance(val, str) else int(val)
+
+    windows = []
+    cie_len = param_int("Cva6ExtCieLength")
+    if cie_len:
+        cie_base = (0x8000_0000 - cie_len) if param_int("Cva6ExtCieOnTop") else 0x2000_0000
+        windows.append(("the CIE window", cie_base, cie_base + cie_len))
+    llc_start, llc_end = param_int("LlcOutRegionStart"), param_int("LlcOutRegionEnd")
+    if llc_start is not None and llc_end is not None and llc_end > llc_start:
+        windows.append(("the LLC-out window", llc_start, llc_end))
+    return windows
+
+
+def check_offload_windows_uncached(soc_config, offload_targets):
+    """
+    Refuse an offload target whose window the host's core caches.
+
+    Every offload protocol has the host READ what the target or the network wrote:
+    return registers and slots, collective landings, the meta words it initialises
+    itself. CVA6 caches its CIE and LLC-out windows and nothing invalidates a line
+    behind its back, so a poll inside them spins on a stale copy and a landing check
+    reads back the sentinel the host wrote - with no error anywhere. Found on the
+    first PULP collective run (2026-09-05): cycle 0 passed because the host touched
+    the slots only after the landings, cycle 1 read its own initialisation out of the
+    cache. The rule is a placement one, checked here against the windows THIS
+    project's host declares; a host that declares none is not checked, and says so.
+    """
+    if not offload_targets:
+        return
+    host = soc_config.host
+    cached = _host_cached_windows(host)
+    if not cached:
+        print(f"[WARN] Cannot verify that the offload windows are uncached for the host:")
+        print(f"       '{host.type}' declares neither a CIE window nor an LLC-out window.")
+        return
+    from core.utils import instance_count
+    comps = {c.name: c for c in (soc_config.components or [])}
+    for t_name, t in offload_targets.items():
+        comp = comps.get(t_name)
+        base = t.get("base_addr")
+        if comp is None or base is None:
+            continue
+        n = max(1, int(t.get("num_instances") or instance_count(comp)))
+        span = int(t.get("instance_stride") or 0) * (n - 1) + int(t.get("instance_stride") or 0x1000)
+        lo, hi = int(base), int(base) + span
+        for w_name, w_lo, w_hi in cached:
+            if lo < w_hi and hi > w_lo:
+                print(f"[ERROR] Offload target '{t_name}' spans [{lo:#x}, {hi:#x}), inside {w_name}")
+                print(f"        [{w_lo:#x}, {w_hi:#x}) that the host's core CACHES. The firmware polls this")
+                print(f"        memory and reads what the target and the network write into it; a cached")
+                print(f"        line is never invalidated behind the core, so the poll spins on a stale")
+                print(f"        copy and the collective check reads back its own initialisation.")
+                print(f"        Move the window below the CIE window (Cva6ExtCieOnTop/Cva6ExtCieLength)")
+                print(f"        or resize that window so it covers only the memories the host executes from.")
+                sys.exit(1)
+    print(f"  -> Offload windows: {', '.join(offload_targets)} outside the host's cached windows")
+
+
 def check_boot_memory_executable(soc_config, comp_info):
     """
     Refuse a configuration whose boot image is linked for a memory the host cannot
@@ -363,30 +436,13 @@ def check_boot_memory_executable(soc_config, comp_info):
     if base is None:
         return  # no AXI window to reason about (regbus-only memory)
 
-    # The windows this project declares. CIE geometry is the host's own: anchored
-    # under 0x8000_0000 when OnTop, at 0x2000_0000 otherwise (cheshire's
-    # gen_cva6_cfg). LLC-out is declared outright.
-    params = host.parameters or {}
-
-    def param_int(key):
-        val = params.get(key)
-        if val is None:
-            return None
-        if isinstance(val, bool):
-            return int(val)
-        return int(val, 0) if isinstance(val, str) else int(val)
-
+    # The windows this project declares: the host's scratchpad plus the cached
+    # windows (_host_cached_windows: CIE geometry and LLC-out).
     windows = []
     if host_base is not None and spm_off is not None and spm_size:
         windows.append(("the host's internal scratchpad",
                         host_base + spm_off, host_base + spm_off + spm_size))
-    cie_len = param_int("Cva6ExtCieLength")
-    if cie_len:
-        cie_base = (0x8000_0000 - cie_len) if param_int("Cva6ExtCieOnTop") else 0x2000_0000
-        windows.append(("the CIE window", cie_base, cie_base + cie_len))
-    llc_start, llc_end = param_int("LlcOutRegionStart"), param_int("LlcOutRegionEnd")
-    if llc_start is not None and llc_end is not None and llc_end > llc_start:
-        windows.append(("the LLC-out window", llc_start, llc_end))
+    windows += _host_cached_windows(host)
 
     if not windows:
         print(f"[WARN] Cannot verify that boot memory '{boot_mem_name}' is executable for the")

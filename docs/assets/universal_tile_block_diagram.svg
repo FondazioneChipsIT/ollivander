@@ -84,8 +84,8 @@
   <g stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2" stroke-dasharray="5 4">
     <rect x="60" y="556" width="440" height="40" rx="5"/>
   </g>
-  <text x="74" y="573" fill="#8b949e" font-size="12">async bridge — axi_cdc_dst (gray-pointer bus → AXI), network clock</text>
-  <text x="74" y="588" fill="#8b949e" font-size="10">[the isle publishes async_axi_out_*: a crossbar-family isle on a mesh, single network]</text>
+  <text x="74" y="573" fill="#8b949e" font-size="12">crossing — axi_cdc_dst (async isle) · axi_cdc (own-domain isle)</text>
+  <text x="74" y="588" fill="#8b949e" font-size="10">[async_axi_out_* or own clock_domain · isle side clk_i, network side sys_clk_i]</text>
   <!-- arrows master side: from isle up to chimney -->
   <line x1="280" y1="660" x2="280" y2="596" stroke="#8b949e" stroke-width="1.2" marker-end="url(#head)"/>
   <line x1="280" y1="556" x2="280" y2="548" stroke="#8b949e" stroke-width="1.2" marker-end="url(#head)"/>
@@ -109,8 +109,8 @@
   <g stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2" stroke-dasharray="5 4">
     <rect x="700" y="556" width="440" height="40" rx="5"/>
   </g>
-  <text x="714" y="573" fill="#8b949e" font-size="12">async bridge — axi_cdc_src (AXI → gray-pointer bus), network clock</text>
-  <text x="714" y="588" fill="#8b949e" font-size="10">[the isle publishes async_axi_in_*; its own half of the crossing runs on the tile clock]</text>
+  <text x="714" y="573" fill="#8b949e" font-size="12">crossing — axi_cdc_src (async isle) · axi_cdc (own-domain isle)</text>
+  <text x="714" y="588" fill="#8b949e" font-size="10">[async_axi_in_* or own clock_domain · each half on its side's power-on reset]</text>
   <!-- arrows slave side: from chimney down to isle -->
   <path d="M760,304 L760,330 L920,330 L920,360" stroke="#8b949e" stroke-width="1.2" fill="none" marker-end="url(#head)"/>
   <line x1="920" y1="408" x2="920" y2="424" stroke="#8b949e" stroke-width="1.2" marker-end="url(#head)"/>
@@ -126,7 +126,7 @@
   <!-- ============ isle ============ -->
   <rect x="60" y="660" width="1080" height="180" rx="8" stroke="#8b949e" fill="rgba(139,148,158,0.06)" stroke-width="1.2"/>
   <text x="76" y="684" fill="#8b949e" font-size="12" font-weight="600">3 · i_isle — the topology-agnostic component (cluster subtile, memory isle, host isle, ...) with its own AXI types</text>
-  <text x="76" y="704" fill="#8b949e" font-size="11">parameters filled from the parsed header: instance identity, package types, contract literals read by the generator</text>
+  <text x="76" y="704" fill="#8b949e" font-size="11">parameters filled from the parsed header: instance identity, package types, contract literals read by the generator · clk_i / rst_ni are the domain's when the component has one</text>
   <g stroke="#8b949e" fill="rgba(139,148,158,0.08)" stroke-width="1.2" stroke-dasharray="5 4">
     <rect x="76" y="722" width="420" height="52" rx="5"/>
     <rect x="520" y="722" width="300" height="52" rx="5"/>

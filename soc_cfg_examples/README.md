@@ -49,7 +49,7 @@ A 2D-mesh NoC of compute, memory and peripheral tiles routed by **FlooNoC**. The
 
 ### `noc_isle` — mesh_isle, the NoC macro
 
-The Mesh SoC exported as a macro (`build_mode: "macro"`, `mesh_isle` prefix on every generated name). Its firmware is deliberately placed in a **gated L2 tile**: the host cannot fetch until the testbench enables that tile, keeping the gated boot path and the 4-group × 128-bit interleaved preload covered by the regression. Its compute area is heterogeneous on purpose: a 2×4 box of Snitch clusters (memory-mapped start, the collectives on an asymmetric group) above a 2×2 box of **PULP clusters** started by wire - fetch enable and EoC one bit per instance, the isle's asynchronous AXI closed inside the tile - and a **mailbox** tile whose lines are routed to the host's PLIC and to the PULP array, the interrupt-routing witness of the mesh.
+The Mesh SoC exported as a macro (`build_mode: "macro"`, `mesh_isle` prefix on every generated name). Its firmware is deliberately placed in a **gated L2 tile**: the host cannot fetch until the testbench enables that tile, keeping the gated boot path and the 4-group × 128-bit interleaved preload covered by the regression. Its compute area is heterogeneous on purpose: a 2×4 box of Snitch clusters (memory-mapped start, the collectives on an asymmetric group) above a 2×2 box of **PULP clusters** started by wire - fetch enable and EoC one bit per instance, the isle's asynchronous AXI closed inside the tile, the array in a clock domain of its own at half the network speed - and a **mailbox** tile whose lines are routed to the host's PLIC and to the PULP array, the interrupt-routing witness of the mesh.
 
 ### `noc_subtile` — mesh_subtile, the subtile macro
 

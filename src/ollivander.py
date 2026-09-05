@@ -27,7 +27,7 @@ from mako.lookup import TemplateLookup
 from core.soc_schema import OllivanderConfig, validate_soc_components, validate_cross_references, validate_untyped_blocks, normalize_address_ranges, Component
 from core.stub_generator import generate_stubs
 from core.env_manager import setup_environment, load_env_yaml
-from core.arch_optimizer import optimize_clock_tree, autoconfigure_host, warn_boot_memory_gated, check_boot_memory_executable
+from core.arch_optimizer import optimize_clock_tree, autoconfigure_host, warn_boot_memory_gated, check_boot_memory_executable, check_offload_windows_uncached
 from core.tool_runners import run_floogen, run_peakrdl, run_verible, run_pre_build_steps, run_padrick
 from core import rtl_checker
 from core.reporter import print_generation_report
@@ -560,6 +560,10 @@ def main():
     # contract from comp_info, and before rendering so a bad map never reaches RTL.
     check_boot_memory_executable(soc_config, comp_info)
     generator.render_top_level(comp_info, wiring_matrix, global_defines)
+    # The offload targets are resolved while the top renders, so the placement check
+    # on their windows (the host's core must not cache what it polls) runs only now:
+    # a refused map still stops generation before any downstream step consumes it.
+    check_offload_windows_uncached(soc_config, getattr(generator, "offload_targets", {}))
     # The placement report reads the generator's truth - the staged isle headers in
     # comp_info and the resolved offload targets - so it is written only now.
     if soc_config.topology.type == "noc":

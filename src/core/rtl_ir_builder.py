@@ -461,6 +461,13 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                         else f'pwr_on_rsts_n[DomainIdx_{fmt_rst(c_rst)}]'))
                 if "ref_clk_i" in _tports:
                     inst.connections.append(PortConnection("ref_clk_i", "rt_clk_i"))
+                # A tile in a clock domain of its own declares the network clock pair
+                # (universal_tile.sv.mako, tile_own_domain): the network's clock and its
+                # POWER-ON reset - the host's - never the domain's software reset.
+                if "sys_clk_i" in _tports and not is_host:
+                    inst.connections.append(PortConnection("sys_clk_i", host_clk))
+                if "sys_rst_ni" in _tports and not is_host:
+                    inst.connections.append(PortConnection("sys_rst_ni", "host_pwr_on_rst_n"))
                 inst.connections.append(PortConnection("floo_req_o", f"tile_req_o[{x}][{y}]"))
                 inst.connections.append(PortConnection("floo_rsp_i", f"tile_rsp_i[{x}][{y}]"))
                 inst.connections.append(PortConnection("floo_wide_o", f"tile_wide_o[{x}][{y}]"))
@@ -704,15 +711,25 @@ def build_noc_ir(ir, soc_config, comp_info, noc_comp_extra_conns, original_isle_
                         # the layout is not 'base + inst_idx * size', and each instance's
                         # window - INCLUDING its size, which now varies between instances of
                         # one component - is whatever that layout assigns it.
-                        s_base, s_size = resolve_instance_windows(
-                            slaves[0], instance_count(c))[0 if _id_port else inst_idx]
-                        if wants_base:
-                            base_lit = f"64'h{s_base:X}"
-                            if base_is_port:
-                                inst.connections.append(PortConnection(
-                                    "instance_base_addr_i", base_lit))
-                            else:
-                                inst.parameters["InstanceBaseAddr"] = base_lit
+                        _wins = resolve_instance_windows(slaves[0], instance_count(c))
+                        s_base, s_size = _wins[0 if _id_port else inst_idx]
+                        if base_is_port:
+                            # A PORT is per instance by nature (it is what keeps the
+                            # module one under hierarchical verilation), so it carries
+                            # the instance's OWN base even where the IP inside derives
+                            # its window from an ordinal: the tile's collective
+                            # stamper rewrites aliases against this value.
+                            inst.connections.append(PortConnection(
+                                "instance_base_addr_i", f"64'h{_wins[inst_idx][0]:X}"))
+                        if "InstanceBaseAddr" in supported:
+                            # The PARAMETER is set whenever the tile exposes it, port or
+                            # not: the port may be the tile's own (declared for the
+                            # stamper when the isle has none) while the isle inside still
+                            # elaborates its decode from the parameter. Leaving it at the
+                            # header default put pulp_cluster's bus at 0x1000_0000 and
+                            # every control-unit write looped back out of the cluster
+                            # (2026-09-05, first run of the PULP collective slots).
+                            inst.parameters["InstanceBaseAddr"] = f"64'h{s_base:X}"
                         if wants_size:
                             inst.parameters["InstanceWindowSize"] = f"64'h{s_size:X}"
 

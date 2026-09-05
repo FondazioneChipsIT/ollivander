@@ -279,6 +279,7 @@ module vip_ollivander_soc #(
       8'd15: begin tgt_idx++; txt = {"target ", tgt_name(), " begins"}; end
       // Mailbox-only codes (16 and up): the UART byte channel carries codes 0-15 only.
       8'd16: txt = "interrupt route to the PLIC verified (raised, pending, claimed, cleared)";
+      8'd17: txt = {tgt_name(), ": domain divider reprogrammed, next cycle at the new ratio"};
       default: txt = $sformatf("phase code %0d", code);
     endcase
     $display("[TEST_PROGRESS] %0t  host: %s%s", $realtime, txt, via);
